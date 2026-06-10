@@ -62,6 +62,7 @@
              border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
              cursor: pointer; z-index: 2; }
   .tl .hour { position: absolute; top: 0; bottom: 0; width: 1px; background: #e5e7eb; }
+  .tl .work { position: absolute; top: 0; bottom: 0; background: #fef3c7; z-index: 0; }
   .tl-scale { display: grid; grid-template-columns: 9rem 5.5rem 1fr; padding: 0 1.1rem; }
   .tl-scale div { position: relative; height: 1.1rem; font-size: .75rem; color: #9ca3af; }
   .tl-scale span { position: absolute; transform: translateX(-50%); }
@@ -75,6 +76,8 @@
              gap: 1rem; margin: .7rem 0; font-size: .95rem; }
   .set-row input[type=number] { width: 7rem; padding: .45rem; border: 1px solid #ccc;
                                 border-radius: 6px; font-size: 1rem; }
+  .set-row input[type=text], .set-row input[type=time] { width: 9rem; padding: .45rem;
+                                border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
   .set-row input[type=checkbox] { width: 1.3rem; height: 1.3rem; }
   .badge.warn { background: #d97706; }
   /* メンバー管理 */
@@ -122,7 +125,7 @@
 
 <div id="app" hidden>
 <header>
-  <h1>🪑 zatsumu</h1>
+  <h1>🪑 <span id="brand">zatsumu</span></h1>
   <button id="nav-home">稼働状況</button>
   <button id="nav-users">メンバー管理</button>
   <button id="nav-report">月次レポート</button>
@@ -176,6 +179,24 @@
 <section id="settings-view" hidden>
   <h2>設定 <small>（撮影設定はクライアントの次の撮影サイクルから自動反映されます）</small></h2>
   <div class="settings-grid">
+    <div class="set-card">
+      <h3>会社・表示</h3>
+      <label class="set-row"><span>会社名／サービス名</span>
+        <input type="text" id="set-company" maxlength="40"></label>
+      <label class="set-row"><span>タイムゾーン</span>
+        <input type="text" id="set-tz" list="tz-list" placeholder="Asia/Tokyo"></label>
+      <datalist id="tz-list">
+        <option value="Asia/Tokyo"><option value="Asia/Seoul">
+        <option value="Asia/Shanghai"><option value="Asia/Singapore">
+        <option value="America/New_York"><option value="America/Los_Angeles">
+        <option value="Europe/London"><option value="UTC">
+      </datalist>
+      <label class="set-row"><span>勤務時間帯（開始）</span>
+        <input type="time" id="set-work-start"></label>
+      <label class="set-row"><span>勤務時間帯（終了）</span>
+        <input type="time" id="set-work-end"></label>
+      <p><small>会社名はヘッダーに表示され、勤務時間帯はタイムラインに目安の帯として表示されます。</small></p>
+    </div>
     <div class="set-card">
       <h3>画面キャプチャ</h3>
       <label class="set-row"><span>撮影する（全社）</span>
@@ -313,6 +334,17 @@ const segHtml = (s, mini) => {
   const data = mini ? "" : ` data-id="${s.id}" data-in="${s.clock_in}" data-out="${s.clock_out ?? ""}"`;
   return `<div class="seg${s.open ? " open" : ""}"${data} style="left:${pct(s.start)}%;width:${width}%" title="${title}"></div>`;
 };
+const hhmmPct = hhmm => {
+  const [h, mn] = (hhmm || "").split(":").map(Number);
+  return isNaN(h) ? null : (h + (mn || 0) / 60) / 24 * 100;
+};
+// 勤務時間帯の目安バンド (設定の work_start〜work_end)
+const workBandHtml = () => {
+  const a = hhmmPct(appSettings.work_start), b = hhmmPct(appSettings.work_end);
+  if (a === null || b === null || b <= a) return "";
+  return `<div class="work" style="left:${a}%;width:${b - a}%"
+          title="勤務時間帯 ${appSettings.work_start}〜${appSettings.work_end}"></div>`;
+};
 
 function showLogin(withError) {
   clearInterval(timer);
@@ -321,13 +353,18 @@ function showLogin(withError) {
   $("login-error").hidden = !withError;
 }
 
-let appSettings = { alert_hours: 6 };
+let appSettings = { alert_hours: 6, work_start: "09:00", work_end: "18:00",
+                    company_name: "zatsumu" };
+function applyBranding() {
+  $("brand").textContent = appSettings.company_name || "zatsumu";
+  document.title = (appSettings.company_name || "zatsumu") + " 管理画面";
+}
 async function showApp() {
   const r = await fetch("/api/status", { headers: headers() });
   if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
   $("login").hidden = true;
   $("app").hidden = false;
-  try { appSettings = await apiJson("/api/settings"); } catch {}
+  try { appSettings = await apiJson("/api/settings"); applyBranding(); } catch {}
   showHome(await r.json());
 }
 
@@ -365,7 +402,7 @@ async function renderHome(status) {
       <td class="click"><strong>${u.name}</strong></td>
       <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${warn}</td>
       <td>${u.hours_today} h</td>
-      <td><div class="tl mini">${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
+      <td><div class="tl mini">${workBandHtml()}${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
       <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleTimeString("ja-JP") : "—"}</td>
       <td>${u.seated ? `<button class="mini danger force-out" data-id="${u.user_id}" data-name="${u.name}">強制退席</button>` : ""}</td>
     </tr>`;
@@ -492,6 +529,10 @@ function freqHint() {
 async function showSettings() {
   switchView("settings");
   const s = await apiJson("/api/settings");
+  $("set-company").value = s.company_name;
+  $("set-tz").value = s.timezone;
+  $("set-work-start").value = s.work_start;
+  $("set-work-end").value = s.work_end;
   $("set-capture-enabled").checked = !!s.capture_enabled;
   $("set-min").value = s.capture_min_interval;
   $("set-max").value = s.capture_max_interval;
@@ -506,6 +547,10 @@ $("set-min").oninput = freqHint;
 $("set-max").oninput = freqHint;
 $("set-save").onclick = async () => {
   const body = {
+    company_name: $("set-company").value,
+    timezone: $("set-tz").value,
+    work_start: $("set-work-start").value,
+    work_end: $("set-work-end").value,
     capture_enabled: $("set-capture-enabled").checked,
     capture_min_interval: +$("set-min").value,
     capture_max_interval: +$("set-max").value,
@@ -518,6 +563,7 @@ $("set-save").onclick = async () => {
     method: "PATCH", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  applyBranding();
   $("set-msg").textContent = "保存しました ✓";
   setTimeout(() => $("set-msg").textContent = "", 2500);
 };
@@ -546,6 +592,7 @@ async function showDetail(userId, userName, month) {
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
   const youbi = ["日", "月", "火", "水", "木", "金", "土"];
+  const work = workBandHtml();
   let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
   const dayShots = [];
   for (let day = 1; day <= lastDay; day++) {
@@ -565,7 +612,7 @@ async function showDetail(userId, userName, month) {
     html += `<div class="tl-row">
       <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
       <div>${d ? d.hours + " h" : ""}</div>
-      <div class="tl">${hours}${segs}${dots}</div>
+      <div class="tl">${work}${hours}${segs}${dots}</div>
     </div>`;
   }
   $("timeline").innerHTML = html;

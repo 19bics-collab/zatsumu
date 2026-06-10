@@ -10,6 +10,16 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo(os.environ.get("ZATSUMU_TZ", "Asia/Tokyo"))
 
 
+def set_tz(name: str) -> bool:
+    """集計の基準タイムゾーンを切り替える。無効な名前なら False を返す."""
+    global TZ
+    try:
+        TZ = ZoneInfo(name)
+        return True
+    except Exception:
+        return False
+
+
 def utc_iso(dt: datetime) -> str:
     """DB は UTC の ISO 文字列で保存しているため、SQL の文字列比較に使う
     境界値も UTC に正規化する (オフセット違いの文字列比較は時系列順にならない)."""

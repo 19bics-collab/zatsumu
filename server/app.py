@@ -37,15 +37,17 @@ async def _purge_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if os.environ.get("ZATSUMU_DEMO") == "1":
-        from . import demo
+    conn = db.connect(DATA_DIR / "zatsumu.db")
+    try:
+        if os.environ.get("ZATSUMU_DEMO") == "1":
+            from . import demo
 
-        conn = db.connect(DATA_DIR / "zatsumu.db")
-        try:
             if demo.seed(conn, SCREENSHOT_DIR):
                 print("デモデータを投入しました (管理者トークン: demo-admin)")
-        finally:
-            conn.close()
+        # 保存済みのタイムゾーン設定を適用する
+        tz.set_tz(db.get_settings(conn)["timezone"])
+    finally:
+        conn.close()
     task = asyncio.create_task(_purge_loop())
     yield
     task.cancel()
@@ -124,6 +126,10 @@ class SettingsPatch(BaseModel):
     capture_enabled: bool | None = None
     retention_days: int | None = None
     alert_hours: int | None = None
+    company_name: str | None = None
+    timezone: str | None = None
+    work_start: str | None = None
+    work_end: str | None = None
 
 
 class SessionBody(BaseModel):
@@ -332,18 +338,42 @@ def patch_settings(
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
         raise HTTPException(400, "変更内容がありません")
-    merged = {**db.get_settings(conn), **{k: int(v) for k, v in changes.items()}}
-    for key, val in changes.items():
+    int_changes = {k: int(v) for k, v in changes.items() if k in db.INT_SETTINGS}
+    merged = {**db.get_settings(conn), **int_changes}
+    for key, val in int_changes.items():
         lo, hi = limits[key]
-        if not lo <= int(val) <= hi:
+        if not lo <= val <= hi:
             raise HTTPException(400, f"{key} は {lo}〜{hi} の範囲で指定してください")
     if merged["capture_min_interval"] > merged["capture_max_interval"]:
         raise HTTPException(400, "最短間隔は最長間隔以下にしてください")
+    # 文字列設定のバリデーション
+    if "company_name" in changes and not str(changes["company_name"]).strip():
+        raise HTTPException(400, "会社名を入力してください")
+    for key in ("work_start", "work_end"):
+        if key in changes:
+            try:
+                datetime.strptime(changes[key], "%H:%M")
+            except ValueError:
+                raise HTTPException(400, f"{key} は HH:MM 形式で入力してください")
+    if "timezone" in changes and not tz.set_tz(changes["timezone"]):
+        raise HTTPException(400, "不明なタイムゾーンです (例: Asia/Tokyo)")
+
     for key, val in changes.items():
-        db.set_setting(conn, key, int(val))
+        db.set_setting(conn, key, val)
     _audit(conn, admin, "settings_update",
-           detail=", ".join(f"{k}={int(v)}" for k, v in changes.items()))
+           detail=", ".join(f"{k}={v}" for k, v in changes.items()))
     return db.get_settings(conn)
+
+
+@app.get("/api/config")
+def public_config(conn=Depends(get_conn)):
+    """ログイン前でも使う表示用の公開設定 (会社名・勤務時間帯)."""
+    s = db.get_settings(conn)
+    return {
+        "company_name": s["company_name"],
+        "work_start": s["work_start"],
+        "work_end": s["work_end"],
+    }
 
 
 @app.get("/api/me/settings")

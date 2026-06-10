@@ -47,8 +47,8 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-# 全社設定の既定値。settings テーブルの値で上書きされる
-SETTING_DEFAULTS = {
+# 全社設定の既定値 (整数)。settings テーブルの値で上書きされる
+INT_SETTINGS = {
     "capture_min_interval": 300,   # 撮影の最短間隔(秒)
     "capture_max_interval": 900,   # 撮影の最長間隔(秒) 平均10分=約6回/時
     "capture_quality": 60,         # JPEG品質 (10-95)
@@ -59,21 +59,36 @@ SETTING_DEFAULTS = {
     "alert_hours": 6,              # 連続在席アラート(時間)
 }
 
+# 全社設定の既定値 (文字列)
+STR_SETTINGS = {
+    "company_name": "zatsumu",     # ヘッダー等に表示する会社名/サービス名
+    "timezone": os.environ.get("ZATSUMU_TZ", "Asia/Tokyo"),  # 集計の基準TZ
+    "work_start": "09:00",         # 勤務時間帯の目安(開始) タイムライン表示用
+    "work_end": "18:00",           # 勤務時間帯の目安(終了)
+}
+
+# 後方互換: 旧名を参照しているコード向け
+SETTING_DEFAULTS = INT_SETTINGS
+
 
 def get_settings(conn: sqlite3.Connection) -> dict:
     stored = {
         r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")
     }
-    return {
-        k: int(stored.get(k, default)) for k, default in SETTING_DEFAULTS.items()
+    out: dict = {
+        k: int(stored.get(k, default)) for k, default in INT_SETTINGS.items()
     }
+    out.update(
+        {k: stored.get(k, default) for k, default in STR_SETTINGS.items()}
+    )
+    return out
 
 
-def set_setting(conn: sqlite3.Connection, key: str, value: int) -> None:
+def set_setting(conn: sqlite3.Connection, key: str, value) -> None:
     conn.execute(
         "INSERT INTO settings (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (key, str(int(value))),
+        (key, str(int(value)) if key in INT_SETTINGS else str(value)),
     )
 
 

@@ -4,6 +4,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def reset_tz():
+    # timezone はプロセス全体の状態なので、設定変更テストの影響を残さない
+    from server import tz
+    tz.set_tz("Asia/Tokyo")
+    yield
+    tz.set_tz("Asia/Tokyo")
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ZATSUMU_DATA_DIR", str(tmp_path))
@@ -254,6 +263,53 @@ def test_status_includes_today_sessions(client, users):
     assert len(by_name["tanaka"]["today_sessions"]) == 1
     assert by_name["tanaka"]["today_sessions"][0]["open"] is True
     assert by_name["boss"]["today_sessions"] == []
+
+
+def test_company_settings_and_public_config(client, users):
+    worker, admin = users
+    # 公開設定は認証なしで取得できる (ログイン画面の表示用)
+    cfg = client.get("/api/config").json()
+    assert cfg == {"company_name": "zatsumu", "work_start": "09:00",
+                   "work_end": "18:00"}
+
+    # 会社名・勤務時間帯の変更
+    r = client.patch("/api/settings", headers=auth(admin),
+                     json={"company_name": "アクメ商事", "work_start": "10:00",
+                           "work_end": "19:00"})
+    assert r.status_code == 200
+    assert r.json()["company_name"] == "アクメ商事"
+    assert client.get("/api/config").json() == {
+        "company_name": "アクメ商事", "work_start": "10:00", "work_end": "19:00"}
+
+    # バリデーション
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"company_name": "   "}).status_code == 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"work_start": "25:00"}).status_code == 400
+
+
+def test_timezone_setting_affects_aggregation(client, users, tmp_path):
+    worker, admin = users
+    # UTC 23:30-翌0:30 の打刻
+    _record_session(tmp_path, worker["id"], "2026-05-01T23:30:00+00:00",
+                    "2026-05-02T00:30:00+00:00")
+
+    # 既定(Asia/Tokyo)では JST 5/2 08:30-09:30 = 5/2 に1時間
+    rows = {r["name"]: r for r in client.get(
+        "/api/reports/monthly?month=2026-05", headers=auth(admin)).json()["rows"]}
+    assert rows["tanaka"]["total_hours"] == 1.0
+
+    # UTC に切り替えると 5/1 に0.5h, 5/2 に0.5h
+    client.patch("/api/settings", headers=auth(admin), json={"timezone": "UTC"})
+    detail = client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
+                        headers=auth(admin)).json()
+    days = {d["date"]: d["hours"] for d in detail["days"]}
+    assert days["2026-05-01"] == 0.5
+    assert days["2026-05-02"] == 0.5
+
+    # 不正なタイムゾーンは拒否
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"timezone": "Nowhere/Land"}).status_code == 400
 
 
 def test_settings_get_patch_and_effective(client, users):

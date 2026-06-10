@@ -39,6 +39,7 @@
   .tl-row.head { color: #6b7280; font-size: .7rem; }
   .tl-row .sat { color: var(--seated); } .tl-row .sun { color: var(--away); }
   .tl { position: relative; height: 18px; background: #f3f4f6; border-radius: 3px; }
+  .tl .work { position: absolute; top: 0; bottom: 0; background: #fef3c7; z-index: 0; }
   .tl .seg { position: absolute; top: 2px; bottom: 2px; background: var(--seated);
              border-radius: 2px; min-width: 2px; }
   .tl .seg.open { background: repeating-linear-gradient(45deg, var(--seated),
@@ -73,7 +74,7 @@
 </head>
 <body>
 <div class="card" id="login" hidden>
-  <h1>🪑 zatsumu 打刻</h1>
+  <h1>🪑 <span class="brand">zatsumu</span> 打刻</h1>
   <p>自分のトークンを入力してください</p>
   <input type="password" id="token-input" placeholder="トークン" autocomplete="current-password">
   <button class="small" id="login-btn">ログイン</button>
@@ -119,6 +120,24 @@ const _n = new Date();
 let month = `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, "0")}`;
 
 const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
+
+// 会社名・勤務時間帯などの公開設定
+let config = { company_name: "zatsumu", work_start: "09:00", work_end: "18:00" };
+async function loadConfig() {
+  try { config = await (await fetch("/api/config")).json(); } catch {}
+  document.title = (config.company_name || "zatsumu") + " 打刻";
+  document.querySelectorAll(".brand").forEach(el =>
+    el.textContent = config.company_name || "zatsumu");
+}
+const hhmmPct = hhmm => {
+  const [h, mn] = (hhmm || "").split(":").map(Number);
+  return isNaN(h) ? null : (h + (mn || 0) / 60) / 24 * 100;
+};
+const workBandHtml = () => {
+  const a = hhmmPct(config.work_start), b = hhmmPct(config.work_end);
+  if (a === null || b === null || b <= a) return "";
+  return `<div class="work" style="left:${a}%;width:${b - a}%"></div>`;
+};
 
 function showLogin(withError) {
   clearInterval(timer);
@@ -176,6 +195,7 @@ async function loadHistory() {
     const dt = new Date(t);
     return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
   };
+  const work = workBandHtml();
   let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
   for (let day = 1; day <= lastDay; day++) {
     const date = `${month}-${String(day).padStart(2, "0")}`;
@@ -195,7 +215,7 @@ async function loadHistory() {
     html += `<div class="tl-row">
       <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
       <div>${d ? d.hours + "h" : ""}</div>
-      <div class="tl">${segs}${dots}</div>
+      <div class="tl">${work}${segs}${dots}</div>
     </div>`;
   }
   $("timeline").innerHTML = html;
@@ -261,6 +281,7 @@ $("logout").onclick = () => {
   showLogin(false);
 };
 
+loadConfig();
 if (localStorage.getItem(KEY)) load(); else showLogin(false);
 </script>
 </body>
