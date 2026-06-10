@@ -6,7 +6,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 
 from . import db, reports, retention, tz
 
@@ -266,6 +272,12 @@ def delete_screenshot(
     (SCREENSHOT_DIR / row["path"]).unlink(missing_ok=True)
     conn.execute("DELETE FROM screenshots WHERE id = ?", (screenshot_id,))
     return {"deleted": screenshot_id}
+
+
+@app.get("/")
+def root():
+    # トップページは管理画面へ誘導する
+    return RedirectResponse("/admin")
 
 
 @app.get("/healthz")

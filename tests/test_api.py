@@ -87,6 +87,12 @@ def test_healthz(client):
     assert r.json() == {"status": "ok"}
 
 
+def test_root_redirects_to_admin(client):
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == "/admin"
+
+
 def test_jpeg_helper():
     from PIL import Image
     from client import capture
