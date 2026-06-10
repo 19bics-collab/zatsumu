@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>zatsumu 管理画面</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #f7f7f8; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  th, td { padding: .6rem 1rem; border-bottom: 1px solid #eee; text-align: left; }
+  .seated { color: #0a7d32; font-weight: 600; }
+  .away { color: #999; }
+  #shots img { height: 110px; margin: 4px; border: 1px solid #ddd; border-radius: 4px; }
+  small { color: #777; }
+</style>
+</head>
+<body>
+<h1>🪑 zatsumu — 稼働状況</h1>
+<table id="status">
+  <thead><tr><th>メンバー</th><th>状態</th><th>本日の勤務時間</th><th>最終スクショ</th></tr></thead>
+  <tbody></tbody>
+</table>
+<h2>最近のスクリーンショット</h2>
+<div id="shots"></div>
+<small>30秒ごとに自動更新</small>
+<script>
+const token = "{{TOKEN}}";
+const headers = { Authorization: "Bearer " + token };
+
+async function refresh() {
+  const status = await (await fetch("/api/status", { headers })).json();
+  document.querySelector("#status tbody").innerHTML = status.map(u => `
+    <tr>
+      <td>${u.name}</td>
+      <td class="${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</td>
+      <td>${u.hours_today} h</td>
+      <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleString("ja-JP") : "—"}</td>
+    </tr>`).join("");
+
+  const shots = await (await fetch("/api/screenshots?limit=12", { headers })).json();
+  const imgs = await Promise.all(shots.map(async s => {
+    const blob = await (await fetch(`/api/screenshots/${s.id}/image`, { headers })).blob();
+    return `<img src="${URL.createObjectURL(blob)}" title="${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}">`;
+  }));
+  document.getElementById("shots").innerHTML = imgs.join("");
+}
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
