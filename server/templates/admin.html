@@ -8,45 +8,42 @@
   :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
   html { font-size: 17px; }
   body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7; }
-  header { background: #1f2937; color: #fff; padding: .9rem 1.5rem;
-           display: flex; align-items: center; gap: 1rem; }
-  header h1 { font-size: 1.3rem; margin: 0; flex: 1; }
+  header { background: #1f2937; color: #fff; padding: .7rem 1.5rem;
+           display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  header h1 { font-size: 1.3rem; margin: 0; margin-right: 1rem; }
+  header .spacer { flex: 1; }
   header button { background: #4b5563; }
+  header button.active { background: #2563eb; }
   main { padding: 1.5rem; max-width: 1320px; margin: 0 auto; }
   h2 { font-size: 1.15rem; color: #374151; }
   table { border-collapse: collapse; background: #fff; width: 100%;
           box-shadow: 0 1px 3px rgba(0,0,0,.08); font-size: 1rem; }
-  th, td { padding: .75rem 1.1rem; border-bottom: 1px solid var(--line); text-align: left; }
+  th, td { padding: .7rem 1rem; border-bottom: 1px solid var(--line); text-align: left; }
   th { background: #f9fafb; font-size: .85rem; color: #6b7280; }
   .badge { display: inline-block; padding: .25rem .8rem; border-radius: 99px;
-           color: #fff; font-size: .9rem; font-weight: 600; }
+           color: #fff; font-size: .9rem; font-weight: 600; white-space: nowrap; }
   .badge.seated { background: var(--seated); }
   .badge.away { background: var(--away); }
-  tr.user-row { cursor: pointer; }
+  .badge.gray { background: #9ca3af; }
+  tr.user-row td.click { cursor: pointer; }
   tr.user-row:hover { background: #f0f6ff; }
   #shots img { height: 150px; margin: 5px; border: 1px solid #ddd;
                border-radius: 4px; cursor: pointer; }
   small { color: #777; }
-  button { padding: .55rem 1.2rem; border: 0; border-radius: 6px;
-           background: #2563eb; color: #fff; cursor: pointer; font-size: .95rem; }
+  button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
+           background: #2563eb; color: #fff; cursor: pointer; font-size: .9rem; }
   button.danger { background: var(--away); }
   button.ghost { background: #e5e7eb; color: #374151; }
-  a.csv { font-size: .85rem; margin-left: .8rem; }
-  /* スマホでは少し詰める */
-  @media (max-width: 720px) {
-    html { font-size: 15px; }
-    main { padding: .8rem; }
-    th, td { padding: .55rem .7rem; }
-    #shots img { height: 100px; }
-  }
+  button.mini { padding: .3rem .7rem; font-size: .8rem; }
   /* ログイン */
   #login { max-width: 360px; margin: 12vh auto; background: #fff; padding: 2rem;
            border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
   #login input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
                  border: 1px solid #ccc; border-radius: 4px; }
   .error { color: var(--away); }
-  /* 個人ページ: 日別タイムライン */
-  .month-nav { display: flex; align-items: center; gap: .8rem; margin: 1rem 0; }
+  /* タイムライン */
+  .month-nav { display: flex; align-items: center; gap: .8rem; margin: 1rem 0;
+               flex-wrap: wrap; }
   .month-nav strong { font-size: 1.35rem; }
   .tl-wrap { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   .tl-row { display: grid; grid-template-columns: 9rem 5.5rem 1fr;
@@ -55,8 +52,10 @@
   .tl-row.head { color: #6b7280; font-size: .8rem; background: #f9fafb; }
   .tl-row .sat { color: var(--seated); } .tl-row .sun { color: var(--away); }
   .tl { position: relative; height: 28px; background: #f3f4f6; border-radius: 4px; }
+  .tl.mini { height: 18px; min-width: 180px; }
   .tl .seg { position: absolute; top: 4px; bottom: 4px; background: var(--seated);
-             border-radius: 2px; min-width: 2px; }
+             border-radius: 2px; min-width: 2px; cursor: pointer; }
+  .tl.mini .seg { top: 2px; bottom: 2px; cursor: default; }
   .tl .seg.open { background: repeating-linear-gradient(45deg, var(--seated),
                   var(--seated) 4px, #5b9bd5 4px, #5b9bd5 8px); }
   .tl .dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px;
@@ -66,19 +65,38 @@
   .tl-scale { display: grid; grid-template-columns: 9rem 5.5rem 1fr; padding: 0 1.1rem; }
   .tl-scale div { position: relative; height: 1.1rem; font-size: .75rem; color: #9ca3af; }
   .tl-scale span { position: absolute; transform: translateX(-50%); }
+  /* メンバー管理 */
+  .add-form { display: flex; gap: .6rem; align-items: center; margin: 1rem 0;
+              flex-wrap: wrap; background: #fff; padding: 1rem;
+              box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 6px; }
+  .add-form input[type=text] { padding: .55rem; border: 1px solid #ccc;
+                               border-radius: 6px; font-size: 1rem; }
+  /* モーダル */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+           align-items: center; justify-content: center; z-index: 10; }
+  .modal[hidden] { display: none; }
+  .modal .box { background: #fff; padding: 1.2rem; border-radius: 8px;
+                max-width: 88vw; max-height: 92vh; }
+  #modal img { max-width: 78vw; max-height: 70vh; display: block; margin-bottom: .8rem; }
+  .modal .bar { display: flex; gap: .6rem; align-items: center; }
+  .modal .bar span { flex: 1; color: #374151; font-size: .9rem; }
+  .navbtn { font-size: 1.1rem; padding: .45rem .9rem; }
+  #token-modal code { display: block; background: #f3f4f6; padding: .8rem;
+                      border-radius: 6px; margin: .8rem 0; font-size: 1rem;
+                      word-break: break-all; }
+  #session-modal label { display: block; margin: .7rem 0 .2rem; font-size: .85rem;
+                         color: #6b7280; }
+  #session-modal input { padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
+                         font-size: 1rem; width: 100%; box-sizing: border-box; }
   @media (max-width: 720px) {
+    html { font-size: 15px; }
+    main { padding: .8rem; }
+    th, td { padding: .55rem .7rem; }
+    #shots img { height: 100px; }
     .tl-row, .tl-scale { grid-template-columns: 6.5rem 3.5rem 1fr; padding: .3rem .6rem; }
     .tl-row { font-size: .8rem; }
+    .tl.mini { min-width: 100px; }
   }
-  /* モーダル */
-  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
-           align-items: center; justify-content: center; z-index: 10; }
-  #modal[hidden] { display: none; }  /* display指定がhidden属性に勝つのを防ぐ */
-  #modal .box { background: #fff; padding: 1rem; border-radius: 8px;
-                max-width: 86vw; max-height: 90vh; }
-  #modal img { max-width: 80vw; max-height: 70vh; display: block; margin-bottom: .8rem; }
-  #modal .bar { display: flex; gap: .6rem; align-items: center; }
-  #modal .bar span { flex: 1; color: #374151; font-size: .85rem; }
 </style>
 </head>
 <body>
@@ -93,44 +111,107 @@
 <div id="app" hidden>
 <header>
   <h1>🪑 zatsumu</h1>
-  <button id="nav-home" class="ghost" hidden>← 稼働状況へ戻る</button>
+  <button id="nav-home">稼働状況</button>
+  <button id="nav-users">メンバー管理</button>
+  <button id="nav-report">月次レポート</button>
+  <span class="spacer"></span>
   <button id="logout">ログアウト</button>
 </header>
 <main>
 
-<section id="home">
-  <h2>稼働状況 <small>（行をクリックで個人ページ / 30秒ごとに自動更新）</small></h2>
+<section id="home" hidden>
+  <h2>稼働状況 <small>（名前をクリックで個人ページ / 30秒ごとに自動更新）</small></h2>
   <table id="status">
-    <thead><tr><th>メンバー</th><th>状態</th><th>本日の在席時間</th><th>最終キャプチャ</th></tr></thead>
+    <thead><tr><th>メンバー</th><th>状態</th><th>本日の在席</th>
+      <th>本日のタイムライン (0〜24時)</th><th>最終キャプチャ</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
-  <h2>最近のキャプチャ <small>（クリックで拡大・削除）</small></h2>
+  <h2>最近のキャプチャ <small>（クリックで拡大。←→で前後に移動できます）</small></h2>
   <div id="shots"></div>
+</section>
+
+<section id="users-view" hidden>
+  <h2>メンバー管理</h2>
+  <div class="add-form">
+    <input type="text" id="new-name" placeholder="名前">
+    <label><input type="checkbox" id="new-admin"> 管理者</label>
+    <button id="add-user">追加</button>
+    <small>追加するとトークンが一度だけ表示されます。本人に安全な方法で渡してください</small>
+  </div>
+  <table id="users-table">
+    <thead><tr><th>メンバー</th><th>権限</th><th>状態</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section id="report" hidden>
+  <div class="month-nav">
+    <button id="rep-prev" class="ghost">◀ 前月</button>
+    <strong id="rep-title"></strong>
+    <button id="rep-next" class="ghost">翌月 ▶</button>
+    <button id="rep-csv-monthly" class="ghost">月次集計CSV</button>
+    <button id="rep-csv-sessions" class="ghost">在席データCSV</button>
+    <button id="rep-csv-audit" class="ghost">修正履歴CSV</button>
+  </div>
+  <table id="report-table">
+    <thead><tr><th>メンバー</th><th>勤務日数</th><th>セッション数</th><th>合計勤務時間</th></tr></thead>
+    <tbody></tbody>
+  </table>
 </section>
 
 <section id="detail" hidden>
   <div class="month-nav">
+    <button id="back-home" class="ghost">← 稼働状況へ</button>
     <button id="prev-month" class="ghost">◀ 前月</button>
     <strong id="detail-title"></strong>
     <button id="next-month" class="ghost">翌月 ▶</button>
-    <button id="csv-monthly" class="ghost">月次集計CSV</button>
-    <button id="csv-sessions" class="ghost">在席データCSV</button>
+    <button id="add-session" class="ghost">＋打刻を追加</button>
   </div>
   <div class="tl-scale"><div></div><div></div><div id="scale"></div></div>
   <div class="tl-wrap" id="timeline"></div>
-  <p><small>青=在席（斜線は勤務中）、●=画面キャプチャ。点をクリックすると画像を表示します。</small></p>
+  <p><small>青=在席（斜線は勤務中・クリックで修正）、●=画面キャプチャ（クリックで表示、←→で前後に移動）。</small></p>
 </section>
 
 </main>
 </div>
 
-<div id="modal" hidden>
+<div id="modal" class="modal" hidden>
   <div class="box">
     <img id="modal-img" alt="screenshot">
     <div class="bar">
+      <button id="modal-prev" class="ghost navbtn">←</button>
+      <button id="modal-next" class="ghost navbtn">→</button>
       <span id="modal-info"></span>
       <button id="modal-del" class="danger">削除</button>
       <button id="modal-close" class="ghost">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div id="token-modal" class="modal" hidden>
+  <div class="box">
+    <h2 id="token-title"></h2>
+    <p>このトークンは<strong>今だけ</strong>表示されます。コピーして本人に渡してください。</p>
+    <code id="token-value"></code>
+    <div class="bar">
+      <span></span>
+      <button id="token-copy">コピー</button>
+      <button id="token-close" class="ghost">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div id="session-modal" class="modal" hidden>
+  <div class="box" style="min-width: 300px">
+    <h2 id="session-title"></h2>
+    <label>着席</label><input type="datetime-local" id="sess-in" step="60">
+    <label>退席</label><input type="datetime-local" id="sess-out" step="60">
+    <p class="error" id="sess-error" hidden></p>
+    <div class="bar" style="margin-top: 1rem">
+      <button id="sess-delete" class="danger">削除</button>
+      <span></span>
+      <button id="sess-save">保存</button>
+      <button id="sess-close" class="ghost">キャンセル</button>
     </div>
   </div>
 </div>
@@ -139,7 +220,8 @@
 const KEY = "zatsumu_token";
 const $ = id => document.getElementById(id);
 let timer = null;
-let view = { userId: null, month: null };   // 個人ページの状態
+let view = { name: "home", userId: null, userName: "", month: null };
+let repMonth = null;
 
 // 旧形式 (?token=...) からの移行: 保存して URL から即座に消す
 const url = new URL(location);
@@ -150,10 +232,39 @@ if (url.searchParams.get("token")) {
 }
 
 const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
-const api = async (path, opts = {}) => {
-  const r = await fetch(path, { ...opts, headers: headers() });
-  if (r.status === 401 || r.status === 403) { showLogin(true); throw new Error("auth"); }
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+  if (r.status === 401) { showLogin(true); throw new Error("auth"); }
   return r;
+}
+async function apiJson(path, opts = {}) {
+  const r = await api(path, opts);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    alert(e.detail || "エラーが発生しました");
+    throw new Error(e.detail || "api error");
+  }
+  return r.json();
+}
+
+const currentMonth = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+function shiftMonth(month, delta) {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+const pct = t => {
+  const dt = new Date(t);
+  return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
+};
+const segHtml = (s, mini) => {
+  const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
+  const title = `${new Date(s.start).toLocaleTimeString("ja-JP")} - ${s.open ? "勤務中" : new Date(s.end).toLocaleTimeString("ja-JP")}`;
+  const data = mini ? "" : ` data-id="${s.id}" data-in="${s.clock_in}" data-out="${s.clock_out ?? ""}"`;
+  return `<div class="seg${s.open ? " open" : ""}"${data} style="left:${pct(s.start)}%;width:${width}%" title="${title}"></div>`;
 };
 
 function showLogin(withError) {
@@ -171,104 +282,135 @@ async function showApp() {
   showHome(await r.json());
 }
 
+function switchView(name) {
+  view.name = name;
+  for (const id of ["home", "users-view", "report", "detail"])
+    $(id).hidden = true;
+  $({ home: "home", users: "users-view", report: "report", detail: "detail" }[name]).hidden = false;
+  for (const [btn, v] of [["nav-home", "home"], ["nav-users", "users"], ["nav-report", "report"]])
+    $(btn).classList.toggle("active", v === name || (v === "home" && name === "detail"));
+}
+
 /* ---------- 稼働状況 ---------- */
 async function showHome(prefetched) {
-  view.userId = null;
-  $("detail").hidden = true;
-  $("home").hidden = false;
-  $("nav-home").hidden = true;
-  await renderHome(prefetched || await (await api("/api/status")).json());
+  switchView("home");
+  await renderHome(prefetched || await apiJson("/api/status"));
   clearInterval(timer);
   timer = setInterval(async () => {
-    if (view.userId === null) renderHome(await (await api("/api/status")).json());
+    if (view.name === "home") renderHome(await apiJson("/api/status"));
   }, 30000);
 }
 
 async function renderHome(status) {
   document.querySelector("#status tbody").innerHTML = status.map(u => `
     <tr class="user-row" data-id="${u.user_id}" data-name="${u.name}">
-      <td>${u.name}</td>
+      <td class="click"><strong>${u.name}</strong></td>
       <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span></td>
       <td>${u.hours_today} h</td>
-      <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleString("ja-JP") : "—"}</td>
+      <td><div class="tl mini">${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
+      <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleTimeString("ja-JP") : "—"}</td>
+      <td>${u.seated ? `<button class="mini danger force-out" data-id="${u.user_id}" data-name="${u.name}">強制退席</button>` : ""}</td>
     </tr>`).join("");
-  document.querySelectorAll("#status tr.user-row").forEach(tr =>
-    tr.onclick = () => showDetail(+tr.dataset.id, currentMonth()));
+  document.querySelectorAll("#status td.click").forEach(td => {
+    const tr = td.parentElement;
+    td.onclick = () => showDetail(+tr.dataset.id, tr.dataset.name, currentMonth());
+  });
+  document.querySelectorAll("#status .force-out").forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    if (!confirm(`${b.dataset.name} さんを退席にしますか？`)) return;
+    await apiJson(`/api/users/${b.dataset.id}/clock-out`, { method: "POST" });
+    renderHome(await apiJson("/api/status"));
+  });
 
-  const shots = await (await api("/api/screenshots?limit=12")).json();
-  const imgs = await Promise.all(shots.map(async s => {
+  const shots = await apiJson("/api/screenshots?limit=12");
+  const items = await Promise.all(shots.map(async s => {
     const blob = await (await api(`/api/screenshots/${s.id}/image`)).blob();
-    const u = URL.createObjectURL(blob);
-    return `<img src="${u}" data-id="${s.id}" title="${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}">`;
+    return { id: s.id, info: `${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}`,
+             url: URL.createObjectURL(blob) };
   }));
-  $("shots").innerHTML = imgs.join("");
+  $("shots").innerHTML = items.map((it, i) =>
+    `<img src="${it.url}" data-i="${i}" title="${it.info}">`).join("");
   document.querySelectorAll("#shots img").forEach(img =>
-    img.onclick = () => openModal(+img.dataset.id, img.title));
+    img.onclick = () => openModal(items.map(({ id, info }) => ({ id, info })), +img.dataset.i));
 }
 
-/* ---------- 個人ページ (日別タイムライン) ---------- */
-const currentMonth = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+/* ---------- メンバー管理 ---------- */
+async function showUsers() {
+  switchView("users");
+  const users = await apiJson("/api/users");
+  document.querySelector("#users-table tbody").innerHTML = users.map(u => `
+    <tr>
+      <td><strong>${u.name}</strong></td>
+      <td>${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
+      <td>${u.active ? "有効" : '<span class="badge gray">無効</span>'}</td>
+      <td>
+        <button class="mini ghost regen" data-id="${u.id}" data-name="${u.name}">トークン再発行</button>
+        <button class="mini ghost toggle-admin" data-id="${u.id}" data-admin="${u.is_admin}">
+          ${u.is_admin ? "管理者を解除" : "管理者にする"}</button>
+        <button class="mini ${u.active ? "danger" : ""} toggle-active" data-id="${u.id}" data-active="${u.active}">
+          ${u.active ? "無効化" : "有効化"}</button>
+      </td>
+    </tr>`).join("");
+  document.querySelectorAll(".regen").forEach(b => b.onclick = async () => {
+    if (!confirm(`${b.dataset.name} さんのトークンを再発行しますか？\n(今のトークンは使えなくなります)`)) return;
+    const r = await apiJson(`/api/users/${b.dataset.id}/token`, { method: "POST" });
+    showToken(r.name, r.token);
+  });
+  document.querySelectorAll(".toggle-admin").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/users/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_admin: b.dataset.admin !== "1" }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".toggle-active").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/users/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: b.dataset.active !== "1" }),
+    });
+    showUsers();
+  });
+}
+
+$("add-user").onclick = async () => {
+  const name = $("new-name").value.trim();
+  if (!name) { alert("名前を入力してください"); return; }
+  const r = await apiJson("/api/users", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, is_admin: $("new-admin").checked }),
+  });
+  $("new-name").value = ""; $("new-admin").checked = false;
+  showToken(r.name, r.token);
+  showUsers();
 };
 
-function shiftMonth(month, delta) {
-  const [y, m] = month.split("-").map(Number);
-  const d = new Date(y, m - 1 + delta, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+function showToken(name, token) {
+  $("token-title").textContent = `${name} さんのトークン`;
+  $("token-value").textContent = token;
+  $("token-modal").hidden = false;
 }
+$("token-copy").onclick = async () => {
+  await navigator.clipboard.writeText($("token-value").textContent);
+  $("token-copy").textContent = "コピーしました";
+  setTimeout(() => $("token-copy").textContent = "コピー", 1500);
+};
+$("token-close").onclick = () => $("token-modal").hidden = true;
 
-async function showDetail(userId, month) {
-  view = { userId, month };
-  const data = await (await api(`/api/users/${userId}/monthly?month=${month}`)).json();
-  if (view.userId !== userId || view.month !== month) return; // 連打対策
-  $("home").hidden = true;
-  $("detail").hidden = false;
-  $("nav-home").hidden = false;
-  $("detail-title").textContent = `${data.user.name} — ${month}`;
-  $("csv-monthly").onclick = () =>
-    downloadCsv(`/api/reports/monthly.csv?month=${month}`, `zatsumu_${month}.csv`);
-  $("csv-sessions").onclick = () =>
-    downloadCsv(`/api/reports/sessions.csv?month=${month}`, `zatsumu_sessions_${month}.csv`);
-  $("scale").innerHTML = [0, 3, 6, 9, 12, 15, 18, 21, 24]
-    .map(h => `<span style="left:${h / 24 * 100}%">${h}</span>`).join("");
-
-  const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
-  const [y, m] = month.split("-").map(Number);
-  const lastDay = new Date(y, m, 0).getDate();
-  const youbi = ["日", "月", "火", "水", "木", "金", "土"];
-  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
-  for (let day = 1; day <= lastDay; day++) {
-    const date = `${month}-${String(day).padStart(2, "0")}`;
-    const dow = new Date(y, m - 1, day).getDay();
-    const d = byDate[date];
-    const pct = t => {
-      const dt = new Date(t);
-      return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
-    };
-    const segs = (d?.sessions || []).map(s => {
-      const left = pct(s.start);
-      const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
-      return `<div class="seg${s.open ? " open" : ""}" style="left:${left}%;width:${width}%"
-                title="${new Date(s.start).toLocaleTimeString("ja-JP")} - ${s.open ? "勤務中" : new Date(s.end).toLocaleTimeString("ja-JP")}"></div>`;
-    }).join("");
-    const dots = (d?.screenshots || []).map(sh =>
-      `<div class="dot" data-id="${sh.id}" data-at="${sh.taken_at}" style="left:${pct(sh.taken_at)}%"
-            title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`).join("");
-    const hours = [...Array(7)].map((_, i) =>
-      `<div class="hour" style="left:${(i + 1) * 3 / 24 * 100}%"></div>`).join("");
-    const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
-    html += `<div class="tl-row">
-      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
-      <div>${d ? d.hours + " h" : ""}</div>
-      <div class="tl">${hours}${segs}${dots}</div>
-    </div>`;
-  }
-  $("timeline").innerHTML = html;
-  document.querySelectorAll("#timeline .dot").forEach(dot =>
-    dot.onclick = () => openModal(+dot.dataset.id,
-      new Date(dot.dataset.at).toLocaleString("ja-JP")));
+/* ---------- 月次レポート ---------- */
+async function showReport(month) {
+  switchView("report");
+  repMonth = month || repMonth || currentMonth();
+  const data = await apiJson(`/api/reports/monthly?month=${repMonth}`);
+  $("rep-title").textContent = repMonth;
+  document.querySelector("#report-table tbody").innerHTML = data.rows.map(r => `
+    <tr><td><strong>${r.name}</strong></td><td>${r.work_days} 日</td>
+        <td>${r.sessions}</td><td>${r.total_hours} h</td></tr>`).join("");
 }
+$("rep-prev").onclick = () => showReport(shiftMonth(repMonth, -1));
+$("rep-next").onclick = () => showReport(shiftMonth(repMonth, 1));
+$("rep-csv-monthly").onclick = () => downloadCsv(`/api/reports/monthly.csv?month=${repMonth}`, `zatsumu_${repMonth}.csv`);
+$("rep-csv-sessions").onclick = () => downloadCsv(`/api/reports/sessions.csv?month=${repMonth}`, `zatsumu_sessions_${repMonth}.csv`);
+$("rep-csv-audit").onclick = () => downloadCsv(`/api/reports/audit.csv?month=${repMonth}`, `zatsumu_audit_${repMonth}.csv`);
 
 async function downloadCsv(path, filename) {
   // 認証ヘッダが必要なため <a href> ではなく fetch でダウンロードする
@@ -280,26 +422,137 @@ async function downloadCsv(path, filename) {
   URL.revokeObjectURL(a.href);
 }
 
-/* ---------- キャプチャのモーダル表示・削除 ---------- */
-async function openModal(id, info) {
-  const blob = await (await api(`/api/screenshots/${id}/image`)).blob();
-  $("modal-img").src = URL.createObjectURL(blob);
-  $("modal-info").textContent = info;
-  $("modal").hidden = false;
-  $("modal-del").onclick = async () => {
-    if (!confirm("このキャプチャを削除しますか？（元に戻せません）")) return;
-    await api(`/api/screenshots/${id}`, { method: "DELETE" });
-    $("modal").hidden = true;
-    view.userId === null ? showHome() : showDetail(view.userId, view.month);
-  };
+/* ---------- 個人ページ (日別タイムライン) ---------- */
+async function showDetail(userId, userName, month) {
+  view = { ...view, userId, userName, month };
+  const data = await apiJson(`/api/users/${userId}/monthly?month=${month}`);
+  if (view.userId !== userId || view.month !== month) return; // 連打対策
+  switchView("detail");
+  $("detail-title").textContent = `${data.user.name} — ${month}`;
+  $("scale").innerHTML = [0, 3, 6, 9, 12, 15, 18, 21, 24]
+    .map(h => `<span style="left:${h / 24 * 100}%">${h}</span>`).join("");
+
+  const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const youbi = ["日", "月", "火", "水", "木", "金", "土"];
+  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
+  const dayShots = [];
+  for (let day = 1; day <= lastDay; day++) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const dow = new Date(y, m - 1, day).getDay();
+    const d = byDate[date];
+    const segs = (d?.sessions || []).map(s => segHtml(s, false)).join("");
+    const dots = (d?.screenshots || []).map(sh => {
+      const i = dayShots.length;
+      dayShots.push({ id: sh.id, info: `${data.user.name} ${new Date(sh.taken_at).toLocaleString("ja-JP")}` });
+      return `<div class="dot" data-i="${i}" style="left:${pct(sh.taken_at)}%"
+              title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`;
+    }).join("");
+    const hours = [...Array(7)].map((_, i) =>
+      `<div class="hour" style="left:${(i + 1) * 3 / 24 * 100}%"></div>`).join("");
+    const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
+    html += `<div class="tl-row">
+      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
+      <div>${d ? d.hours + " h" : ""}</div>
+      <div class="tl">${hours}${segs}${dots}</div>
+    </div>`;
+  }
+  $("timeline").innerHTML = html;
+  document.querySelectorAll("#timeline .dot").forEach(dot =>
+    dot.onclick = () => openModal(dayShots, +dot.dataset.i));
+  document.querySelectorAll("#timeline .seg").forEach(seg =>
+    seg.onclick = () => openSessionModal({
+      id: +seg.dataset.id, clock_in: seg.dataset.in, clock_out: seg.dataset.out,
+    }));
 }
+
+/* ---------- 打刻の修正・追加 ---------- */
+let sessEdit = null;   // {id} 編集 or null=新規追加
+function openSessionModal(sess) {
+  sessEdit = sess;
+  $("sess-error").hidden = true;
+  if (sess) {
+    $("session-title").textContent = "打刻の修正";
+    $("sess-in").value = sess.clock_in.slice(0, 16);
+    $("sess-out").value = sess.clock_out ? sess.clock_out.slice(0, 16) : "";
+    $("sess-delete").hidden = false;
+  } else {
+    $("session-title").textContent = `打刻を追加 — ${view.userName}`;
+    const d = view.month === currentMonth()
+      ? new Date().toISOString().slice(0, 10) : `${view.month}-01`;
+    $("sess-in").value = `${d}T09:00`;
+    $("sess-out").value = `${d}T18:00`;
+    $("sess-delete").hidden = true;
+  }
+  $("session-modal").hidden = false;
+}
+$("add-session").onclick = () => openSessionModal(null);
+$("sess-close").onclick = () => $("session-modal").hidden = true;
+$("sess-save").onclick = async () => {
+  const body = JSON.stringify({ clock_in: $("sess-in").value, clock_out: $("sess-out").value });
+  const opts = { headers: { "Content-Type": "application/json" }, body };
+  try {
+    if (sessEdit) await apiJson(`/api/sessions/${sessEdit.id}`, { ...opts, method: "PATCH" });
+    else await apiJson(`/api/users/${view.userId}/sessions`, { ...opts, method: "POST" });
+  } catch { return; }
+  $("session-modal").hidden = true;
+  showDetail(view.userId, view.userName, view.month);
+};
+$("sess-delete").onclick = async () => {
+  if (!confirm("この打刻を削除しますか？（修正履歴に残ります）")) return;
+  await apiJson(`/api/sessions/${sessEdit.id}`, { method: "DELETE" });
+  $("session-modal").hidden = true;
+  showDetail(view.userId, view.userName, view.month);
+};
+
+/* ---------- キャプチャのモーダル (矢印で前後移動) ---------- */
+let gallery = { list: [], i: 0 };
+async function openModal(list, index) {
+  gallery = { list, i: index };
+  await renderModalImage();
+  $("modal").hidden = false;
+}
+async function renderModalImage() {
+  const cur = gallery.list[gallery.i];
+  const blob = await (await api(`/api/screenshots/${cur.id}/image`)).blob();
+  $("modal-img").src = URL.createObjectURL(blob);
+  $("modal-info").textContent = `${cur.info}（${gallery.i + 1}/${gallery.list.length}）`;
+  $("modal-prev").disabled = gallery.i === 0;
+  $("modal-next").disabled = gallery.i === gallery.list.length - 1;
+}
+function modalMove(delta) {
+  const next = gallery.i + delta;
+  if (next < 0 || next >= gallery.list.length) return;
+  gallery.i = next;
+  renderModalImage();
+}
+$("modal-prev").onclick = () => modalMove(-1);
+$("modal-next").onclick = () => modalMove(1);
+document.addEventListener("keydown", e => {
+  if ($("modal").hidden) return;
+  if (e.key === "ArrowLeft") modalMove(-1);
+  if (e.key === "ArrowRight") modalMove(1);
+  if (e.key === "Escape") $("modal").hidden = true;
+});
+$("modal-del").onclick = async () => {
+  if (!confirm("このキャプチャを削除しますか？（元に戻せません）")) return;
+  await apiJson(`/api/screenshots/${gallery.list[gallery.i].id}`, { method: "DELETE" });
+  $("modal").hidden = true;
+  view.name === "detail"
+    ? showDetail(view.userId, view.userName, view.month)
+    : renderHome(await apiJson("/api/status"));
+};
 $("modal-close").onclick = () => $("modal").hidden = true;
 $("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = true; };
 
 /* ---------- ナビゲーション ---------- */
 $("nav-home").onclick = () => showHome();
-$("prev-month").onclick = () => showDetail(view.userId, shiftMonth(view.month, -1));
-$("next-month").onclick = () => showDetail(view.userId, shiftMonth(view.month, 1));
+$("nav-users").onclick = () => showUsers();
+$("nav-report").onclick = () => showReport();
+$("back-home").onclick = () => showHome();
+$("prev-month").onclick = () => showDetail(view.userId, view.userName, shiftMonth(view.month, -1));
+$("next-month").onclick = () => showDetail(view.userId, view.userName, shiftMonth(view.month, 1));
 $("login-btn").onclick = () => {
   localStorage.setItem(KEY, $("token-input").value.trim());
   showApp();

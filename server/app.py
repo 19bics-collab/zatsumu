@@ -13,6 +13,7 @@ from fastapi.responses import (
     RedirectResponse,
     Response,
 )
+from pydantic import BaseModel
 
 from . import db, reports, retention, tz
 
@@ -80,6 +81,44 @@ def require_admin(user=Depends(auth_user)):
     if not user["is_admin"]:
         raise HTTPException(403, "Admin only")
     return user
+
+
+def _audit(conn, admin, action, target_user_id=None, session_id=None, detail=""):
+    """管理者操作の監査ログ (修正履歴CSVの元データ)."""
+    conn.execute(
+        "INSERT INTO audit_log (admin_id, action, target_user_id, session_id,"
+        " detail, at) VALUES (?, ?, ?, ?, ?, ?)",
+        (admin["id"], action, target_user_id, session_id, detail, now_iso()),
+    )
+
+
+def _parse_ts(value: str) -> str:
+    """UI からの時刻 (datetime-local 等) を UTC ISO に正規化する.
+
+    タイムゾーンが無い場合は ZATSUMU_TZ として解釈する。
+    """
+    try:
+        d = datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(400, f"invalid datetime: {value}")
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=tz.TZ)
+    return d.astimezone(timezone.utc).isoformat()
+
+
+class UserCreate(BaseModel):
+    name: str
+    is_admin: bool = False
+
+
+class UserPatch(BaseModel):
+    active: bool | None = None
+    is_admin: bool | None = None
+
+
+class SessionBody(BaseModel):
+    clock_in: str
+    clock_out: str
 
 
 @app.get("/api/me")
@@ -167,9 +206,23 @@ def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
         (tz.utc_iso(day_start),),
     ).fetchall()
     hours: dict[int, float] = {}
+    segs: dict[int, list] = {}
+    now_local = now.astimezone(tz.TZ)
     for s in today_sessions:
         h = tz.overlap_hours(s["clock_in"], s["clock_out"], day_start, now, now)
         hours[s["user_id"]] = hours.get(s["user_id"], 0.0) + h
+        seg_start = max(tz.local(s["clock_in"]), day_start)
+        seg_end = min(
+            tz.local(s["clock_out"]) if s["clock_out"] else now_local, now_local
+        )
+        if seg_end > seg_start:
+            segs.setdefault(s["user_id"], []).append(
+                {
+                    "start": seg_start.isoformat(),
+                    "end": seg_end.isoformat(),
+                    "open": s["clock_out"] is None,
+                }
+            )
     return [
         {
             "user_id": r["id"],
@@ -178,6 +231,7 @@ def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
             "open_since": r["open_since"],
             "hours_today": round(hours.get(r["id"], 0.0), 2),
             "last_screenshot": r["last_screenshot"],
+            "today_sessions": segs.get(r["id"], []),
         }
         for r in rows
     ]
@@ -197,7 +251,7 @@ def _monthly_detail(conn, user, month: str) -> dict:
         )
 
     sessions = conn.execute(
-        "SELECT clock_in, clock_out FROM sessions WHERE user_id = ? "
+        "SELECT id, clock_in, clock_out FROM sessions WHERE user_id = ? "
         "AND clock_in < ? AND (clock_out IS NULL OR clock_out > ?) ORDER BY clock_in",
         (user_id, tz.utc_iso(end), tz.utc_iso(start)),
     ).fetchall()
@@ -215,9 +269,14 @@ def _monthly_detail(conn, user, month: str) -> dict:
             day = day_of(seg_start)
             day["sessions"].append(
                 {
+                    "id": s["id"],
                     "start": seg_start.isoformat(),
                     "end": seg_end.isoformat(),
                     "open": s["clock_out"] is None and seg_end == seg_close,
+                    # 修正モーダル用に元セッションの全体時刻も返す
+                    "clock_in": tz.local(s["clock_in"]).isoformat(),
+                    "clock_out": tz.local(s["clock_out"]).isoformat()
+                    if s["clock_out"] else None,
                 }
             )
             day["hours"] += (seg_end - seg_start).total_seconds() / 3600
@@ -239,6 +298,157 @@ def _monthly_detail(conn, user, month: str) -> dict:
         "month": month,
         "days": sorted(days.values(), key=lambda d: d["date"]),
     }
+
+
+@app.get("/api/users")
+def list_users(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, name, is_admin, active FROM users ORDER BY name"
+        )
+    ]
+
+
+@app.post("/api/users")
+def create_user_api(
+    body: UserCreate, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "名前を入力してください")
+    import sqlite3 as _sq
+
+    try:
+        user = db.create_user(conn, name, is_admin=body.is_admin)
+    except _sq.IntegrityError:
+        raise HTTPException(409, "同じ名前のメンバーが既に存在します")
+    _audit(conn, admin, "user_create", user["id"], detail=name)
+    return user  # token はこのレスポンスでのみ返す
+
+
+@app.patch("/api/users/{user_id}")
+def patch_user(
+    user_id: int,
+    body: UserPatch,
+    admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not target:
+        raise HTTPException(404, "User not found")
+    if user_id == admin["id"] and (body.active is False or body.is_admin is False):
+        raise HTTPException(400, "自分自身の権限・状態は変更できません")
+    if body.active is not None:
+        conn.execute(
+            "UPDATE users SET active = ? WHERE id = ?", (int(body.active), user_id)
+        )
+        _audit(conn, admin, "user_active", user_id, detail=str(body.active))
+    if body.is_admin is not None:
+        conn.execute(
+            "UPDATE users SET is_admin = ? WHERE id = ?",
+            (int(body.is_admin), user_id),
+        )
+        _audit(conn, admin, "user_admin", user_id, detail=str(body.is_admin))
+    row = conn.execute(
+        "SELECT id, name, is_admin, active FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    return dict(row)
+
+
+@app.post("/api/users/{user_id}/token")
+def regenerate_token(
+    user_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    import secrets
+
+    target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not target:
+        raise HTTPException(404, "User not found")
+    token = secrets.token_urlsafe(24)
+    conn.execute("UPDATE users SET token = ? WHERE id = ?", (token, user_id))
+    _audit(conn, admin, "token_regen", user_id)
+    return {"id": user_id, "name": target["name"], "token": token}
+
+
+@app.post("/api/users/{user_id}/clock-out")
+def force_clock_out(
+    user_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """退席し忘れたメンバーを管理者が強制退席させる."""
+    session = db.open_session(conn, user_id)
+    if not session:
+        raise HTTPException(409, "Not clocked in")
+    conn.execute(
+        "UPDATE sessions SET clock_out = ? WHERE id = ?", (now_iso(), session["id"])
+    )
+    _audit(conn, admin, "force_clock_out", user_id, session["id"])
+    return {"session_id": session["id"], "clock_out": now_iso()}
+
+
+@app.post("/api/users/{user_id}/sessions")
+def add_session(
+    user_id: int,
+    body: SessionBody,
+    admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """打刻の手動追加 (修正対応)."""
+    if not conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
+        raise HTTPException(404, "User not found")
+    ci, co = _parse_ts(body.clock_in), _parse_ts(body.clock_out)
+    if co <= ci:
+        raise HTTPException(400, "退席は着席より後の時刻にしてください")
+    cur = conn.execute(
+        "INSERT INTO sessions (user_id, clock_in, clock_out) VALUES (?, ?, ?)",
+        (user_id, ci, co),
+    )
+    _audit(conn, admin, "session_add", user_id, cur.lastrowid, f"{ci} - {co}")
+    return {"session_id": cur.lastrowid}
+
+
+@app.patch("/api/sessions/{session_id}")
+def edit_session(
+    session_id: int,
+    body: SessionBody,
+    admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """打刻の修正。修正内容は監査ログ(修正履歴)に残る."""
+    old = conn.execute(
+        "SELECT * FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    if not old:
+        raise HTTPException(404, "Session not found")
+    ci, co = _parse_ts(body.clock_in), _parse_ts(body.clock_out)
+    if co <= ci:
+        raise HTTPException(400, "退席は着席より後の時刻にしてください")
+    conn.execute(
+        "UPDATE sessions SET clock_in = ?, clock_out = ? WHERE id = ?",
+        (ci, co, session_id),
+    )
+    _audit(
+        conn, admin, "session_edit", old["user_id"], session_id,
+        f"{old['clock_in']} - {old['clock_out']} -> {ci} - {co}",
+    )
+    return {"session_id": session_id}
+
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(
+    session_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    old = conn.execute(
+        "SELECT * FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    if not old:
+        raise HTTPException(404, "Session not found")
+    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    _audit(
+        conn, admin, "session_delete", old["user_id"], session_id,
+        f"{old['clock_in']} - {old['clock_out']}",
+    )
+    return {"deleted": session_id}
 
 
 @app.get("/api/users/{user_id}/monthly")
@@ -384,6 +594,59 @@ def sessions_csv(
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="zatsumu_sessions_{month}.csv"'
+        },
+    )
+
+
+@app.get("/api/reports/audit.csv", response_class=PlainTextResponse)
+def audit_csv(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """修正履歴: 管理者操作 (打刻修正・強制退席・ユーザー管理) の監査ログ CSV."""
+    import csv
+    import io
+
+    month = _validate_month(month)
+    start, end = tz.month_window(month)
+    rows = conn.execute(
+        """
+        SELECT a.at, adm.name AS admin_name, a.action, tgt.name AS target_name,
+               a.session_id, a.detail
+        FROM audit_log a
+        JOIN users adm ON adm.id = a.admin_id
+        LEFT JOIN users tgt ON tgt.id = a.target_user_id
+        WHERE a.at >= ? AND a.at < ? ORDER BY a.at
+        """,
+        (tz.utc_iso(start), tz.utc_iso(end)),
+    ).fetchall()
+    labels = {
+        "user_create": "メンバー追加",
+        "user_active": "有効/無効切替",
+        "user_admin": "管理者権限変更",
+        "token_regen": "トークン再発行",
+        "force_clock_out": "強制退席",
+        "session_add": "打刻追加",
+        "session_edit": "打刻修正",
+        "session_delete": "打刻削除",
+    }
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["日時", "操作者", "操作", "対象メンバー", "詳細"])
+    for r in rows:
+        writer.writerow(
+            [
+                tz.local(r["at"]).strftime("%Y-%m-%d %H:%M:%S"),
+                r["admin_name"],
+                labels.get(r["action"], r["action"]),
+                r["target_name"] or "",
+                r["detail"] or "",
+            ]
+        )
+    return Response(
+        content="﻿" + buf.getvalue(),  # Excel 用 BOM
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="zatsumu_audit_{month}.csv"'
         },
     )
 

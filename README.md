@@ -99,10 +99,18 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
 `--blur N`（プライバシー配慮のぼかし）。
 
 **管理者側**: ブラウザで `http://<server>:8000/admin` を開き、管理者トークンで
-ログインすると、着席状況・本日の在席時間・最新キャプチャが 30 秒ごとに自動更新
-されます。メンバーの行をクリックすると**個人ページ**（日別タイムライン上に在席
-時間とキャプチャを表示、月送り、CSV ダウンロード）が開きます。キャプチャは
-クリックで拡大表示でき、削除は管理者のみ可能です。
+ログインします。
+
+- **稼働状況**: 着席状況・本日の在席時間・本日のミニタイムライン・最新キャプチャを
+  30 秒ごとに自動更新。退席し忘れたメンバーは**強制退席**ボタンで退席にできます。
+  名前をクリックすると**個人ページ**（日別タイムライン）が開きます
+- **個人ページ**: 青いバー（在席）をクリックすると**打刻の修正・削除**、
+  「＋打刻を追加」で手動追加ができます（操作はすべて修正履歴に記録）。
+  キャプチャの点はクリックで拡大表示、**← → キーまたはボタンで前後に移動**できます
+- **メンバー管理**: 画面からメンバー追加（トークンは作成時に一度だけ表示）、
+  トークン再発行、無効化/有効化、管理者権限の付与/解除
+- **月次レポート**: 全員の勤務日数・合計時間の一覧と、
+  月次集計 / 在席データ / **修正履歴**の CSV ダウンロード
 
 日付・月の集計境界は `ZATSUMU_TZ`（既定 `Asia/Tokyo`）で判定します。
 
@@ -136,10 +144,17 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/screenshots` | admin | スクショ一覧 |
 | GET | `/api/screenshots/{id}/image` | admin | 画像取得 |
 | DELETE | `/api/screenshots/{id}` | admin | キャプチャ削除 |
+| GET/POST | `/api/users` | admin | メンバー一覧 / 追加(トークン発行) |
+| PATCH | `/api/users/{id}` | admin | 有効/無効・管理者権限の変更 |
+| POST | `/api/users/{id}/token` | admin | トークン再発行 |
+| POST | `/api/users/{id}/clock-out` | admin | 強制退席 |
+| POST | `/api/users/{id}/sessions` | admin | 打刻の手動追加 |
+| PATCH/DELETE | `/api/sessions/{id}` | admin | 打刻の修正 / 削除 |
 | GET | `/api/users/{id}/monthly` | admin | 個人の月次詳細(日別タイムライン用) |
 | GET | `/api/reports/monthly` | admin | 月次レポート(JSON) |
 | GET | `/api/reports/monthly.csv` | admin | 月次レポート(CSV) |
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
+| GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
 | GET | `/healthz` | なし | 死活監視用ヘルスチェック |
 

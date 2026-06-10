@@ -102,8 +102,11 @@
 <div id="modal" hidden>
   <div class="box">
     <img id="modal-img" alt="screenshot">
-    <div><span id="modal-info" style="font-size:.85rem;color:#374151"></span>
-      <button class="small ghost" id="modal-close" style="float:right">閉じる</button></div>
+    <div style="display:flex;gap:.5rem;align-items:center">
+      <button class="small ghost" id="modal-prev">←</button>
+      <button class="small ghost" id="modal-next">→</button>
+      <span id="modal-info" style="font-size:.85rem;color:#374151;flex:1"></span>
+      <button class="small ghost" id="modal-close">閉じる</button></div>
   </div>
 </div>
 
@@ -160,9 +163,11 @@ function shiftMonth(m, delta) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+let allShots = [];
 async function loadHistory() {
   const data = await (await fetch(`/api/me/monthly?month=${month}`, { headers: headers() })).json();
   $("month-title").textContent = month;
+  allShots = [];
   const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
@@ -180,9 +185,12 @@ async function loadHistory() {
       const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
       return `<div class="seg${s.open ? " open" : ""}" style="left:${pct(s.start)}%;width:${width}%"></div>`;
     }).join("");
-    const dots = (d?.screenshots || []).map(sh =>
-      `<div class="dot" data-id="${sh.id}" data-at="${sh.taken_at}" style="left:${pct(sh.taken_at)}%"
-            title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`).join("");
+    const dots = (d?.screenshots || []).map(sh => {
+      const i = allShots.length;
+      allShots.push({ id: sh.id, info: new Date(sh.taken_at).toLocaleString("ja-JP") });
+      return `<div class="dot" data-i="${i}" style="left:${pct(sh.taken_at)}%"
+            title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`;
+    }).join("");
     const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
     html += `<div class="tl-row">
       <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
@@ -192,16 +200,37 @@ async function loadHistory() {
   }
   $("timeline").innerHTML = html;
   document.querySelectorAll("#timeline .dot").forEach(dot =>
-    dot.onclick = () => openModal(+dot.dataset.id,
-      new Date(dot.dataset.at).toLocaleString("ja-JP")));
+    dot.onclick = () => openModal(+dot.dataset.i));
 }
 
-async function openModal(id, info) {
-  const blob = await (await fetch(`/api/screenshots/${id}/image`, { headers: headers() })).blob();
-  $("modal-img").src = URL.createObjectURL(blob);
-  $("modal-info").textContent = info;
+let shotIdx = 0;
+async function openModal(i) {
+  shotIdx = i;
+  await renderModalImage();
   $("modal").hidden = false;
 }
+async function renderModalImage() {
+  const cur = allShots[shotIdx];
+  const blob = await (await fetch(`/api/screenshots/${cur.id}/image`, { headers: headers() })).blob();
+  $("modal-img").src = URL.createObjectURL(blob);
+  $("modal-info").textContent = `${cur.info}（${shotIdx + 1}/${allShots.length}）`;
+  $("modal-prev").disabled = shotIdx === 0;
+  $("modal-next").disabled = shotIdx === allShots.length - 1;
+}
+function modalMove(delta) {
+  const next = shotIdx + delta;
+  if (next < 0 || next >= allShots.length) return;
+  shotIdx = next;
+  renderModalImage();
+}
+$("modal-prev").onclick = () => modalMove(-1);
+$("modal-next").onclick = () => modalMove(1);
+document.addEventListener("keydown", e => {
+  if ($("modal").hidden) return;
+  if (e.key === "ArrowLeft") modalMove(-1);
+  if (e.key === "ArrowRight") modalMove(1);
+  if (e.key === "Escape") $("modal").hidden = true;
+});
 $("modal-close").onclick = () => $("modal").hidden = true;
 $("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = true; };
 

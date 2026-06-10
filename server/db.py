@@ -32,7 +32,25 @@ CREATE TABLE IF NOT EXISTS screenshots (
     taken_at TEXT NOT NULL,
     path TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    target_user_id INTEGER,
+    session_id INTEGER,
+    detail TEXT,
+    at TEXT NOT NULL
+);
 """
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """既存DBへの後方互換マイグレーション."""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)")]
+    if "active" not in cols:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+        )
 
 
 def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
@@ -44,6 +62,7 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
 
 
@@ -67,7 +86,9 @@ def create_user(conn: sqlite3.Connection, name: str, is_admin: bool = False) -> 
 
 
 def user_by_token(conn: sqlite3.Connection, token: str):
-    return conn.execute("SELECT * FROM users WHERE token = ?", (token,)).fetchone()
+    return conn.execute(
+        "SELECT * FROM users WHERE token = ? AND active = 1", (token,)
+    ).fetchone()
 
 
 def open_session(conn: sqlite3.Connection, user_id: int):
