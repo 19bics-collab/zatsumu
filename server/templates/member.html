@@ -5,12 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zatsumu 打刻</title>
 <style>
-  :root { --seated: #1565c0; --away: #c62828; }
+  :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
   body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7;
-         display: flex; min-height: 100vh; align-items: center; justify-content: center; }
-  .card { background: #fff; padding: 2rem; border-radius: 12px; width: 320px;
+         display: flex; flex-direction: column; min-height: 100vh;
+         align-items: center; padding: 1.2rem 0; box-sizing: border-box; gap: 1rem; }
+  .card { background: #fff; padding: 1.5rem; border-radius: 12px;
+          width: min(480px, 92vw); box-sizing: border-box;
           box-shadow: 0 1px 4px rgba(0,0,0,.12); text-align: center; }
   h1 { font-size: 1.2rem; margin: 0 0 .5rem; }
+  h2 { font-size: 1rem; margin: 0 0 .8rem; color: #374151; }
   input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
           border: 1px solid #ccc; border-radius: 6px; }
   .error { color: var(--away); font-size: .85rem; }
@@ -18,16 +21,38 @@
                  background: #2563eb; color: #fff; cursor: pointer; }
   button.ghost { background: #e5e7eb; color: #374151; }
   /* 大きな打刻ボタン */
-  #punch { width: 190px; height: 190px; border-radius: 50%; border: 0;
-           color: #fff; font-size: 1.3rem; font-weight: 700; cursor: pointer;
-           margin: 1.2rem auto; display: block; transition: transform .1s;
+  #punch { width: 180px; height: 180px; border-radius: 50%; border: 0;
+           color: #fff; font-size: 1.25rem; font-weight: 700; cursor: pointer;
+           margin: 1rem auto; display: block; transition: transform .1s;
            box-shadow: 0 4px 14px rgba(0,0,0,.25); }
   #punch:active { transform: scale(.96); }
   #punch.seated { background: var(--seated); }
   #punch.away { background: var(--away); }
   #punch small { display: block; font-size: .8rem; font-weight: 400; margin-top: .4rem; }
   .stats { color: #374151; font-size: .9rem; }
-  .foot { margin-top: 1rem; }
+  /* 勤務実績 */
+  .month-nav { display: flex; align-items: center; justify-content: center;
+               gap: .8rem; margin-bottom: .8rem; }
+  .tl-row { display: grid; grid-template-columns: 6.2rem 3.4rem 1fr;
+            align-items: center; border-bottom: 1px solid var(--line);
+            padding: .3rem 0; gap: .5rem; font-size: .78rem; text-align: left; }
+  .tl-row.head { color: #6b7280; font-size: .7rem; }
+  .tl-row .sat { color: var(--seated); } .tl-row .sun { color: var(--away); }
+  .tl { position: relative; height: 18px; background: #f3f4f6; border-radius: 3px; }
+  .tl .seg { position: absolute; top: 2px; bottom: 2px; background: var(--seated);
+             border-radius: 2px; min-width: 2px; }
+  .tl .seg.open { background: repeating-linear-gradient(45deg, var(--seated),
+                  var(--seated) 4px, #5b9bd5 4px, #5b9bd5 8px); }
+  .tl .dot { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px;
+             border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
+             cursor: pointer; z-index: 2; }
+  /* モーダル */
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+           align-items: center; justify-content: center; z-index: 10; }
+  #modal[hidden] { display: none; }
+  #modal .box { background: #fff; padding: 1rem; border-radius: 8px;
+                max-width: 92vw; max-height: 90vh; }
+  #modal img { max-width: 86vw; max-height: 70vh; display: block; margin-bottom: .8rem; }
 </style>
 </head>
 <body>
@@ -44,7 +69,26 @@
   <button id="punch"></button>
   <p class="stats">本日の在席時間: <strong id="hours"></strong></p>
   <p class="error" id="punch-error" hidden></p>
-  <div class="foot"><button class="small ghost" id="logout">ログアウト</button></div>
+</div>
+
+<div class="card" id="history" hidden>
+  <h2>勤務実績</h2>
+  <div class="month-nav">
+    <button class="small ghost" id="prev-month">◀</button>
+    <strong id="month-title"></strong>
+    <button class="small ghost" id="next-month">▶</button>
+  </div>
+  <div id="timeline"></div>
+  <p><small style="color:#777">青=在席（斜線は勤務中）、●=画面キャプチャ（タップで自分のキャプチャを確認できます）</small></p>
+  <button class="small ghost" id="logout">ログアウト</button>
+</div>
+
+<div id="modal" hidden>
+  <div class="box">
+    <img id="modal-img" alt="screenshot">
+    <div><span id="modal-info" style="font-size:.85rem;color:#374151"></span>
+      <button class="small ghost" id="modal-close" style="float:right">閉じる</button></div>
+  </div>
 </div>
 
 <script>
@@ -52,12 +96,15 @@ const KEY = "zatsumu_me_token";
 const $ = id => document.getElementById(id);
 let state = null;
 let timer = null;
+const _n = new Date();
+let month = `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, "0")}`;
 
 const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
 
 function showLogin(withError) {
   clearInterval(timer);
   $("panel").hidden = true;
+  $("history").hidden = true;
   $("login").hidden = false;
   $("login-error").hidden = !withError;
 }
@@ -68,10 +115,12 @@ async function load() {
   state = await r.json();
   $("login").hidden = true;
   $("panel").hidden = false;
+  $("history").hidden = false;
   $("hello").textContent = state.name + " さん";
   draw();
   clearInterval(timer);
   timer = setInterval(draw, 1000);
+  loadHistory();
 }
 
 function draw() {
@@ -87,6 +136,61 @@ function draw() {
     b.innerHTML = `退席中<small>タップで着席</small>`;
   }
 }
+
+/* ---------- 自分の勤務実績 ---------- */
+function shiftMonth(m, delta) {
+  const [y, mo] = m.split("-").map(Number);
+  const d = new Date(y, mo - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+async function loadHistory() {
+  const data = await (await fetch(`/api/me/monthly?month=${month}`, { headers: headers() })).json();
+  $("month-title").textContent = month;
+  const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const youbi = ["日", "月", "火", "水", "木", "金", "土"];
+  const pct = t => {
+    const dt = new Date(t);
+    return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
+  };
+  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
+  for (let day = 1; day <= lastDay; day++) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const dow = new Date(y, m - 1, day).getDay();
+    const d = byDate[date];
+    const segs = (d?.sessions || []).map(s => {
+      const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
+      return `<div class="seg${s.open ? " open" : ""}" style="left:${pct(s.start)}%;width:${width}%"></div>`;
+    }).join("");
+    const dots = (d?.screenshots || []).map(sh =>
+      `<div class="dot" data-id="${sh.id}" data-at="${sh.taken_at}" style="left:${pct(sh.taken_at)}%"
+            title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`).join("");
+    const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
+    html += `<div class="tl-row">
+      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
+      <div>${d ? d.hours + "h" : ""}</div>
+      <div class="tl">${segs}${dots}</div>
+    </div>`;
+  }
+  $("timeline").innerHTML = html;
+  document.querySelectorAll("#timeline .dot").forEach(dot =>
+    dot.onclick = () => openModal(+dot.dataset.id,
+      new Date(dot.dataset.at).toLocaleString("ja-JP")));
+}
+
+async function openModal(id, info) {
+  const blob = await (await fetch(`/api/screenshots/${id}/image`, { headers: headers() })).blob();
+  $("modal-img").src = URL.createObjectURL(blob);
+  $("modal-info").textContent = info;
+  $("modal").hidden = false;
+}
+$("modal-close").onclick = () => $("modal").hidden = true;
+$("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = true; };
+
+$("prev-month").onclick = () => { month = shiftMonth(month, -1); loadHistory(); };
+$("next-month").onclick = () => { month = shiftMonth(month, 1); loadHistory(); };
 
 $("punch").onclick = async () => {
   $("punch-error").hidden = true;

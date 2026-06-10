@@ -195,7 +195,10 @@ async function renderHome(status) {
 }
 
 /* ---------- 個人ページ (日別タイムライン) ---------- */
-const currentMonth = () => new Date().toISOString().slice(0, 7);
+const currentMonth = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
 
 function shiftMonth(month, delta) {
   const [y, m] = month.split("-").map(Number);

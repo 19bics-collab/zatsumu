@@ -44,13 +44,14 @@
 されます（デモ用途には十分）。**固定トークンのため本番では絶対に
 `ZATSUMU_DEMO=1` を使わないでください。**
 
-**ローカルで**:
+**ローカルで（一発起動）** — Python 3.10+ が入っていれば1コマンド:
 
 ```bash
-pip install -r server/requirements.txt
-ZATSUMU_DEMO=1 uvicorn server.app:app --port 8000
-# → http://localhost:8000/admin を開いて demo-admin でログイン
+python demo.py     # Windows は demo.bat をダブルクリックでも可
 ```
+
+ライブラリの自動インストール → デモデータ投入 → サーバ起動 → ブラウザで
+管理画面を自動オープン、までやってくれます。終了は Ctrl+C。
 
 ## 本番公開
 
@@ -72,9 +73,11 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000
 
 ## 使い方
 
-**メンバー側 — Webで打刻（インストール不要・スマホ対応）**:
+**メンバー側 — Webで打刻・実績確認（インストール不要・スマホ対応）**:
 `http://<server>:8000/me` を開き、自分のトークンでログイン。大きなボタンを
-タップして着席/退席を切り替えます。
+タップして着席/退席を切り替えます。同じページで**自分の勤務実績**
+（月別の日別タイムライン）と**自分のキャプチャ**を確認できます
+（キャプチャの閲覧は本人と管理者のみ、削除は管理者のみ）。
 ※ Web 打刻では PC 画面のキャプチャは記録されません（キャプチャが必要な場合は
 下記の PC 用クライアントを使用）。
 
@@ -125,6 +128,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | メソッド | パス | 認証 | 説明 |
 |---|---|---|---|
 | GET | `/api/me` | Bearer | 自分の現在状態（Web打刻ページ用） |
+| GET | `/api/me/monthly` | Bearer | 自分の月次詳細（日別タイムライン用） |
 | POST | `/api/clock-in` | Bearer | 着席（重複は 409） |
 | POST | `/api/clock-out` | Bearer | 退席 |
 | POST | `/api/screenshots` | Bearer | スクショ送信（着席中のみ） |

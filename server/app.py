@@ -183,21 +183,9 @@ def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
     ]
 
 
-@app.get("/api/users/{user_id}/monthly")
-def user_monthly(
-    user_id: int,
-    month: str | None = None,
-    _admin=Depends(require_admin),
-    conn=Depends(get_conn),
-):
-    """個人の月次詳細: 日別の在席時間・セッション・スクショ (タイムライン用)."""
-    month = _validate_month(month)
-    user = conn.execute(
-        "SELECT id, name FROM users WHERE id = ?", (user_id,)
-    ).fetchone()
-    if not user:
-        raise HTTPException(404, "User not found")
-
+def _monthly_detail(conn, user, month: str) -> dict:
+    """日別の在席時間・セッション・スクショ (タイムライン用) を組み立てる."""
+    user_id = user["id"]
     start, end = tz.month_window(month)
     now = datetime.now(timezone.utc)
     days: dict[str, dict] = {}
@@ -253,6 +241,32 @@ def user_monthly(
     }
 
 
+@app.get("/api/users/{user_id}/monthly")
+def user_monthly(
+    user_id: int,
+    month: str | None = None,
+    _admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """個人の月次詳細 (管理者用)."""
+    month = _validate_month(month)
+    user = conn.execute(
+        "SELECT id, name FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    if not user:
+        raise HTTPException(404, "User not found")
+    return _monthly_detail(conn, user, month)
+
+
+@app.get("/api/me/monthly")
+def me_monthly(
+    month: str | None = None, user=Depends(auth_user), conn=Depends(get_conn)
+):
+    """自分の月次詳細 (メンバー本人用)."""
+    month = _validate_month(month)
+    return _monthly_detail(conn, user, month)
+
+
 @app.get("/api/screenshots")
 def list_screenshots(
     user_id: int | None = None,
@@ -272,13 +286,16 @@ def list_screenshots(
 
 @app.get("/api/screenshots/{screenshot_id}/image")
 def screenshot_image(
-    screenshot_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
+    screenshot_id: int, user=Depends(auth_user), conn=Depends(get_conn)
 ):
+    """キャプチャ画像の閲覧。管理者と本人のみ (本家 F-Chair+ と同じ権限設計)."""
     row = conn.execute(
-        "SELECT path FROM screenshots WHERE id = ?", (screenshot_id,)
+        "SELECT user_id, path FROM screenshots WHERE id = ?", (screenshot_id,)
     ).fetchone()
     if not row:
         raise HTTPException(404, "Not found")
+    if not user["is_admin"] and row["user_id"] != user["id"]:
+        raise HTTPException(403, "Not allowed")
     return FileResponse(SCREENSHOT_DIR / row["path"], media_type="image/jpeg")
 
 

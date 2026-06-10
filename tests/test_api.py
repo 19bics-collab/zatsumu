@@ -114,6 +114,41 @@ def test_me_and_member_page(client, users):
     page = client.get("/me")
     assert page.status_code == 200
     assert "打刻" in page.text
+    assert "勤務実績" in page.text
+
+
+def test_me_monthly(client, users, tmp_path):
+    worker, _ = users
+    _record_session(tmp_path, worker["id"], "2026-05-01T00:00:00+00:00",
+                    "2026-05-01T03:00:00+00:00")  # JST 5/1 09:00-12:00
+    r = client.get("/api/me/monthly?month=2026-05", headers=auth(worker))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["user"]["name"] == "tanaka"
+    days = {d["date"]: d for d in data["days"]}
+    assert days["2026-05-01"]["hours"] == 3.0
+    # 認証なしは不可
+    assert client.get("/api/me/monthly?month=2026-05").status_code == 401
+
+
+def test_screenshot_owner_can_view(client, users, tmp_path):
+    worker, admin = users
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        other = db.create_user(conn, "yamada")
+
+    client.post("/api/clock-in", headers=auth(worker))
+    files = {"image": ("s.jpg", b"\xff\xd8fake", "image/jpeg")}
+    sid = client.post("/api/screenshots", headers=auth(worker),
+                      files=files).json()["screenshot_id"]
+
+    # 本人と管理者は閲覧可、他のメンバーは不可
+    assert client.get(f"/api/screenshots/{sid}/image",
+                      headers=auth(worker)).status_code == 200
+    assert client.get(f"/api/screenshots/{sid}/image",
+                      headers=auth(admin)).status_code == 200
+    assert client.get(f"/api/screenshots/{sid}/image",
+                      headers=auth(other)).status_code == 403
 
 
 def test_jpeg_helper():
