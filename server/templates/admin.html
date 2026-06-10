@@ -65,6 +65,18 @@
   .tl-scale { display: grid; grid-template-columns: 9rem 5.5rem 1fr; padding: 0 1.1rem; }
   .tl-scale div { position: relative; height: 1.1rem; font-size: .75rem; color: #9ca3af; }
   .tl-scale span { position: absolute; transform: translateX(-50%); }
+  /* 設定 */
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                   gap: 1rem; }
+  .set-card { background: #fff; padding: 1.2rem 1.5rem; border-radius: 8px;
+              box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .set-card h3 { font-size: 1rem; margin: 0 0 .8rem; color: #374151; }
+  .set-row { display: flex; align-items: center; justify-content: space-between;
+             gap: 1rem; margin: .7rem 0; font-size: .95rem; }
+  .set-row input[type=number] { width: 7rem; padding: .45rem; border: 1px solid #ccc;
+                                border-radius: 6px; font-size: 1rem; }
+  .set-row input[type=checkbox] { width: 1.3rem; height: 1.3rem; }
+  .badge.warn { background: #d97706; }
   /* メンバー管理 */
   .add-form { display: flex; gap: .6rem; align-items: center; margin: 1rem 0;
               flex-wrap: wrap; background: #fff; padding: 1rem;
@@ -114,6 +126,7 @@
   <button id="nav-home">稼働状況</button>
   <button id="nav-users">メンバー管理</button>
   <button id="nav-report">月次レポート</button>
+  <button id="nav-settings">設定</button>
   <span class="spacer"></span>
   <button id="logout">ログアウト</button>
 </header>
@@ -139,7 +152,7 @@
     <small>追加するとトークンが一度だけ表示されます。本人に安全な方法で渡してください</small>
   </div>
   <table id="users-table">
-    <thead><tr><th>メンバー</th><th>権限</th><th>状態</th><th>操作</th></tr></thead>
+    <thead><tr><th>メンバー</th><th>権限</th><th>状態</th><th>撮影</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
 </section>
@@ -150,6 +163,7 @@
     <strong id="rep-title"></strong>
     <button id="rep-next" class="ghost">翌月 ▶</button>
     <button id="rep-csv-monthly" class="ghost">月次集計CSV</button>
+    <button id="rep-csv-daily" class="ghost">日別集計CSV</button>
     <button id="rep-csv-sessions" class="ghost">在席データCSV</button>
     <button id="rep-csv-audit" class="ghost">修正履歴CSV</button>
   </div>
@@ -157,6 +171,39 @@
     <thead><tr><th>メンバー</th><th>勤務日数</th><th>セッション数</th><th>合計勤務時間</th></tr></thead>
     <tbody></tbody>
   </table>
+</section>
+
+<section id="settings-view" hidden>
+  <h2>設定 <small>（撮影設定はクライアントの次の撮影サイクルから自動反映されます）</small></h2>
+  <div class="settings-grid">
+    <div class="set-card">
+      <h3>画面キャプチャ</h3>
+      <label class="set-row"><span>撮影する（全社）</span>
+        <input type="checkbox" id="set-capture-enabled"></label>
+      <label class="set-row"><span>最短間隔（秒）</span>
+        <input type="number" id="set-min" min="30" max="86400"></label>
+      <label class="set-row"><span>最長間隔（秒）</span>
+        <input type="number" id="set-max" min="30" max="86400"></label>
+      <p><small id="freq-hint"></small></p>
+      <label class="set-row"><span>画質（10〜95）</span>
+        <input type="number" id="set-quality" min="10" max="95"></label>
+      <label class="set-row"><span>ぼかし強度（0〜20）</span>
+        <input type="number" id="set-blur" min="0" max="20"></label>
+    </div>
+    <div class="set-card">
+      <h3>保存・アラート</h3>
+      <label class="set-row"><span>キャプチャ保存日数（0=自動削除なし）</span>
+        <input type="number" id="set-retention" min="0" max="3650"></label>
+      <label class="set-row"><span>連続在席アラート（時間）</span>
+        <input type="number" id="set-alert" min="1" max="24"></label>
+      <p><small>保存日数を超えたキャプチャは6時間ごとに自動削除されます。
+      連続在席がアラート時間を超えると稼働状況に⚠が表示されます。</small></p>
+    </div>
+  </div>
+  <p style="margin-top:1rem">
+    <button id="set-save">保存</button>
+    <span id="set-msg" style="margin-left:.8rem;color:#0a7d32"></span>
+  </p>
 </section>
 
 <section id="detail" hidden>
@@ -274,20 +321,24 @@ function showLogin(withError) {
   $("login-error").hidden = !withError;
 }
 
+let appSettings = { alert_hours: 6 };
 async function showApp() {
   const r = await fetch("/api/status", { headers: headers() });
   if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
   $("login").hidden = true;
   $("app").hidden = false;
+  try { appSettings = await apiJson("/api/settings"); } catch {}
   showHome(await r.json());
 }
 
 function switchView(name) {
   view.name = name;
-  for (const id of ["home", "users-view", "report", "detail"])
+  for (const id of ["home", "users-view", "report", "settings-view", "detail"])
     $(id).hidden = true;
-  $({ home: "home", users: "users-view", report: "report", detail: "detail" }[name]).hidden = false;
-  for (const [btn, v] of [["nav-home", "home"], ["nav-users", "users"], ["nav-report", "report"]])
+  $({ home: "home", users: "users-view", report: "report",
+      settings: "settings-view", detail: "detail" }[name]).hidden = false;
+  for (const [btn, v] of [["nav-home", "home"], ["nav-users", "users"],
+                          ["nav-report", "report"], ["nav-settings", "settings"]])
     $(btn).classList.toggle("active", v === name || (v === "home" && name === "detail"));
 }
 
@@ -302,15 +353,23 @@ async function showHome(prefetched) {
 }
 
 async function renderHome(status) {
-  document.querySelector("#status tbody").innerHTML = status.map(u => `
+  document.querySelector("#status tbody").innerHTML = status.map(u => {
+    let warn = "";
+    if (u.seated && u.open_since) {
+      const h = (Date.now() - new Date(u.open_since)) / 3600e3;
+      if (h >= appSettings.alert_hours)
+        warn = ` <span class="badge warn" title="連続在席が${appSettings.alert_hours}時間を超えています">⚠ ${Math.floor(h)}h連続</span>`;
+    }
+    return `
     <tr class="user-row" data-id="${u.user_id}" data-name="${u.name}">
       <td class="click"><strong>${u.name}</strong></td>
-      <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span></td>
+      <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${warn}</td>
       <td>${u.hours_today} h</td>
       <td><div class="tl mini">${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
       <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleTimeString("ja-JP") : "—"}</td>
       <td>${u.seated ? `<button class="mini danger force-out" data-id="${u.user_id}" data-name="${u.name}">強制退席</button>` : ""}</td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
   document.querySelectorAll("#status td.click").forEach(td => {
     const tr = td.parentElement;
     td.onclick = () => showDetail(+tr.dataset.id, tr.dataset.name, currentMonth());
@@ -343,6 +402,9 @@ async function showUsers() {
       <td><strong>${u.name}</strong></td>
       <td>${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
       <td>${u.active ? "有効" : '<span class="badge gray">無効</span>'}</td>
+      <td>${u.capture_enabled ? "ON" : '<span class="badge gray">停止中</span>'}
+        <button class="mini ghost toggle-capture" data-id="${u.id}" data-cap="${u.capture_enabled}">
+          ${u.capture_enabled ? "停止" : "再開"}</button></td>
       <td>
         <button class="mini ghost regen" data-id="${u.id}" data-name="${u.name}">トークン再発行</button>
         <button class="mini ghost toggle-admin" data-id="${u.id}" data-admin="${u.is_admin}">
@@ -367,6 +429,13 @@ async function showUsers() {
     await apiJson(`/api/users/${b.dataset.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ active: b.dataset.active !== "1" }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".toggle-capture").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/users/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capture_enabled: b.dataset.cap !== "1" }),
     });
     showUsers();
   });
@@ -409,8 +478,49 @@ async function showReport(month) {
 $("rep-prev").onclick = () => showReport(shiftMonth(repMonth, -1));
 $("rep-next").onclick = () => showReport(shiftMonth(repMonth, 1));
 $("rep-csv-monthly").onclick = () => downloadCsv(`/api/reports/monthly.csv?month=${repMonth}`, `zatsumu_${repMonth}.csv`);
+$("rep-csv-daily").onclick = () => downloadCsv(`/api/reports/daily.csv?month=${repMonth}`, `zatsumu_daily_${repMonth}.csv`);
 $("rep-csv-sessions").onclick = () => downloadCsv(`/api/reports/sessions.csv?month=${repMonth}`, `zatsumu_sessions_${repMonth}.csv`);
 $("rep-csv-audit").onclick = () => downloadCsv(`/api/reports/audit.csv?month=${repMonth}`, `zatsumu_audit_${repMonth}.csv`);
+
+/* ---------- 設定 ---------- */
+function freqHint() {
+  const min = +$("set-min").value, max = +$("set-max").value;
+  if (min > 0 && max >= min)
+    $("freq-hint").textContent =
+      `平均 ${Math.round((min + max) / 2 / 60)} 分間隔 ≒ 1時間に約 ${Math.round(3600 / ((min + max) / 2))} 回撮影`;
+}
+async function showSettings() {
+  switchView("settings");
+  const s = await apiJson("/api/settings");
+  $("set-capture-enabled").checked = !!s.capture_enabled;
+  $("set-min").value = s.capture_min_interval;
+  $("set-max").value = s.capture_max_interval;
+  $("set-quality").value = s.capture_quality;
+  $("set-blur").value = s.capture_blur;
+  $("set-retention").value = s.retention_days;
+  $("set-alert").value = s.alert_hours;
+  $("set-msg").textContent = "";
+  freqHint();
+}
+$("set-min").oninput = freqHint;
+$("set-max").oninput = freqHint;
+$("set-save").onclick = async () => {
+  const body = {
+    capture_enabled: $("set-capture-enabled").checked,
+    capture_min_interval: +$("set-min").value,
+    capture_max_interval: +$("set-max").value,
+    capture_quality: +$("set-quality").value,
+    capture_blur: +$("set-blur").value,
+    retention_days: +$("set-retention").value,
+    alert_hours: +$("set-alert").value,
+  };
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  $("set-msg").textContent = "保存しました ✓";
+  setTimeout(() => $("set-msg").textContent = "", 2500);
+};
 
 async function downloadCsv(path, filename) {
   // 認証ヘッダが必要なため <a href> ではなく fetch でダウンロードする
@@ -550,6 +660,7 @@ $("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = tru
 $("nav-home").onclick = () => showHome();
 $("nav-users").onclick = () => showUsers();
 $("nav-report").onclick = () => showReport();
+$("nav-settings").onclick = () => showSettings();
 $("back-home").onclick = () => showHome();
 $("prev-month").onclick = () => showDetail(view.userId, view.userName, shiftMonth(view.month, -1));
 $("next-month").onclick = () => showDetail(view.userId, view.userName, shiftMonth(view.month, 1));

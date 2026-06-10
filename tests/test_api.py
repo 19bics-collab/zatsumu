@@ -256,6 +256,73 @@ def test_status_includes_today_sessions(client, users):
     assert by_name["boss"]["today_sessions"] == []
 
 
+def test_settings_get_patch_and_effective(client, users):
+    worker, admin = users
+    # 取得は管理者のみ
+    assert client.get("/api/settings", headers=auth(worker)).status_code == 403
+    s = client.get("/api/settings", headers=auth(admin)).json()
+    assert s["capture_min_interval"] == 300
+    assert s["retention_days"] == 30
+
+    # 変更 → 本人用の実効設定に反映される
+    r = client.patch("/api/settings", headers=auth(admin),
+                     json={"capture_min_interval": 60, "capture_max_interval": 120,
+                           "capture_quality": 80, "retention_days": 7})
+    assert r.status_code == 200
+    eff = client.get("/api/me/settings", headers=auth(worker)).json()
+    assert eff == {"min_interval": 60, "max_interval": 120, "quality": 80,
+                   "blur": 0, "capture_enabled": True}
+
+    # バリデーション: 範囲外 / min > max
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"capture_quality": 5}).status_code == 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"capture_min_interval": 500,
+                              "capture_max_interval": 100}).status_code == 400
+
+    # メンバー個人の撮影停止 → 実効設定が false に
+    client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                 json={"capture_enabled": False})
+    assert client.get("/api/me/settings",
+                      headers=auth(worker)).json()["capture_enabled"] is False
+    # 全社停止でも false (個人ONに戻しても全社がOFFなら停止)
+    client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                 json={"capture_enabled": True})
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"capture_enabled": False})
+    assert client.get("/api/me/settings",
+                      headers=auth(worker)).json()["capture_enabled"] is False
+
+    # 設定変更が修正履歴に残る
+    month = __import__("datetime").datetime.now().strftime("%Y-%m")
+    csv = client.get(f"/api/reports/audit.csv?month={month}", headers=auth(admin))
+    assert "設定変更" in csv.text
+    assert "撮影ON/OFF" in csv.text
+
+
+def test_retention_uses_settings(client, users):
+    _, admin = users
+    client.patch("/api/settings", headers=auth(admin), json={"retention_days": 1})
+    r = client.post("/api/admin/purge", headers=auth(admin))
+    assert r.json()["retention_days"] == 1
+
+
+def test_daily_csv(client, users, tmp_path):
+    worker, admin = users
+    # JST 5/1 09:00-12:00 (3h) と 5/2 09:00-10:30 (1.5h)
+    _record_session(tmp_path, worker["id"], "2026-05-01T00:00:00+00:00",
+                    "2026-05-01T03:00:00+00:00")
+    _record_session(tmp_path, worker["id"], "2026-05-02T00:00:00+00:00",
+                    "2026-05-02T01:30:00+00:00")
+    r = client.get("/api/reports/daily.csv?month=2026-05", headers=auth(admin))
+    assert r.status_code == 200
+    lines = r.text.strip().splitlines()
+    assert lines[0].lstrip("﻿") == "日付,tanaka"
+    assert "2026-05-01,3.0" in r.text
+    assert "2026-05-02,1.5" in r.text
+    assert len([l for l in lines if l.startswith("2026-05")]) == 31  # 全日分
+
+
 def test_screenshot_owner_can_view(client, users, tmp_path):
     worker, admin = users
     from server import db

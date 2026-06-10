@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from . import capture
+from . import capture, settings
 
 
 def main() -> None:
@@ -50,12 +50,22 @@ def main() -> None:
     signal.signal(signal.SIGINT, clock_out)
     signal.signal(signal.SIGTERM, clock_out)
 
+    fallback = {"min_interval": args.min_interval,
+                "max_interval": args.max_interval,
+                "quality": 60, "blur": args.blur}
     while True:
-        wait = random.randint(args.min_interval, args.max_interval)
+        # 管理画面の設定を毎サイクル反映する (間隔・画質・ぼかし・撮影ON/OFF)
+        conf = settings.fetch(client, fallback)
+        if not conf["capture_enabled"]:
+            print("撮影は管理者により停止中です (打刻のみ記録)")
+            time.sleep(300)
+            continue
+        wait = random.randint(conf["min_interval"], conf["max_interval"])
         print(f"次のスクリーンショットまで {wait} 秒")
         time.sleep(wait)
         try:
-            jpeg = capture.to_jpeg(capture.grab_screen(), blur=args.blur)
+            jpeg = capture.to_jpeg(capture.grab_screen(),
+                                   blur=conf["blur"], quality=conf["quality"])
             client.post("/api/screenshots",
                         files={"image": ("shot.jpg", jpeg, "image/jpeg")})
             print("スクリーンショットを送信しました")

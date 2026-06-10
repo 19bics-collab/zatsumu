@@ -19,9 +19,7 @@ from . import db, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
-# スクショ保存日数。0 以下で自動削除を無効化。
-RETENTION_DAYS = int(os.environ.get("ZATSUMU_RETENTION_DAYS", "30"))
-# 自動削除の実行間隔(時間)。
+# 自動削除の実行間隔(時間)。保存日数自体は設定(retention_days)で管理する
 PURGE_INTERVAL_HOURS = float(os.environ.get("ZATSUMU_PURGE_INTERVAL_HOURS", "6"))
 
 
@@ -29,7 +27,9 @@ async def _purge_loop() -> None:
     while True:
         conn = db.connect(DATA_DIR / "zatsumu.db")
         try:
-            retention.purge_old_screenshots(conn, SCREENSHOT_DIR, RETENTION_DAYS)
+            days = db.get_settings(conn)["retention_days"]
+            if days > 0:
+                retention.purge_old_screenshots(conn, SCREENSHOT_DIR, days)
         finally:
             conn.close()
         await asyncio.sleep(PURGE_INTERVAL_HOURS * 3600)
@@ -46,10 +46,9 @@ async def lifespan(app: FastAPI):
                 print("デモデータを投入しました (管理者トークン: demo-admin)")
         finally:
             conn.close()
-    task = asyncio.create_task(_purge_loop()) if RETENTION_DAYS > 0 else None
+    task = asyncio.create_task(_purge_loop())
     yield
-    if task:
-        task.cancel()
+    task.cancel()
 
 
 app = FastAPI(title="zatsumu", version="0.1.0", lifespan=lifespan)
@@ -114,6 +113,17 @@ class UserCreate(BaseModel):
 class UserPatch(BaseModel):
     active: bool | None = None
     is_admin: bool | None = None
+    capture_enabled: bool | None = None
+
+
+class SettingsPatch(BaseModel):
+    capture_min_interval: int | None = None
+    capture_max_interval: int | None = None
+    capture_quality: int | None = None
+    capture_blur: int | None = None
+    capture_enabled: bool | None = None
+    retention_days: int | None = None
+    alert_hours: int | None = None
 
 
 class SessionBody(BaseModel):
@@ -300,12 +310,63 @@ def _monthly_detail(conn, user, month: str) -> dict:
     }
 
 
+@app.get("/api/settings")
+def get_settings_api(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    return db.get_settings(conn)
+
+
+@app.patch("/api/settings")
+def patch_settings(
+    body: SettingsPatch, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """全社設定の変更。クライアントは次の撮影サイクルから自動反映する."""
+    limits = {  # (最小, 最大)
+        "capture_min_interval": (30, 86400),
+        "capture_max_interval": (30, 86400),
+        "capture_quality": (10, 95),
+        "capture_blur": (0, 20),
+        "capture_enabled": (0, 1),
+        "retention_days": (0, 3650),
+        "alert_hours": (1, 24),
+    }
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not changes:
+        raise HTTPException(400, "変更内容がありません")
+    merged = {**db.get_settings(conn), **{k: int(v) for k, v in changes.items()}}
+    for key, val in changes.items():
+        lo, hi = limits[key]
+        if not lo <= int(val) <= hi:
+            raise HTTPException(400, f"{key} は {lo}〜{hi} の範囲で指定してください")
+    if merged["capture_min_interval"] > merged["capture_max_interval"]:
+        raise HTTPException(400, "最短間隔は最長間隔以下にしてください")
+    for key, val in changes.items():
+        db.set_setting(conn, key, int(val))
+    _audit(conn, admin, "settings_update",
+           detail=", ".join(f"{k}={int(v)}" for k, v in changes.items()))
+    return db.get_settings(conn)
+
+
+@app.get("/api/me/settings")
+def me_settings(user=Depends(auth_user), conn=Depends(get_conn)):
+    """クライアント用の実効設定 (全社設定 + 本人の撮影ON/OFF)."""
+    s = db.get_settings(conn)
+    return {
+        "min_interval": s["capture_min_interval"],
+        "max_interval": s["capture_max_interval"],
+        "quality": s["capture_quality"],
+        "blur": s["capture_blur"],
+        "capture_enabled": bool(s["capture_enabled"])
+        and bool(user["capture_enabled"]),
+    }
+
+
 @app.get("/api/users")
 def list_users(_admin=Depends(require_admin), conn=Depends(get_conn)):
     return [
         dict(r)
         for r in conn.execute(
-            "SELECT id, name, is_admin, active FROM users ORDER BY name"
+            "SELECT id, name, is_admin, active, capture_enabled "
+            "FROM users ORDER BY name"
         )
     ]
 
@@ -350,8 +411,16 @@ def patch_user(
             (int(body.is_admin), user_id),
         )
         _audit(conn, admin, "user_admin", user_id, detail=str(body.is_admin))
+    if body.capture_enabled is not None:
+        conn.execute(
+            "UPDATE users SET capture_enabled = ? WHERE id = ?",
+            (int(body.capture_enabled), user_id),
+        )
+        _audit(conn, admin, "user_capture", user_id,
+               detail=str(body.capture_enabled))
     row = conn.execute(
-        "SELECT id, name, is_admin, active FROM users WHERE id = ?", (user_id,)
+        "SELECT id, name, is_admin, active, capture_enabled FROM users "
+        "WHERE id = ?", (user_id,)
     ).fetchone()
     return dict(row)
 
@@ -598,6 +667,21 @@ def sessions_csv(
     )
 
 
+@app.get("/api/reports/daily.csv", response_class=PlainTextResponse)
+def daily_csv_api(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """日別集計: 日付×メンバーの在席時間マトリクス."""
+    month = _validate_month(month)
+    return Response(
+        content="﻿" + reports.daily_csv(conn, month),  # Excel 用 BOM
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="zatsumu_daily_{month}.csv"'
+        },
+    )
+
+
 @app.get("/api/reports/audit.csv", response_class=PlainTextResponse)
 def audit_csv(
     month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
@@ -623,11 +707,13 @@ def audit_csv(
         "user_create": "メンバー追加",
         "user_active": "有効/無効切替",
         "user_admin": "管理者権限変更",
+        "user_capture": "撮影ON/OFF",
         "token_regen": "トークン再発行",
         "force_clock_out": "強制退席",
         "session_add": "打刻追加",
         "session_edit": "打刻修正",
         "session_delete": "打刻削除",
+        "settings_update": "設定変更",
     }
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -653,5 +739,6 @@ def audit_csv(
 
 @app.post("/api/admin/purge")
 def purge_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
-    deleted = retention.purge_old_screenshots(conn, SCREENSHOT_DIR, RETENTION_DAYS)
-    return {"deleted": deleted, "retention_days": RETENTION_DAYS}
+    days = db.get_settings(conn)["retention_days"]
+    deleted = retention.purge_old_screenshots(conn, SCREENSHOT_DIR, days)
+    return {"deleted": deleted, "retention_days": days}

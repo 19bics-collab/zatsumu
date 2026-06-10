@@ -41,7 +41,40 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail TEXT,
     at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+# 全社設定の既定値。settings テーブルの値で上書きされる
+SETTING_DEFAULTS = {
+    "capture_min_interval": 300,   # 撮影の最短間隔(秒)
+    "capture_max_interval": 900,   # 撮影の最長間隔(秒) 平均10分=約6回/時
+    "capture_quality": 60,         # JPEG品質 (10-95)
+    "capture_blur": 0,             # ぼかし強度 (0=なし)
+    "capture_enabled": 1,          # 全社の撮影ON/OFF
+    # キャプチャ保存日数 (0=自動削除なし)。環境変数は初期値として機能する
+    "retention_days": int(os.environ.get("ZATSUMU_RETENTION_DAYS", "30")),
+    "alert_hours": 6,              # 連続在席アラート(時間)
+}
+
+
+def get_settings(conn: sqlite3.Connection) -> dict:
+    stored = {
+        r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")
+    }
+    return {
+        k: int(stored.get(k, default)) for k, default in SETTING_DEFAULTS.items()
+    }
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: int) -> None:
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, str(int(value))),
+    )
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -50,6 +83,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "active" not in cols:
         conn.execute(
             "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+        )
+    if "capture_enabled" not in cols:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN capture_enabled INTEGER NOT NULL DEFAULT 1"
         )
 
 

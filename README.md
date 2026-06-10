@@ -110,7 +110,13 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
 - **メンバー管理**: 画面からメンバー追加（トークンは作成時に一度だけ表示）、
   トークン再発行、無効化/有効化、管理者権限の付与/解除
 - **月次レポート**: 全員の勤務日数・合計時間の一覧と、
-  月次集計 / 在席データ / **修正履歴**の CSV ダウンロード
+  月次集計 / **日別集計** / 在席データ / **修正履歴**の CSV ダウンロード
+- **設定**: 撮影間隔（頻度）・画質・ぼかし・全社撮影 ON/OFF・キャプチャ保存日数・
+  連続在席アラート閾値を画面から変更。クライアントは次の撮影サイクルから自動反映
+- **連続在席アラート**: 閾値（既定 6 時間）を超えて着席し続けているメンバーに
+  稼働状況で ⚠ を表示（働き過ぎ・退席忘れの検知）
+- メンバー管理から**個人ごとの撮影停止/再開**も可能（本家 F-Chair+ と同様、
+  会社全体・ユーザー個人の両方で頻度変更・停止ができる設計）
 
 日付・月の集計境界は `ZATSUMU_TZ`（既定 `Asia/Tokyo`）で判定します。
 
@@ -137,6 +143,8 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 |---|---|---|---|
 | GET | `/api/me` | Bearer | 自分の現在状態（Web打刻ページ用） |
 | GET | `/api/me/monthly` | Bearer | 自分の月次詳細（日別タイムライン用） |
+| GET | `/api/me/settings` | Bearer | クライアント用の実効撮影設定 |
+| GET/PATCH | `/api/settings` | admin | 全社設定の取得 / 変更 |
 | POST | `/api/clock-in` | Bearer | 着席（重複は 409） |
 | POST | `/api/clock-out` | Bearer | 退席 |
 | POST | `/api/screenshots` | Bearer | スクショ送信（着席中のみ） |
@@ -153,6 +161,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/users/{id}/monthly` | admin | 個人の月次詳細(日別タイムライン用) |
 | GET | `/api/reports/monthly` | admin | 月次レポート(JSON) |
 | GET | `/api/reports/monthly.csv` | admin | 月次レポート(CSV) |
+| GET | `/api/reports/daily.csv` | admin | 日別集計(日付×メンバーの在席時間) |
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |

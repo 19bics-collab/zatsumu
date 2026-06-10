@@ -16,7 +16,7 @@ import time
 import httpx
 from PIL import Image, ImageDraw
 
-from . import capture
+from . import capture, settings
 
 
 class Agent:
@@ -55,12 +55,21 @@ class Agent:
         self.client.post("/api/clock-out")
 
     def _capture_loop(self):
+        fallback = {"min_interval": self.min_iv, "max_interval": self.max_iv,
+                    "quality": 60, "blur": self.blur}
         while not self._stop.is_set():
-            wait = random.randint(self.min_iv, self.max_iv)
+            # 管理画面の設定を毎サイクル反映する
+            conf = settings.fetch(self.client, fallback)
+            if not conf["capture_enabled"]:
+                if self._stop.wait(300):
+                    break
+                continue
+            wait = random.randint(conf["min_interval"], conf["max_interval"])
             if self._stop.wait(wait):
                 break
             try:
-                jpeg = capture.to_jpeg(capture.grab_screen(), blur=self.blur)
+                jpeg = capture.to_jpeg(capture.grab_screen(),
+                                       blur=conf["blur"], quality=conf["quality"])
                 self.client.post(
                     "/api/screenshots",
                     files={"image": ("shot.jpg", jpeg, "image/jpeg")},

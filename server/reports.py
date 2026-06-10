@@ -2,7 +2,7 @@
 import csv
 import io
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import tz
 
@@ -59,6 +59,49 @@ def report_to_csv(report: list[dict], month: str) -> str:
         writer.writerow(
             [month, r["name"], r["work_days"], r["sessions"], r["total_hours"]]
         )
+    return buf.getvalue()
+
+
+def daily_csv(conn: sqlite3.Connection, month: str) -> str:
+    """日別集計: 日付 × メンバーの在席時間マトリクス (給与計算用)."""
+    start, end = tz.month_window(month)
+    now = datetime.now(timezone.utc)
+    users = conn.execute(
+        "SELECT id, name FROM users WHERE is_admin = 0 OR id IN "
+        "(SELECT DISTINCT user_id FROM sessions) ORDER BY name"
+    ).fetchall()
+    # hours[date][user_id] = 在席時間
+    hours: dict[str, dict[int, float]] = {}
+    for s in _month_sessions(conn, month):
+        seg_start = max(tz.local(s["clock_in"]), start)
+        seg_close = min(
+            tz.local(s["clock_out"]) if s["clock_out"] else now.astimezone(tz.TZ),
+            end,
+        )
+        while seg_start < seg_close:
+            day_end = (seg_start + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            seg_end = min(day_end, seg_close)
+            key = seg_start.date().isoformat()
+            day = hours.setdefault(key, {})
+            day[s["user_id"]] = (
+                day.get(s["user_id"], 0.0)
+                + (seg_end - seg_start).total_seconds() / 3600
+            )
+            seg_start = seg_end
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["日付"] + [u["name"] for u in users])
+    day = start
+    while day < end:
+        key = day.date().isoformat()
+        row = hours.get(key, {})
+        writer.writerow(
+            [key] + [round(row[u["id"]], 2) if u["id"] in row else "" for u in users]
+        )
+        day += timedelta(days=1)
     return buf.getvalue()
 
 
