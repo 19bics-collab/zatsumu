@@ -46,6 +46,22 @@
   .tl .dot { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px;
              border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
              cursor: pointer; z-index: 2; }
+  /* PC では大きく表示する */
+  @media (min-width: 720px) {
+    body { font-size: 17px; }
+    .card { width: min(760px, 92vw); padding: 2rem; }
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.25rem; }
+    #punch { width: 230px; height: 230px; font-size: 1.6rem; }
+    #punch small { font-size: 1rem; }
+    .stats { font-size: 1.1rem; }
+    .month-nav strong { font-size: 1.3rem; }
+    .tl-row { grid-template-columns: 8rem 4.5rem 1fr; font-size: .95rem;
+              padding: .45rem 0; }
+    .tl-row.head { font-size: .8rem; }
+    .tl { height: 26px; }
+    .tl .dot { width: 11px; height: 11px; margin: -5.5px; }
+  }
   /* モーダル */
   #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
            align-items: center; justify-content: center; z-index: 10; }

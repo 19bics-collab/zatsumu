@@ -6,31 +6,39 @@
 <title>zatsumu 管理画面</title>
 <style>
   :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
+  html { font-size: 17px; }
   body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7; }
-  header { background: #1f2937; color: #fff; padding: .7rem 1.2rem;
+  header { background: #1f2937; color: #fff; padding: .9rem 1.5rem;
            display: flex; align-items: center; gap: 1rem; }
-  header h1 { font-size: 1.05rem; margin: 0; flex: 1; }
+  header h1 { font-size: 1.3rem; margin: 0; flex: 1; }
   header button { background: #4b5563; }
-  main { padding: 1.2rem; max-width: 1100px; margin: 0 auto; }
-  h2 { font-size: 1rem; color: #374151; }
+  main { padding: 1.5rem; max-width: 1320px; margin: 0 auto; }
+  h2 { font-size: 1.15rem; color: #374151; }
   table { border-collapse: collapse; background: #fff; width: 100%;
-          box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-  th, td { padding: .55rem .9rem; border-bottom: 1px solid var(--line); text-align: left; }
-  th { background: #f9fafb; font-size: .8rem; color: #6b7280; }
-  .badge { display: inline-block; padding: .15rem .6rem; border-radius: 99px;
-           color: #fff; font-size: .8rem; font-weight: 600; }
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); font-size: 1rem; }
+  th, td { padding: .75rem 1.1rem; border-bottom: 1px solid var(--line); text-align: left; }
+  th { background: #f9fafb; font-size: .85rem; color: #6b7280; }
+  .badge { display: inline-block; padding: .25rem .8rem; border-radius: 99px;
+           color: #fff; font-size: .9rem; font-weight: 600; }
   .badge.seated { background: var(--seated); }
   .badge.away { background: var(--away); }
   tr.user-row { cursor: pointer; }
   tr.user-row:hover { background: #f0f6ff; }
-  #shots img { height: 100px; margin: 4px; border: 1px solid #ddd;
+  #shots img { height: 150px; margin: 5px; border: 1px solid #ddd;
                border-radius: 4px; cursor: pointer; }
   small { color: #777; }
-  button { padding: .45rem 1rem; border: 0; border-radius: 5px;
-           background: #2563eb; color: #fff; cursor: pointer; font-size: .85rem; }
+  button { padding: .55rem 1.2rem; border: 0; border-radius: 6px;
+           background: #2563eb; color: #fff; cursor: pointer; font-size: .95rem; }
   button.danger { background: var(--away); }
   button.ghost { background: #e5e7eb; color: #374151; }
-  a.csv { font-size: .8rem; margin-left: .8rem; }
+  a.csv { font-size: .85rem; margin-left: .8rem; }
+  /* スマホでは少し詰める */
+  @media (max-width: 720px) {
+    html { font-size: 15px; }
+    main { padding: .8rem; }
+    th, td { padding: .55rem .7rem; }
+    #shots img { height: 100px; }
+  }
   /* ログイン */
   #login { max-width: 360px; margin: 12vh auto; background: #fff; padding: 2rem;
            border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
@@ -38,26 +46,30 @@
                  border: 1px solid #ccc; border-radius: 4px; }
   .error { color: var(--away); }
   /* 個人ページ: 日別タイムライン */
-  .month-nav { display: flex; align-items: center; gap: .8rem; margin: .8rem 0; }
-  .month-nav strong { font-size: 1.1rem; }
+  .month-nav { display: flex; align-items: center; gap: .8rem; margin: 1rem 0; }
+  .month-nav strong { font-size: 1.35rem; }
   .tl-wrap { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-  .tl-row { display: grid; grid-template-columns: 7.5rem 4.5rem 1fr;
+  .tl-row { display: grid; grid-template-columns: 9rem 5.5rem 1fr;
             align-items: center; border-bottom: 1px solid var(--line);
-            padding: .35rem .9rem; gap: .6rem; font-size: .85rem; }
-  .tl-row.head { color: #6b7280; font-size: .75rem; background: #f9fafb; }
+            padding: .45rem 1.1rem; gap: .7rem; font-size: .95rem; }
+  .tl-row.head { color: #6b7280; font-size: .8rem; background: #f9fafb; }
   .tl-row .sat { color: var(--seated); } .tl-row .sun { color: var(--away); }
-  .tl { position: relative; height: 22px; background: #f3f4f6; border-radius: 3px; }
-  .tl .seg { position: absolute; top: 3px; bottom: 3px; background: var(--seated);
+  .tl { position: relative; height: 28px; background: #f3f4f6; border-radius: 4px; }
+  .tl .seg { position: absolute; top: 4px; bottom: 4px; background: var(--seated);
              border-radius: 2px; min-width: 2px; }
   .tl .seg.open { background: repeating-linear-gradient(45deg, var(--seated),
                   var(--seated) 4px, #5b9bd5 4px, #5b9bd5 8px); }
-  .tl .dot { position: absolute; top: 50%; width: 9px; height: 9px; margin: -5px;
+  .tl .dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px;
              border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
              cursor: pointer; z-index: 2; }
   .tl .hour { position: absolute; top: 0; bottom: 0; width: 1px; background: #e5e7eb; }
-  .tl-scale { display: grid; grid-template-columns: 7.5rem 4.5rem 1fr; padding: 0 .9rem; }
-  .tl-scale div { position: relative; height: 1rem; font-size: .65rem; color: #9ca3af; }
+  .tl-scale { display: grid; grid-template-columns: 9rem 5.5rem 1fr; padding: 0 1.1rem; }
+  .tl-scale div { position: relative; height: 1.1rem; font-size: .75rem; color: #9ca3af; }
   .tl-scale span { position: absolute; transform: translateX(-50%); }
+  @media (max-width: 720px) {
+    .tl-row, .tl-scale { grid-template-columns: 6.5rem 3.5rem 1fr; padding: .3rem .6rem; }
+    .tl-row { font-size: .8rem; }
+  }
   /* モーダル */
   #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
            align-items: center; justify-content: center; z-index: 10; }
