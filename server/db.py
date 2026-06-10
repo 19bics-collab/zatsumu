@@ -1,10 +1,17 @@
 """SQLite helpers for the zatsumu server."""
+import os
 import sqlite3
 import secrets
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "zatsumu.db"
+DB_PATH = (
+    Path(
+        os.environ.get("ZATSUMU_DATA_DIR")
+        or Path(__file__).resolve().parent.parent / "data"
+    )
+    / "zatsumu.db"
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (

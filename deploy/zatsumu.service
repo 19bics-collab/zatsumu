@@ -1,0 +1,23 @@
+# Docker を使わない Linux サーバ用の systemd ユニット。
+# /etc/systemd/system/zatsumu.service に配置して
+#   sudo systemctl enable --now zatsumu
+# 前提: /opt/zatsumu にリポジトリ、/opt/zatsumu/.venv に仮想環境 (DEPLOY.md 参照)
+
+[Unit]
+Description=zatsumu attendance server
+After=network.target
+
+[Service]
+User=zatsumu
+Group=zatsumu
+WorkingDirectory=/opt/zatsumu
+Environment=ZATSUMU_DATA_DIR=/var/lib/zatsumu
+# 外部には Caddy/nginx 経由で公開するため localhost のみで待ち受ける
+ExecStart=/opt/zatsumu/.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/zatsumu
+
+[Install]
+WantedBy=multi-user.target

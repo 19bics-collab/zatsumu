@@ -1,0 +1,17 @@
+# 既存サーバが使えない場合のクラウド代替 (Render)。
+# https://render.com でこのリポジトリを連携すると自動で読み込まれる。
+# 注意: DB とスクショを保持するためディスクが必要 = 有料プラン (Starter)。
+
+services:
+  - type: web
+    name: zatsumu
+    runtime: docker
+    plan: starter
+    healthCheckPath: /healthz
+    disk:
+      name: zatsumu-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: ZATSUMU_RETENTION_DAYS
+        value: "30"

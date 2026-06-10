@@ -20,8 +20,14 @@
 | `client/` | 常駐エージェント（`agent.py` CLI 版 / `tray.py` トレイ常駐版） |
 | `manage.py` | ユーザー作成・スクショ削除 CLI |
 | `tests/` | API テスト |
+| `deploy/` + `Dockerfile` 等 | 本番デプロイ用（**[DEPLOY.md](DEPLOY.md)** 参照） |
 
-## セットアップ
+## 本番公開
+
+社内サーバやクラウドへのデプロイ手順は **[DEPLOY.md](DEPLOY.md)** にまとめてあります
+（Docker / systemd / Windows / Render の各パターンと、HTTPS・DNS の設定方法）。
+
+## ローカルでのセットアップ（開発・お試し用）
 
 ```bash
 pip install -r requirements.txt
@@ -49,8 +55,9 @@ python -m client.tray --server http://<server>:8000 --token <自分のトーク�
 オプション: `--min-interval/--max-interval`（スクショ間隔・秒）、
 `--blur N`（プライバシー配慮のぼかし）。
 
-**管理者側**: ブラウザで `http://<server>:8000/admin?token=<管理者トークン>` を開くと、
-着席状況・本日の勤務時間・最新スクリーンショットが 30 秒ごとに自動更新されます。
+**管理者側**: ブラウザで `http://<server>:8000/admin` を開き、管理者トークンで
+ログインすると、着席状況・本日の勤務時間・最新スクリーンショットが 30 秒ごとに
+自動更新されます。
 
 **月次レポート / CSV 出力**:
 
@@ -82,6 +89,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/monthly` | admin | 月次レポート(JSON) |
 | GET | `/api/reports/monthly.csv` | admin | 月次レポート(CSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
+| GET | `/healthz` | なし | 死活監視用ヘルスチェック |
 
 ## テスト
 

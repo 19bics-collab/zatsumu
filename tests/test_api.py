@@ -74,11 +74,17 @@ def test_status_admin_only(client, users):
 
 
 def test_admin_page(client, users):
-    worker, admin = users
-    assert client.get(f"/admin?token={worker['token']}").status_code == 403
-    r = client.get(f"/admin?token={admin['token']}")
+    # 静的ページなので誰でも取得可能。データは API 側の Bearer 認証で守る
+    r = client.get("/admin")
     assert r.status_code == 200
     assert "稼働状況" in r.text
+    assert "ログイン" in r.text
+
+
+def test_healthz(client):
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
 
 
 def test_jpeg_helper():

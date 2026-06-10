@@ -1,8 +1,3 @@
-fastapi
-uvicorn[standard]
-httpx
-python-multipart
-mss
-pillow
-pystray
+-r server/requirements.txt
+-r client/requirements.txt
 pytest

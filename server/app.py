@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 
 from . import db, reports, retention
@@ -167,15 +167,17 @@ def screenshot_image(
     return FileResponse(SCREENSHOT_DIR / row["path"], media_type="image/jpeg")
 
 
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(token: str = Query(...), conn=Depends(get_conn)):
-    user = db.user_by_token(conn, token)
-    if not user or not user["is_admin"]:
-        raise HTTPException(403, "Admin only")
-    template = (Path(__file__).parent / "templates" / "admin.html").read_text(
+def admin_page():
+    # 静的ページ。データは全て Bearer 認証付き API 経由で取得する。
+    return (Path(__file__).parent / "templates" / "admin.html").read_text(
         encoding="utf-8"
     )
-    return template.replace("{{TOKEN}}", token)
 
 
 def _validate_month(month: str | None) -> str:

@@ -1,0 +1,28 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      ZATSUMU_RETENTION_DAYS: ${ZATSUMU_RETENTION_DAYS:-30}
+    volumes:
+      - app-data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # .env で ZATSUMU_DOMAIN=kintai.example.com を設定すると
+      # Let's Encrypt の証明書を自動取得して HTTPS で公開する
+      ZATSUMU_DOMAIN: ${ZATSUMU_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  app-data:
+  caddy-data:
+  caddy-config:

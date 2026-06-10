@@ -2,6 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zatsumu 管理画面</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 2rem; background: #f7f7f8; }
@@ -12,9 +13,27 @@
   .away { color: #999; }
   #shots img { height: 110px; margin: 4px; border: 1px solid #ddd; border-radius: 4px; }
   small { color: #777; }
+  #login { max-width: 360px; margin: 10vh auto; background: #fff; padding: 2rem;
+           border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  #login input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
+                 border: 1px solid #ccc; border-radius: 4px; }
+  button { padding: .5rem 1.2rem; border: 0; border-radius: 4px;
+           background: #2563eb; color: #fff; cursor: pointer; }
+  .error { color: #c0392b; }
+  #logout { background: #999; float: right; }
 </style>
 </head>
 <body>
+<div id="login" hidden>
+  <h1>🪑 zatsumu</h1>
+  <p>管理者トークンを入力してください</p>
+  <input type="password" id="token-input" placeholder="管理者トークン" autocomplete="current-password">
+  <button id="login-btn">ログイン</button>
+  <p id="login-error" class="error" hidden>トークンが正しくないか、管理者権限がありません</p>
+</div>
+
+<div id="dashboard" hidden>
+<button id="logout">ログアウト</button>
 <h1>🪑 zatsumu — 稼働状況</h1>
 <table id="status">
   <thead><tr><th>メンバー</th><th>状態</th><th>本日の勤務時間</th><th>最終スクショ</th></tr></thead>
@@ -23,12 +42,48 @@
 <h2>最近のスクリーンショット</h2>
 <div id="shots"></div>
 <small>30秒ごとに自動更新</small>
+</div>
+
 <script>
-const token = "{{TOKEN}}";
-const headers = { Authorization: "Bearer " + token };
+const KEY = "zatsumu_token";
+let timer = null;
+
+// 旧形式 (?token=...) からの移行: 保存してURLから即座に消す
+const url = new URL(location);
+if (url.searchParams.get("token")) {
+  localStorage.setItem(KEY, url.searchParams.get("token"));
+  url.searchParams.delete("token");
+  history.replaceState(null, "", url);
+}
+
+function headers() {
+  return { Authorization: "Bearer " + localStorage.getItem(KEY) };
+}
+
+function showLogin(withError) {
+  clearInterval(timer);
+  document.getElementById("dashboard").hidden = true;
+  document.getElementById("login").hidden = false;
+  document.getElementById("login-error").hidden = !withError;
+}
+
+async function showDashboard() {
+  const r = await fetch("/api/status", { headers: headers() });
+  if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
+  document.getElementById("login").hidden = true;
+  document.getElementById("dashboard").hidden = false;
+  await render(await r.json());
+  clearInterval(timer);
+  timer = setInterval(refresh, 30000);
+}
 
 async function refresh() {
-  const status = await (await fetch("/api/status", { headers })).json();
+  const r = await fetch("/api/status", { headers: headers() });
+  if (!r.ok) { showLogin(true); return; }   // トークン失効時はログインへ戻す
+  await render(await r.json());
+}
+
+async function render(status) {
   document.querySelector("#status tbody").innerHTML = status.map(u => `
     <tr>
       <td>${u.name}</td>
@@ -37,15 +92,28 @@ async function refresh() {
       <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleString("ja-JP") : "—"}</td>
     </tr>`).join("");
 
-  const shots = await (await fetch("/api/screenshots?limit=12", { headers })).json();
+  const shots = await (await fetch("/api/screenshots?limit=12", { headers: headers() })).json();
   const imgs = await Promise.all(shots.map(async s => {
-    const blob = await (await fetch(`/api/screenshots/${s.id}/image`, { headers })).blob();
+    const blob = await (await fetch(`/api/screenshots/${s.id}/image`, { headers: headers() })).blob();
     return `<img src="${URL.createObjectURL(blob)}" title="${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}">`;
   }));
   document.getElementById("shots").innerHTML = imgs.join("");
 }
-refresh();
-setInterval(refresh, 30000);
+
+document.getElementById("login-btn").onclick = () => {
+  localStorage.setItem(KEY, document.getElementById("token-input").value.trim());
+  showDashboard();
+};
+document.getElementById("token-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") document.getElementById("login-btn").click();
+});
+document.getElementById("logout").onclick = () => {
+  localStorage.removeItem(KEY);
+  document.getElementById("token-input").value = "";
+  showLogin(false);
+};
+
+if (localStorage.getItem(KEY)) showDashboard(); else showLogin(false);
 </script>
 </body>
 </html>
