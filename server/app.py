@@ -130,11 +130,30 @@ class SettingsPatch(BaseModel):
     timezone: str | None = None
     work_start: str | None = None
     work_end: str | None = None
+    work_categories: str | None = None
 
 
 class SessionBody(BaseModel):
     clock_in: str
     clock_out: str
+    category: str | None = None
+
+
+class ClockInBody(BaseModel):
+    category: str | None = None
+
+
+class CategoryBody(BaseModel):
+    category: str
+
+
+def _resolve_category(conn, requested: str | None) -> str:
+    cats = db.work_categories(conn)
+    if requested is None:
+        return cats[0]
+    if requested not in cats:
+        raise HTTPException(400, f"不明な作業区分です: {requested}")
+    return requested
 
 
 @app.get("/api/me")
@@ -156,19 +175,48 @@ def me(user=Depends(auth_user), conn=Depends(get_conn)):
         "name": user["name"],
         "seated": open_s is not None,
         "open_since": open_s["clock_in"] if open_s else None,
+        "category": open_s["category"] if open_s else None,
         "hours_today": round(hours, 2),
+        "categories": db.work_categories(conn),
     }
 
 
 @app.post("/api/clock-in")
-def clock_in(user=Depends(auth_user), conn=Depends(get_conn)):
+def clock_in(
+    body: ClockInBody | None = None,
+    user=Depends(auth_user),
+    conn=Depends(get_conn),
+):
     if db.open_session(conn, user["id"]):
         raise HTTPException(409, "Already clocked in")
+    category = _resolve_category(conn, body.category if body else None)
     cur = conn.execute(
-        "INSERT INTO sessions (user_id, clock_in) VALUES (?, ?)",
-        (user["id"], now_iso()),
+        "INSERT INTO sessions (user_id, clock_in, category) VALUES (?, ?, ?)",
+        (user["id"], now_iso(), category),
     )
-    return {"session_id": cur.lastrowid, "clock_in": now_iso()}
+    return {"session_id": cur.lastrowid, "clock_in": now_iso(), "category": category}
+
+
+@app.post("/api/switch-category")
+def switch_category(
+    body: CategoryBody, user=Depends(auth_user), conn=Depends(get_conn)
+):
+    """在席中に作業区分を切り替える (現在の在席を区切り、新区分で続行)."""
+    session = db.open_session(conn, user["id"])
+    if not session:
+        raise HTTPException(409, "Not clocked in")
+    category = _resolve_category(conn, body.category)
+    if session["category"] == category:
+        return {"category": category}  # 同じ区分なら何もしない
+    ts = now_iso()
+    conn.execute(
+        "UPDATE sessions SET clock_out = ? WHERE id = ?", (ts, session["id"])
+    )
+    cur = conn.execute(
+        "INSERT INTO sessions (user_id, clock_in, category) VALUES (?, ?, ?)",
+        (user["id"], ts, category),
+    )
+    return {"session_id": cur.lastrowid, "category": category}
 
 
 @app.post("/api/clock-out")
@@ -208,6 +256,7 @@ def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
         """
         SELECT u.id, u.name,
                s.clock_in AS open_since,
+               s.category AS open_category,
                (SELECT taken_at FROM screenshots WHERE user_id = u.id
                 ORDER BY taken_at DESC LIMIT 1) AS last_screenshot
         FROM users u
@@ -217,7 +266,7 @@ def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
     ).fetchall()
     # 「今日」(ローカルTZ) に重なるセッションだけ取り、Python側で時間を合算
     today_sessions = conn.execute(
-        "SELECT user_id, clock_in, clock_out FROM sessions "
+        "SELECT user_id, clock_in, clock_out, category FROM sessions "
         "WHERE clock_out IS NULL OR clock_out > ?",
         (tz.utc_iso(day_start),),
     ).fetchall()
@@ -237,6 +286,7 @@ def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
                     "start": seg_start.isoformat(),
                     "end": seg_end.isoformat(),
                     "open": s["clock_out"] is None,
+                    "category": s["category"],
                 }
             )
     return [
@@ -245,6 +295,7 @@ def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
             "name": r["name"],
             "seated": r["open_since"] is not None,
             "open_since": r["open_since"],
+            "category": r["open_category"],
             "hours_today": round(hours.get(r["id"], 0.0), 2),
             "last_screenshot": r["last_screenshot"],
             "today_sessions": segs.get(r["id"], []),
@@ -266,8 +317,9 @@ def _monthly_detail(conn, user, month: str) -> dict:
             key, {"date": key, "hours": 0.0, "sessions": [], "screenshots": []}
         )
 
+    by_category: dict[str, float] = {}
     sessions = conn.execute(
-        "SELECT id, clock_in, clock_out FROM sessions WHERE user_id = ? "
+        "SELECT id, clock_in, clock_out, category FROM sessions WHERE user_id = ? "
         "AND clock_in < ? AND (clock_out IS NULL OR clock_out > ?) ORDER BY clock_in",
         (user_id, tz.utc_iso(end), tz.utc_iso(start)),
     ).fetchall()
@@ -289,13 +341,17 @@ def _monthly_detail(conn, user, month: str) -> dict:
                     "start": seg_start.isoformat(),
                     "end": seg_end.isoformat(),
                     "open": s["clock_out"] is None and seg_end == seg_close,
+                    "category": s["category"],
                     # 修正モーダル用に元セッションの全体時刻も返す
                     "clock_in": tz.local(s["clock_in"]).isoformat(),
                     "clock_out": tz.local(s["clock_out"]).isoformat()
                     if s["clock_out"] else None,
                 }
             )
-            day["hours"] += (seg_end - seg_start).total_seconds() / 3600
+            seg_hours = (seg_end - seg_start).total_seconds() / 3600
+            day["hours"] += seg_hours
+            cat = s["category"] or "未分類"
+            by_category[cat] = by_category.get(cat, 0.0) + seg_hours
             seg_start = seg_end
 
     shots = conn.execute(
@@ -313,6 +369,8 @@ def _monthly_detail(conn, user, month: str) -> dict:
         "user": {"id": user["id"], "name": user["name"]},
         "month": month,
         "days": sorted(days.values(), key=lambda d: d["date"]),
+        "categories": db.work_categories(conn),
+        "by_category": {k: round(v, 2) for k, v in by_category.items()},
     }
 
 
@@ -357,6 +415,11 @@ def patch_settings(
                 raise HTTPException(400, f"{key} は HH:MM 形式で入力してください")
     if "timezone" in changes and not tz.set_tz(changes["timezone"]):
         raise HTTPException(400, "不明なタイムゾーンです (例: Asia/Tokyo)")
+    if "work_categories" in changes:
+        cats = [c.strip() for c in changes["work_categories"].split(",") if c.strip()]
+        if not cats:
+            raise HTTPException(400, "作業区分を1つ以上入力してください")
+        changes["work_categories"] = ",".join(cats)
 
     for key, val in changes.items():
         db.set_setting(conn, key, val)
@@ -498,9 +561,11 @@ def add_session(
     ci, co = _parse_ts(body.clock_in), _parse_ts(body.clock_out)
     if co <= ci:
         raise HTTPException(400, "退席は着席より後の時刻にしてください")
+    category = _resolve_category(conn, body.category)
     cur = conn.execute(
-        "INSERT INTO sessions (user_id, clock_in, clock_out) VALUES (?, ?, ?)",
-        (user_id, ci, co),
+        "INSERT INTO sessions (user_id, clock_in, clock_out, category) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, ci, co, category),
     )
     _audit(conn, admin, "session_add", user_id, cur.lastrowid, f"{ci} - {co}")
     return {"session_id": cur.lastrowid}
@@ -522,9 +587,11 @@ def edit_session(
     ci, co = _parse_ts(body.clock_in), _parse_ts(body.clock_out)
     if co <= ci:
         raise HTTPException(400, "退席は着席より後の時刻にしてください")
+    category = old["category"] if body.category is None \
+        else _resolve_category(conn, body.category)
     conn.execute(
-        "UPDATE sessions SET clock_in = ?, clock_out = ? WHERE id = ?",
-        (ci, co, session_id),
+        "UPDATE sessions SET clock_in = ?, clock_out = ?, category = ? WHERE id = ?",
+        (ci, co, category, session_id),
     )
     _audit(
         conn, admin, "session_edit", old["user_id"], session_id,

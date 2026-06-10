@@ -195,7 +195,10 @@
         <input type="time" id="set-work-start"></label>
       <label class="set-row"><span>勤務時間帯（終了）</span>
         <input type="time" id="set-work-end"></label>
-      <p><small>会社名はヘッダーに表示され、勤務時間帯はタイムラインに目安の帯として表示されます。</small></p>
+      <label class="set-row"><span>作業区分（カンマ区切り）</span>
+        <input type="text" id="set-categories" placeholder="事務作業,現場"></label>
+      <p><small>会社名はヘッダーに表示され、勤務時間帯はタイムラインに目安の帯として
+      表示されます。作業区分はメンバーが在席中に切り替えられ、先頭が既定です。</small></p>
     </div>
     <div class="set-card">
       <h3>画面キャプチャ</h3>
@@ -235,6 +238,7 @@
     <button id="next-month" class="ghost">翌月 ▶</button>
     <button id="add-session" class="ghost">＋打刻を追加</button>
   </div>
+  <div id="cat-legend" style="margin:.4rem 0"></div>
   <div class="tl-scale"><div></div><div></div><div id="scale"></div></div>
   <div class="tl-wrap" id="timeline"></div>
   <p><small>青=在席（斜線は勤務中・クリックで修正）、●=画面キャプチャ（クリックで表示、←→で前後に移動）。</small></p>
@@ -272,6 +276,7 @@
 <div id="session-modal" class="modal" hidden>
   <div class="box" style="min-width: 300px">
     <h2 id="session-title"></h2>
+    <label>作業区分</label><select id="sess-cat" style="padding:.5rem;border:1px solid #ccc;border-radius:6px;font-size:1rem;width:100%"></select>
     <label>着席</label><input type="datetime-local" id="sess-in" step="60">
     <label>退席</label><input type="datetime-local" id="sess-out" step="60">
     <p class="error" id="sess-error" hidden></p>
@@ -328,11 +333,24 @@ const pct = t => {
   const dt = new Date(t);
   return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
 };
+// 作業区分の色 (設定順のインデックスでパレットから割り当て)
+const CAT_PALETTE = ["#1565c0", "#2e7d32", "#6a1b9a", "#00838f", "#ad1457", "#5d4037"];
+const catColor = cat => {
+  const cats = appSettings.work_categories
+    ? appSettings.work_categories.split(",").map(c => c.trim()) : [];
+  const i = cats.indexOf(cat);
+  return i < 0 ? "#9ca3af" : CAT_PALETTE[i % CAT_PALETTE.length];
+};
 const segHtml = (s, mini) => {
   const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
-  const title = `${new Date(s.start).toLocaleTimeString("ja-JP")} - ${s.open ? "勤務中" : new Date(s.end).toLocaleTimeString("ja-JP")}`;
-  const data = mini ? "" : ` data-id="${s.id}" data-in="${s.clock_in}" data-out="${s.clock_out ?? ""}"`;
-  return `<div class="seg${s.open ? " open" : ""}"${data} style="left:${pct(s.start)}%;width:${width}%" title="${title}"></div>`;
+  const time = `${new Date(s.start).toLocaleTimeString("ja-JP")} - ${s.open ? "勤務中" : new Date(s.end).toLocaleTimeString("ja-JP")}`;
+  const title = (s.category ? s.category + " " : "") + time;
+  const data = mini ? "" : ` data-id="${s.id}" data-in="${s.clock_in}" data-out="${s.clock_out ?? ""}" data-cat="${s.category ?? ""}"`;
+  const col = catColor(s.category);
+  const bg = s.open
+    ? `repeating-linear-gradient(45deg,${col},${col} 4px,#ffffffaa 4px,#ffffffaa 8px)`
+    : col;
+  return `<div class="seg"${data} style="left:${pct(s.start)}%;width:${width}%;background:${bg}" title="${title}"></div>`;
 };
 const hhmmPct = hhmm => {
   const [h, mn] = (hhmm || "").split(":").map(Number);
@@ -400,7 +418,7 @@ async function renderHome(status) {
     return `
     <tr class="user-row" data-id="${u.user_id}" data-name="${u.name}">
       <td class="click"><strong>${u.name}</strong></td>
-      <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${warn}</td>
+      <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${u.seated && u.category ? ` <span class="badge" style="background:${catColor(u.category)}">${u.category}</span>` : ""}${warn}</td>
       <td>${u.hours_today} h</td>
       <td><div class="tl mini">${workBandHtml()}${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
       <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleTimeString("ja-JP") : "—"}</td>
@@ -533,6 +551,7 @@ async function showSettings() {
   $("set-tz").value = s.timezone;
   $("set-work-start").value = s.work_start;
   $("set-work-end").value = s.work_end;
+  $("set-categories").value = s.work_categories;
   $("set-capture-enabled").checked = !!s.capture_enabled;
   $("set-min").value = s.capture_min_interval;
   $("set-max").value = s.capture_max_interval;
@@ -551,6 +570,7 @@ $("set-save").onclick = async () => {
     timezone: $("set-tz").value,
     work_start: $("set-work-start").value,
     work_end: $("set-work-end").value,
+    work_categories: $("set-categories").value,
     capture_enabled: $("set-capture-enabled").checked,
     capture_min_interval: +$("set-min").value,
     capture_max_interval: +$("set-max").value,
@@ -584,9 +604,17 @@ async function showDetail(userId, userName, month) {
   const data = await apiJson(`/api/users/${userId}/monthly?month=${month}`);
   if (view.userId !== userId || view.month !== month) return; // 連打対策
   switchView("detail");
+  detailCats = data.categories || [];
   $("detail-title").textContent = `${data.user.name} — ${month}`;
   $("scale").innerHTML = [0, 3, 6, 9, 12, 15, 18, 21, 24]
     .map(h => `<span style="left:${h / 24 * 100}%">${h}</span>`).join("");
+  // 区分の凡例 + 区分別の合計時間
+  const bc = data.by_category || {};
+  $("cat-legend").innerHTML = (data.categories || []).map(c =>
+    `<span style="font-size:.85rem;margin-right:1rem;white-space:nowrap">
+       <span style="display:inline-block;width:.9rem;height:.9rem;border-radius:2px;
+       background:${catColor(c)};vertical-align:middle"></span>
+       ${c} ${bc[c] ? "<strong>" + bc[c] + "h</strong>" : ""}</span>`).join("");
 
   const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
   const [y, m] = month.split("-").map(Number);
@@ -621,21 +649,26 @@ async function showDetail(userId, userName, month) {
   document.querySelectorAll("#timeline .seg").forEach(seg =>
     seg.onclick = () => openSessionModal({
       id: +seg.dataset.id, clock_in: seg.dataset.in, clock_out: seg.dataset.out,
+      category: seg.dataset.cat,
     }));
 }
 
 /* ---------- 打刻の修正・追加 ---------- */
+let detailCats = [];
 let sessEdit = null;   // {id} 編集 or null=新規追加
 function openSessionModal(sess) {
   sessEdit = sess;
   $("sess-error").hidden = true;
+  $("sess-cat").innerHTML = detailCats.map(c => `<option>${c}</option>`).join("");
   if (sess) {
     $("session-title").textContent = "打刻の修正";
+    $("sess-cat").value = sess.category || detailCats[0] || "";
     $("sess-in").value = sess.clock_in.slice(0, 16);
     $("sess-out").value = sess.clock_out ? sess.clock_out.slice(0, 16) : "";
     $("sess-delete").hidden = false;
   } else {
     $("session-title").textContent = `打刻を追加 — ${view.userName}`;
+    $("sess-cat").value = detailCats[0] || "";
     const d = view.month === currentMonth()
       ? new Date().toISOString().slice(0, 10) : `${view.month}-01`;
     $("sess-in").value = `${d}T09:00`;
@@ -647,7 +680,8 @@ function openSessionModal(sess) {
 $("add-session").onclick = () => openSessionModal(null);
 $("sess-close").onclick = () => $("session-modal").hidden = true;
 $("sess-save").onclick = async () => {
-  const body = JSON.stringify({ clock_in: $("sess-in").value, clock_out: $("sess-out").value });
+  const body = JSON.stringify({ clock_in: $("sess-in").value,
+    clock_out: $("sess-out").value, category: $("sess-cat").value });
   const opts = { headers: { "Content-Type": "application/json" }, body };
   try {
     if (sessEdit) await apiJson(`/api/sessions/${sessEdit.id}`, { ...opts, method: "PATCH" });

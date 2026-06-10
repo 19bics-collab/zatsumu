@@ -63,6 +63,14 @@
     .tl { height: 26px; }
     .tl .dot { width: 11px; height: 11px; margin: -5.5px; }
   }
+  /* 作業区分の切り替え */
+  #cat-switch { margin-top: .8rem; }
+  .cat-label { font-size: .85rem; color: #6b7280; margin: .3rem 0; }
+  #cat-buttons { display: flex; gap: .5rem; justify-content: center; flex-wrap: wrap; }
+  .cat-btn { padding: .5rem 1rem; border: 2px solid #ccc; border-radius: 8px;
+             background: #fff; color: #374151; cursor: pointer; font-size: .95rem;
+             font-weight: 600; }
+  .cat-btn.current { color: #fff; border-color: transparent; }
   /* モーダル */
   #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
            align-items: center; justify-content: center; z-index: 10; }
@@ -85,6 +93,10 @@
   <h1 id="hello"></h1>
   <button id="punch"></button>
   <p class="stats">本日の在席時間: <strong id="hours"></strong></p>
+  <div id="cat-switch">
+    <p class="cat-label" id="cat-label"></p>
+    <div id="cat-buttons"></div>
+  </div>
   <p class="error" id="punch-error" hidden></p>
 </div>
 
@@ -95,8 +107,9 @@
     <strong id="month-title"></strong>
     <button class="small ghost" id="next-month">▶</button>
   </div>
+  <div id="cat-legend" style="margin:.4rem 0"></div>
   <div id="timeline"></div>
-  <p><small style="color:#777">青=在席（斜線は勤務中）、●=画面キャプチャ（タップで自分のキャプチャを確認できます）</small></p>
+  <p><small style="color:#777">色=作業区分（斜線は勤務中）、●=画面キャプチャ（タップで自分のキャプチャを確認できます）</small></p>
   <button class="small ghost" id="logout">ログアウト</button>
 </div>
 
@@ -139,6 +152,14 @@ const workBandHtml = () => {
   return `<div class="work" style="left:${a}%;width:${b - a}%"></div>`;
 };
 
+// 作業区分の色 (設定順のインデックスでパレットから割り当て)
+const CAT_PALETTE = ["#1565c0", "#2e7d32", "#6a1b9a", "#00838f", "#ad1457", "#5d4037"];
+const catColor = cat => {
+  const cats = (state && state.categories) || [];
+  const i = cats.indexOf(cat);
+  return i < 0 ? "#9ca3af" : CAT_PALETTE[i % CAT_PALETTE.length];
+};
+
 function showLogin(withError) {
   clearInterval(timer);
   $("panel").hidden = true;
@@ -167,12 +188,50 @@ function draw() {
   if (state.seated) {
     const mins = Math.max(Math.floor((Date.now() - new Date(state.open_since)) / 60000), 0);
     b.className = "seated";
-    b.innerHTML = `着席中 ${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, "0")}
+    b.style.background = catColor(state.category);
+    b.innerHTML = `着席中（${state.category || ""}）<br>${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, "0")}
                    <small>タップで退席</small>`;
   } else {
     b.className = "away";
+    b.style.background = "";
     b.innerHTML = `退席中<small>タップで着席</small>`;
   }
+  drawCategoryButtons();
+}
+
+// 作業区分ボタン: 退席中は「タップで着席」、着席中は区分の切替
+function drawCategoryButtons() {
+  const cats = state.categories || [];
+  if (cats.length <= 1) { $("cat-switch").hidden = true; return; }
+  $("cat-switch").hidden = false;
+  $("cat-label").textContent = state.seated
+    ? "作業区分を切り替え" : "区分を選んで着席";
+  $("cat-buttons").innerHTML = cats.map(c => {
+    const cur = state.seated && state.category === c;
+    return `<button class="cat-btn${cur ? " current" : ""}" data-cat="${c}"
+            style="${cur ? `background:${catColor(c)}` : ""}">${c}</button>`;
+  }).join("");
+  document.querySelectorAll(".cat-btn").forEach(btn => btn.onclick = async () => {
+    const cat = btn.dataset.cat;
+    if (!state.seated) {
+      await punch("/api/clock-in", { category: cat });
+    } else if (state.category !== cat) {
+      await punch("/api/switch-category", { category: cat });
+    }
+  });
+}
+
+async function punch(path, body) {
+  $("punch-error").hidden = true;
+  const r = await fetch(path, {
+    method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!r.ok && r.status !== 409) {
+    $("punch-error").textContent = "操作に失敗しました。通信環境を確認してください";
+    $("punch-error").hidden = false;
+  }
+  await load();
 }
 
 /* ---------- 自分の勤務実績 ---------- */
@@ -203,7 +262,12 @@ async function loadHistory() {
     const d = byDate[date];
     const segs = (d?.sessions || []).map(s => {
       const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
-      return `<div class="seg${s.open ? " open" : ""}" style="left:${pct(s.start)}%;width:${width}%"></div>`;
+      const col = catColor(s.category);
+      const bg = s.open
+        ? `repeating-linear-gradient(45deg,${col},${col} 4px,#ffffffaa 4px,#ffffffaa 8px)`
+        : col;
+      return `<div class="seg" title="${s.category || ""}${s.open ? "（勤務中）" : ""}"
+              style="left:${pct(s.start)}%;width:${width}%;background:${bg}"></div>`;
     }).join("");
     const dots = (d?.screenshots || []).map(sh => {
       const i = allShots.length;
@@ -219,6 +283,13 @@ async function loadHistory() {
     </div>`;
   }
   $("timeline").innerHTML = html;
+  // 区分の凡例 + 区分別の合計
+  const bc = data.by_category || {};
+  $("cat-legend").innerHTML = (data.categories || []).map(c =>
+    `<span style="font-size:.78rem;margin-right:.8rem;white-space:nowrap">
+       <span style="display:inline-block;width:.8rem;height:.8rem;border-radius:2px;
+       background:${catColor(c)};vertical-align:middle"></span>
+       ${c} ${bc[c] ? bc[c] + "h" : ""}</span>`).join("");
   document.querySelectorAll("#timeline .dot").forEach(dot =>
     dot.onclick = () => openModal(+dot.dataset.i));
 }
@@ -257,16 +328,9 @@ $("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = tru
 $("prev-month").onclick = () => { month = shiftMonth(month, -1); loadHistory(); };
 $("next-month").onclick = () => { month = shiftMonth(month, 1); loadHistory(); };
 
-$("punch").onclick = async () => {
-  $("punch-error").hidden = true;
-  const path = state.seated ? "/api/clock-out" : "/api/clock-in";
-  const r = await fetch(path, { method: "POST", headers: headers() });
-  if (!r.ok && r.status !== 409) {   // 409=状態ずれは load() で同期される
-    $("punch-error").textContent = "打刻に失敗しました。通信環境を確認してください";
-    $("punch-error").hidden = false;
-  }
-  await load();
-};
+$("punch").onclick = () =>
+  // 着席中はタップで退席、退席中は既定区分で着席
+  punch(state.seated ? "/api/clock-out" : "/api/clock-in", {});
 
 $("login-btn").onclick = () => {
   localStorage.setItem(KEY, $("token-input").value.trim());

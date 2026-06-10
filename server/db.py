@@ -65,6 +65,7 @@ STR_SETTINGS = {
     "timezone": os.environ.get("ZATSUMU_TZ", "Asia/Tokyo"),  # 集計の基準TZ
     "work_start": "09:00",         # 勤務時間帯の目安(開始) タイムライン表示用
     "work_end": "18:00",           # 勤務時間帯の目安(終了)
+    "work_categories": "事務作業,現場",  # 作業区分(カンマ区切り、先頭が既定)
 }
 
 # 後方互換: 旧名を参照しているコード向け
@@ -103,6 +104,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE users ADD COLUMN capture_enabled INTEGER NOT NULL DEFAULT 1"
         )
+    scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
+    if "category" not in scols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN category TEXT")
+
+
+def work_categories(conn: sqlite3.Connection) -> list[str]:
+    """設定された作業区分のリスト (先頭が既定)."""
+    raw = get_settings(conn)["work_categories"]
+    cats = [c.strip() for c in raw.split(",") if c.strip()]
+    return cats or ["事務作業"]
 
 
 def connect(db_path: Path | str | None = None) -> sqlite3.Connection:

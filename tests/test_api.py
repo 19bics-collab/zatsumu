@@ -559,3 +559,74 @@ def test_sessions_csv(client, users, tmp_path):
     assert r.status_code == 200
     assert "tanaka" in r.text
     assert "2026-05-01 09:00:00" in r.text  # JST 表示
+    assert "作業区分" in r.text
+
+
+def test_clock_in_with_category_and_switch(client, users):
+    worker, admin = users
+    # 既定の区分一覧
+    me = client.get("/api/me", headers=auth(worker)).json()
+    assert me["categories"] == ["事務作業", "現場"]
+    assert me["category"] is None
+
+    # 区分を指定して着席
+    r = client.post("/api/clock-in", headers=auth(worker),
+                    json={"category": "現場"})
+    assert r.status_code == 200
+    assert r.json()["category"] == "現場"
+    assert client.get("/api/me", headers=auth(worker)).json()["category"] == "現場"
+
+    # 不明な区分は拒否
+    assert client.post("/api/switch-category", headers=auth(worker),
+                       json={"category": "宇宙"}).status_code == 400
+
+    # 区分の切り替え: 現在の在席を区切って新区分で続行
+    r = client.post("/api/switch-category", headers=auth(worker),
+                    json={"category": "事務作業"})
+    assert r.status_code == 200
+    me = client.get("/api/me", headers=auth(worker)).json()
+    assert me["seated"] is True
+    assert me["category"] == "事務作業"
+
+    # 同じ区分への切り替えは何もしない
+    sid_before = client.post("/api/switch-category", headers=auth(worker),
+                             json={"category": "事務作業"})
+    assert sid_before.status_code == 200
+    assert "session_id" not in sid_before.json()
+
+    # 着席していないと切替不可
+    client.post("/api/clock-out", headers=auth(worker))
+    assert client.post("/api/switch-category", headers=auth(worker),
+                       json={"category": "現場"}).status_code == 409
+
+    # status に区分が出る
+    client.post("/api/clock-in", headers=auth(worker), json={"category": "現場"})
+    st = {u["name"]: u for u in client.get("/api/status",
+                                           headers=auth(admin)).json()}
+    assert st["tanaka"]["category"] == "現場"
+    assert st["tanaka"]["today_sessions"][-1]["category"] == "現場"
+
+
+def test_categories_setting_and_breakdown(client, users):
+    worker, admin = users
+    # 区分の設定変更
+    r = client.patch("/api/settings", headers=auth(admin),
+                     json={"work_categories": " 開発 , 会議 ,営業 "})
+    assert r.status_code == 200
+    assert r.json()["work_categories"] == "開発,会議,営業"
+    assert client.get("/api/me", headers=auth(worker)).json()["categories"] == \
+        ["開発", "会議", "営業"]
+    # 空は拒否
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"work_categories": " , "}).status_code == 400
+
+    # 区分別の合計が個人月次に出る (管理者が打刻を区分つきで追加)
+    client.post(f"/api/users/{worker['id']}/sessions", headers=auth(admin),
+                json={"clock_in": "2026-05-01T09:00", "clock_out": "2026-05-01T12:00",
+                      "category": "開発"})
+    client.post(f"/api/users/{worker['id']}/sessions", headers=auth(admin),
+                json={"clock_in": "2026-05-01T13:00", "clock_out": "2026-05-01T14:00",
+                      "category": "会議"})
+    detail = client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
+                        headers=auth(admin)).json()
+    assert detail["by_category"] == {"開発": 3.0, "会議": 1.0}

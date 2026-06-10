@@ -12,7 +12,7 @@ def _month_sessions(conn: sqlite3.Connection, month: str):
     start, end = tz.month_window(month)
     return conn.execute(
         """
-        SELECT user_id, clock_in, clock_out FROM sessions
+        SELECT user_id, clock_in, clock_out, category FROM sessions
         WHERE clock_in < ? AND (clock_out IS NULL OR clock_out > ?)
         ORDER BY clock_in
         """,
@@ -111,11 +111,12 @@ def sessions_csv(conn: sqlite3.Connection, month: str) -> str:
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM users")}
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["メンバー", "着席", "退席"])
+    writer.writerow(["メンバー", "作業区分", "着席", "退席"])
     for s in _month_sessions(conn, month):
         writer.writerow(
             [
                 names.get(s["user_id"], s["user_id"]),
+                s["category"] or "",
                 tz.local(s["clock_in"]).strftime("%Y-%m-%d %H:%M:%S"),
                 tz.local(s["clock_out"]).strftime("%Y-%m-%d %H:%M:%S")
                 if s["clock_out"]

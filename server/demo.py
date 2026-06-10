@@ -56,13 +56,15 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
     now = now_utc.astimezone(tz.TZ)
     accents = {"田中": "#45475a", "鈴木": "#3a5a40", "佐藤": "#5a3a50"}
 
-    def add_session(name, start, end):
+    def add_session(name, start, end, category="事務作業"):
         conn.execute(
-            "INSERT INTO sessions (user_id, clock_in, clock_out) VALUES (?, ?, ?)",
+            "INSERT INTO sessions (user_id, clock_in, clock_out, category) "
+            "VALUES (?, ?, ?, ?)",
             (
                 ids[name],
                 start.astimezone(timezone.utc).isoformat(),
                 end.astimezone(timezone.utc).isoformat() if end else None,
+                category,
             ),
         )
 
@@ -79,22 +81,23 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
                 (ids[name], t.astimezone(timezone.utc).isoformat(), rel),
             )
 
-    # 田中: 過去5日間 9:00-12:00 / 13:00-18:00 勤務
+    # 田中: 過去5日間 午前=事務作業 / 午後=現場
     for back in range(5, 0, -1):
         day = (now - timedelta(days=back)).date()
         add_session("田中", datetime.combine(day, dtime(9, 0), tz.TZ),
-                    datetime.combine(day, dtime(12, 0), tz.TZ))
+                    datetime.combine(day, dtime(12, 0), tz.TZ), "事務作業")
         add_session("田中", datetime.combine(day, dtime(13, 0), tz.TZ),
-                    datetime.combine(day, dtime(18, 0), tz.TZ))
+                    datetime.combine(day, dtime(18, 0), tz.TZ), "現場")
 
-    # 今日: 田中=2時間前から着席中 / 鈴木=45分前から着席中 / 佐藤=午前のみ勤務
+    # 今日: 田中=2時間前から着席中(現場) / 鈴木=45分前から着席中(事務作業)
     t_start = now - timedelta(hours=2)
-    add_session("田中", t_start, None)
+    add_session("田中", t_start, None, "現場")
     add_shots("田中", t_start, now)
     s_start = now - timedelta(minutes=45)
-    add_session("鈴木", s_start, None)
+    add_session("鈴木", s_start, None, "事務作業")
     add_shots("鈴木", s_start, now)
-    add_session("佐藤", now - timedelta(hours=6), now - timedelta(hours=3))
+    add_session("佐藤", now - timedelta(hours=6), now - timedelta(hours=3),
+                "事務作業")
     add_shots("佐藤", now - timedelta(hours=6), now - timedelta(hours=3))
 
     conn.commit()
