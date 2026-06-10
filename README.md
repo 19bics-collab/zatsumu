@@ -16,9 +16,9 @@
 
 | ディレクトリ | 役割 |
 |---|---|
-| `server/` | FastAPI サーバ（打刻 API・スクショ受信・管理画面） |
-| `client/` | 常駐エージェント（mss でスクショ撮影、ランダム間隔で送信） |
-| `manage.py` | ユーザー作成 CLI（トークン発行） |
+| `server/` | FastAPI サーバ（打刻 API・スクショ受信・管理画面・月次レポート・保存期間管理） |
+| `client/` | 常駐エージェント（`agent.py` CLI 版 / `tray.py` トレイ常駐版） |
+| `manage.py` | ユーザー作成・スクショ削除 CLI |
 | `tests/` | API テスト |
 
 ## セットアップ
@@ -39,7 +39,11 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000
 **メンバー側**（各自の PC で実行。Ctrl+C で退席）:
 
 ```bash
+# CLI 版
 python -m client.agent --server http://<server>:8000 --token <自分のトークン>
+
+# システムトレイ常駐版（トレイアイコンから着席/退席をワンクリック）
+python -m client.tray --server http://<server>:8000 --token <自分のトークン>
 ```
 
 オプション: `--min-interval/--max-interval`（スクショ間隔・秒）、
@@ -47,6 +51,23 @@ python -m client.agent --server http://<server>:8000 --token <自分のトーク
 
 **管理者側**: ブラウザで `http://<server>:8000/admin?token=<管理者トークン>` を開くと、
 着席状況・本日の勤務時間・最新スクリーンショットが 30 秒ごとに自動更新されます。
+
+**月次レポート / CSV 出力**:
+
+```bash
+# JSON
+curl "http://<server>:8000/api/reports/monthly?month=2026-05" -H "Authorization: Bearer <管理者トークン>"
+# CSV ダウンロード（Excel 対応の BOM 付き）
+curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorization: Bearer <管理者トークン>" -o report.csv
+```
+
+`month` を省略すると当月を集計します。
+
+**スクリーンショットの保存期間（自動削除）**:
+
+- サーバ起動中、`ZATSUMU_RETENTION_DAYS`（既定 30 日）より古いスクショを
+  `ZATSUMU_PURGE_INTERVAL_HOURS`（既定 6 時間）ごとに自動削除します（0 で無効化）。
+- 手動実行: `python manage.py purge --days 30`、または `POST /api/admin/purge`（管理者）。
 
 ## API
 
@@ -58,6 +79,9 @@ python -m client.agent --server http://<server>:8000 --token <自分のトーク
 | GET | `/api/status` | admin | 全員の着席状況・本日の勤務時間 |
 | GET | `/api/screenshots` | admin | スクショ一覧 |
 | GET | `/api/screenshots/{id}/image` | admin | 画像取得 |
+| GET | `/api/reports/monthly` | admin | 月次レポート(JSON) |
+| GET | `/api/reports/monthly.csv` | admin | 月次レポート(CSV) |
+| POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
 
 ## テスト
 

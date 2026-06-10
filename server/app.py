@@ -1,17 +1,42 @@
 """zatsumu server — テレワーク勤怠・稼働可視化 MVP (F-Chair+ 風)."""
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 
-from . import db
+from . import db, reports, retention
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
+# スクショ保存日数。0 以下で自動削除を無効化。
+RETENTION_DAYS = int(os.environ.get("ZATSUMU_RETENTION_DAYS", "30"))
+# 自動削除の実行間隔(時間)。
+PURGE_INTERVAL_HOURS = float(os.environ.get("ZATSUMU_PURGE_INTERVAL_HOURS", "6"))
 
-app = FastAPI(title="zatsumu", version="0.1.0")
+
+async def _purge_loop() -> None:
+    while True:
+        conn = db.connect(DATA_DIR / "zatsumu.db")
+        try:
+            retention.purge_old_screenshots(conn, SCREENSHOT_DIR, RETENTION_DAYS)
+        finally:
+            conn.close()
+        await asyncio.sleep(PURGE_INTERVAL_HOURS * 3600)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_purge_loop()) if RETENTION_DAYS > 0 else None
+    yield
+    if task:
+        task.cancel()
+
+
+app = FastAPI(title="zatsumu", version="0.1.0", lifespan=lifespan)
 
 
 def now_iso() -> str:
@@ -151,3 +176,41 @@ def admin_page(token: str = Query(...), conn=Depends(get_conn)):
         encoding="utf-8"
     )
     return template.replace("{{TOKEN}}", token)
+
+
+def _validate_month(month: str | None) -> str:
+    month = month or datetime.now(timezone.utc).strftime("%Y-%m")
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        raise HTTPException(400, "month must be 'YYYY-MM'")
+    return month
+
+
+@app.get("/api/reports/monthly")
+def monthly_report(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    month = _validate_month(month)
+    return {"month": month, "rows": reports.monthly_report(conn, month)}
+
+
+@app.get("/api/reports/monthly.csv", response_class=PlainTextResponse)
+def monthly_report_csv(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    month = _validate_month(month)
+    csv_text = reports.report_to_csv(reports.monthly_report(conn, month), month)
+    return Response(
+        content="﻿" + csv_text,  # Excel 用 BOM
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="zatsumu_{month}.csv"'
+        },
+    )
+
+
+@app.post("/api/admin/purge")
+def purge_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    deleted = retention.purge_old_screenshots(conn, SCREENSHOT_DIR, RETENTION_DAYS)
+    return {"deleted": deleted, "retention_days": RETENTION_DAYS}
