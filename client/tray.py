@@ -11,6 +11,7 @@
 import argparse
 import random
 import threading
+import time
 
 import httpx
 from PIL import Image, ImageDraw
@@ -27,6 +28,7 @@ class Agent:
         )
         self.min_iv, self.max_iv, self.blur = min_iv, max_iv, blur
         self.seated = False
+        self.since: float | None = None  # 着席時刻 (経過時間表示用)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -41,12 +43,14 @@ class Agent:
         if r.status_code not in (200, 409):
             r.raise_for_status()
         self.seated = True
+        self.since = time.time()
         self._stop.clear()
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
 
     def clock_out(self):
         self.seated = False
+        self.since = None
         self._stop.set()
         self.client.post("/api/clock-out")
 
@@ -77,8 +81,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description="zatsumu tray client")
     p.add_argument("--server", required=True)
     p.add_argument("--token", required=True)
-    p.add_argument("--min-interval", type=int, default=180)
-    p.add_argument("--max-interval", type=int, default=600)
+    p.add_argument("--min-interval", type=int, default=300)
+    p.add_argument("--max-interval", type=int, default=900)
     p.add_argument("--blur", type=int, default=0)
     args = p.parse_args()
 

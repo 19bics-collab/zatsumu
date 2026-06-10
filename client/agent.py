@@ -20,10 +20,11 @@ def main() -> None:
     p = argparse.ArgumentParser(description="zatsumu agent")
     p.add_argument("--server", required=True)
     p.add_argument("--token", required=True)
-    p.add_argument("--min-interval", type=int, default=180,
-                   help="スクショ最短間隔(秒) デフォルト180")
-    p.add_argument("--max-interval", type=int, default=600,
-                   help="スクショ最長間隔(秒) デフォルト600")
+    # 既定は平均10分(1時間に約6回)のランダム間隔。F-Chair+ の標準と同等
+    p.add_argument("--min-interval", type=int, default=300,
+                   help="スクショ最短間隔(秒) デフォルト300")
+    p.add_argument("--max-interval", type=int, default=900,
+                   help="スクショ最長間隔(秒) デフォルト900")
     p.add_argument("--blur", type=int, default=0,
                    help="ぼかし強度(0=なし)。プライバシー配慮用")
     args = p.parse_args()

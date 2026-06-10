@@ -108,7 +108,7 @@ def _record_session(tmp_path, user_id, clock_in, clock_out):
 
 def test_monthly_report_and_csv(client, users, tmp_path):
     worker, admin = users
-    # 2026-05 に2日分、計3時間勤務
+    # 2026-05 に2日分、計3時間勤務 (UTC保存。JSTでも同日)
     _record_session(tmp_path, worker["id"], "2026-05-01T09:00:00+00:00",
                     "2026-05-01T11:00:00+00:00")  # 2h
     _record_session(tmp_path, worker["id"], "2026-05-02T09:00:00+00:00",
@@ -179,3 +179,71 @@ def test_retention_purge(client, users, tmp_path):
     # 残ったスクショは1件
     shots = client.get("/api/screenshots", headers=auth(admin)).json()
     assert len(shots) == 1
+
+
+def test_timezone_day_boundary(client, users, tmp_path):
+    """JSTの朝(UTCでは前日深夜)の勤務が正しい日・月に集計されること."""
+    worker, admin = users
+    # 2026-05-01 07:00-08:00 JST = 2026-04-30 22:00-23:00 UTC
+    _record_session(tmp_path, worker["id"], "2026-04-30T22:00:00+00:00",
+                    "2026-04-30T23:00:00+00:00")
+    r = client.get("/api/reports/monthly?month=2026-05", headers=auth(admin))
+    rows = {row["name"]: row for row in r.json()["rows"]}
+    assert rows["tanaka"]["total_hours"] == 1.0  # 5月分として計上される
+    r = client.get("/api/reports/monthly?month=2026-04", headers=auth(admin))
+    rows = {row["name"]: row for row in r.json()["rows"]}
+    assert rows["tanaka"]["total_hours"] == 0
+
+
+def test_user_monthly_detail(client, users, tmp_path):
+    worker, admin = users
+    # JST 5/1 09:00-12:00 と、日またぎ JST 5/2 23:00 - 5/3 01:00
+    _record_session(tmp_path, worker["id"], "2026-05-01T00:00:00+00:00",
+                    "2026-05-01T03:00:00+00:00")
+    _record_session(tmp_path, worker["id"], "2026-05-02T14:00:00+00:00",
+                    "2026-05-02T16:00:00+00:00")
+
+    r = client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
+                   headers=auth(admin))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["user"]["name"] == "tanaka"
+    days = {d["date"]: d for d in data["days"]}
+    assert days["2026-05-01"]["hours"] == 3.0
+    # 日またぎは 5/2 に1時間・5/3 に1時間として分割される
+    assert days["2026-05-02"]["hours"] == 1.0
+    assert days["2026-05-03"]["hours"] == 1.0
+
+    # 一般ユーザーは不可、存在しないユーザーは404
+    assert client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
+                      headers=auth(worker)).status_code == 403
+    assert client.get("/api/users/9999/monthly?month=2026-05",
+                      headers=auth(admin)).status_code == 404
+
+
+def test_delete_screenshot(client, users):
+    worker, admin = users
+    client.post("/api/clock-in", headers=auth(worker))
+    files = {"image": ("s.jpg", b"\xff\xd8fake", "image/jpeg")}
+    sid = client.post("/api/screenshots", headers=auth(worker),
+                      files=files).json()["screenshot_id"]
+
+    # 一般ユーザーには削除権限なし (管理者のみ)
+    assert client.delete(f"/api/screenshots/{sid}",
+                         headers=auth(worker)).status_code == 403
+    assert client.delete(f"/api/screenshots/{sid}",
+                         headers=auth(admin)).status_code == 200
+    assert client.get(f"/api/screenshots/{sid}/image",
+                      headers=auth(admin)).status_code == 404
+    assert client.delete(f"/api/screenshots/{sid}",
+                         headers=auth(admin)).status_code == 404
+
+
+def test_sessions_csv(client, users, tmp_path):
+    worker, admin = users
+    _record_session(tmp_path, worker["id"], "2026-05-01T00:00:00+00:00",
+                    "2026-05-01T03:00:00+00:00")
+    r = client.get("/api/reports/sessions.csv?month=2026-05", headers=auth(admin))
+    assert r.status_code == 200
+    assert "tanaka" in r.text
+    assert "2026-05-01 09:00:00" in r.text  # JST 表示

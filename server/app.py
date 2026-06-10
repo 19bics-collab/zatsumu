@@ -2,13 +2,13 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 
-from . import db, reports, retention
+from . import db, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
@@ -109,33 +109,110 @@ async def upload_screenshot(
 
 @app.get("/api/status")
 def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    now = datetime.now(timezone.utc)
+    day_start, _ = tz.today_window(now)
     rows = conn.execute(
         """
         SELECT u.id, u.name,
                s.clock_in AS open_since,
-               (SELECT COALESCE(SUM(
-                    (julianday(COALESCE(clock_out, ?)) - julianday(clock_in)) * 24
-                ), 0) FROM sessions
-                WHERE user_id = u.id AND date(clock_in) = date(?)) AS hours_today,
                (SELECT taken_at FROM screenshots WHERE user_id = u.id
                 ORDER BY taken_at DESC LIMIT 1) AS last_screenshot
         FROM users u
         LEFT JOIN sessions s ON s.user_id = u.id AND s.clock_out IS NULL
         ORDER BY u.name
-        """,
-        (now_iso(), now_iso()),
+        """
     ).fetchall()
+    # 「今日」(ローカルTZ) に重なるセッションだけ取り、Python側で時間を合算
+    today_sessions = conn.execute(
+        "SELECT user_id, clock_in, clock_out FROM sessions "
+        "WHERE clock_out IS NULL OR clock_out > ?",
+        (tz.utc_iso(day_start),),
+    ).fetchall()
+    hours: dict[int, float] = {}
+    for s in today_sessions:
+        h = tz.overlap_hours(s["clock_in"], s["clock_out"], day_start, now, now)
+        hours[s["user_id"]] = hours.get(s["user_id"], 0.0) + h
     return [
         {
             "user_id": r["id"],
             "name": r["name"],
             "seated": r["open_since"] is not None,
             "open_since": r["open_since"],
-            "hours_today": round(r["hours_today"], 2),
+            "hours_today": round(hours.get(r["id"], 0.0), 2),
             "last_screenshot": r["last_screenshot"],
         }
         for r in rows
     ]
+
+
+@app.get("/api/users/{user_id}/monthly")
+def user_monthly(
+    user_id: int,
+    month: str | None = None,
+    _admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """個人の月次詳細: 日別の在席時間・セッション・スクショ (タイムライン用)."""
+    month = _validate_month(month)
+    user = conn.execute(
+        "SELECT id, name FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    start, end = tz.month_window(month)
+    now = datetime.now(timezone.utc)
+    days: dict[str, dict] = {}
+
+    def day_of(d):
+        key = d.date().isoformat()
+        return days.setdefault(
+            key, {"date": key, "hours": 0.0, "sessions": [], "screenshots": []}
+        )
+
+    sessions = conn.execute(
+        "SELECT clock_in, clock_out FROM sessions WHERE user_id = ? "
+        "AND clock_in < ? AND (clock_out IS NULL OR clock_out > ?) ORDER BY clock_in",
+        (user_id, tz.utc_iso(end), tz.utc_iso(start)),
+    ).fetchall()
+    for s in sessions:
+        # 日をまたぐセッションはローカル日付ごとの区間に分割する
+        seg_start = max(tz.local(s["clock_in"]), start)
+        seg_close = min(
+            tz.local(s["clock_out"]) if s["clock_out"] else now.astimezone(tz.TZ), end
+        )
+        while seg_start < seg_close:
+            day_end = (seg_start + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            seg_end = min(day_end, seg_close)
+            day = day_of(seg_start)
+            day["sessions"].append(
+                {
+                    "start": seg_start.isoformat(),
+                    "end": seg_end.isoformat(),
+                    "open": s["clock_out"] is None and seg_end == seg_close,
+                }
+            )
+            day["hours"] += (seg_end - seg_start).total_seconds() / 3600
+            seg_start = seg_end
+
+    shots = conn.execute(
+        "SELECT id, taken_at FROM screenshots WHERE user_id = ? "
+        "AND taken_at >= ? AND taken_at < ? ORDER BY taken_at",
+        (user_id, tz.utc_iso(start), tz.utc_iso(end)),
+    ).fetchall()
+    for sh in shots:
+        t = tz.local(sh["taken_at"])
+        day_of(t)["screenshots"].append({"id": sh["id"], "taken_at": t.isoformat()})
+
+    for d in days.values():
+        d["hours"] = round(d["hours"], 2)
+    return {
+        "user": {"id": user["id"], "name": user["name"]},
+        "month": month,
+        "days": sorted(days.values(), key=lambda d: d["date"]),
+    }
 
 
 @app.get("/api/screenshots")
@@ -167,6 +244,21 @@ def screenshot_image(
     return FileResponse(SCREENSHOT_DIR / row["path"], media_type="image/jpeg")
 
 
+@app.delete("/api/screenshots/{screenshot_id}")
+def delete_screenshot(
+    screenshot_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """スクショの削除は管理者のみ (本家 F-Chair+ と同じ権限設計)."""
+    row = conn.execute(
+        "SELECT path FROM screenshots WHERE id = ?", (screenshot_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    (SCREENSHOT_DIR / row["path"]).unlink(missing_ok=True)
+    conn.execute("DELETE FROM screenshots WHERE id = ?", (screenshot_id,))
+    return {"deleted": screenshot_id}
+
+
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
@@ -181,7 +273,7 @@ def admin_page():
 
 
 def _validate_month(month: str | None) -> str:
-    month = month or datetime.now(timezone.utc).strftime("%Y-%m")
+    month = month or datetime.now(tz.TZ).strftime("%Y-%m")
     try:
         datetime.strptime(month, "%Y-%m")
     except ValueError:
@@ -208,6 +300,21 @@ def monthly_report_csv(
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="zatsumu_{month}.csv"'
+        },
+    )
+
+
+@app.get("/api/reports/sessions.csv", response_class=PlainTextResponse)
+def sessions_csv(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """在席データ: 当月の全打刻 (着席/退席) の生データ CSV."""
+    month = _validate_month(month)
+    return Response(
+        content="﻿" + reports.sessions_csv(conn, month),  # Excel 用 BOM
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="zatsumu_sessions_{month}.csv"'
         },
     )
 

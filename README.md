@@ -17,7 +17,7 @@
 | ディレクトリ | 役割 |
 |---|---|
 | `server/` | FastAPI サーバ（打刻 API・スクショ受信・管理画面・月次レポート・保存期間管理） |
-| `client/` | 常駐エージェント（`agent.py` CLI 版 / `tray.py` トレイ常駐版） |
+| `client/` | 常駐エージェント（`agent.py` CLI 版 / `tray.py` トレイ常駐版 / `widget.py` 常時表示バー版） |
 | `manage.py` | ユーザー作成・スクショ削除 CLI |
 | `tests/` | API テスト |
 | `deploy/` + `Dockerfile` 等 | 本番デプロイ用（**[DEPLOY.md](DEPLOY.md)** 参照） |
@@ -50,14 +50,22 @@ python -m client.agent --server http://<server>:8000 --token <自分のトーク
 
 # システムトレイ常駐版（トレイアイコンから着席/退席をワンクリック）
 python -m client.tray --server http://<server>:8000 --token <自分のトークン>
+
+# 常時表示バー版（画面隅に小さなバー。着席中=青+経過時間 / 退席中=赤。クリックで切替）
+python -m client.widget --server http://<server>:8000 --token <自分のトークン>
 ```
 
-オプション: `--min-interval/--max-interval`（スクショ間隔・秒）、
+スクショは既定で 1 時間に約 6 回（5〜15 分のランダム間隔）撮影されます。
+オプション: `--min-interval/--max-interval`（間隔・秒）、
 `--blur N`（プライバシー配慮のぼかし）。
 
 **管理者側**: ブラウザで `http://<server>:8000/admin` を開き、管理者トークンで
-ログインすると、着席状況・本日の勤務時間・最新スクリーンショットが 30 秒ごとに
-自動更新されます。
+ログインすると、着席状況・本日の在席時間・最新キャプチャが 30 秒ごとに自動更新
+されます。メンバーの行をクリックすると**個人ページ**（日別タイムライン上に在席
+時間とキャプチャを表示、月送り、CSV ダウンロード）が開きます。キャプチャは
+クリックで拡大表示でき、削除は管理者のみ可能です。
+
+日付・月の集計境界は `ZATSUMU_TZ`（既定 `Asia/Tokyo`）で判定します。
 
 **月次レポート / CSV 出力**:
 
@@ -86,8 +94,11 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/status` | admin | 全員の着席状況・本日の勤務時間 |
 | GET | `/api/screenshots` | admin | スクショ一覧 |
 | GET | `/api/screenshots/{id}/image` | admin | 画像取得 |
+| DELETE | `/api/screenshots/{id}` | admin | キャプチャ削除 |
+| GET | `/api/users/{id}/monthly` | admin | 個人の月次詳細(日別タイムライン用) |
 | GET | `/api/reports/monthly` | admin | 月次レポート(JSON) |
 | GET | `/api/reports/monthly.csv` | admin | 月次レポート(CSV) |
+| GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
 | GET | `/healthz` | なし | 死活監視用ヘルスチェック |
 

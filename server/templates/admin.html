@@ -5,22 +5,68 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zatsumu 管理画面</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; background: #f7f7f8; }
-  h1 { font-size: 1.4rem; }
-  table { border-collapse: collapse; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-  th, td { padding: .6rem 1rem; border-bottom: 1px solid #eee; text-align: left; }
-  .seated { color: #0a7d32; font-weight: 600; }
-  .away { color: #999; }
-  #shots img { height: 110px; margin: 4px; border: 1px solid #ddd; border-radius: 4px; }
+  :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7; }
+  header { background: #1f2937; color: #fff; padding: .7rem 1.2rem;
+           display: flex; align-items: center; gap: 1rem; }
+  header h1 { font-size: 1.05rem; margin: 0; flex: 1; }
+  header button { background: #4b5563; }
+  main { padding: 1.2rem; max-width: 1100px; margin: 0 auto; }
+  h2 { font-size: 1rem; color: #374151; }
+  table { border-collapse: collapse; background: #fff; width: 100%;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  th, td { padding: .55rem .9rem; border-bottom: 1px solid var(--line); text-align: left; }
+  th { background: #f9fafb; font-size: .8rem; color: #6b7280; }
+  .badge { display: inline-block; padding: .15rem .6rem; border-radius: 99px;
+           color: #fff; font-size: .8rem; font-weight: 600; }
+  .badge.seated { background: var(--seated); }
+  .badge.away { background: var(--away); }
+  tr.user-row { cursor: pointer; }
+  tr.user-row:hover { background: #f0f6ff; }
+  #shots img { height: 100px; margin: 4px; border: 1px solid #ddd;
+               border-radius: 4px; cursor: pointer; }
   small { color: #777; }
-  #login { max-width: 360px; margin: 10vh auto; background: #fff; padding: 2rem;
+  button { padding: .45rem 1rem; border: 0; border-radius: 5px;
+           background: #2563eb; color: #fff; cursor: pointer; font-size: .85rem; }
+  button.danger { background: var(--away); }
+  button.ghost { background: #e5e7eb; color: #374151; }
+  a.csv { font-size: .8rem; margin-left: .8rem; }
+  /* ログイン */
+  #login { max-width: 360px; margin: 12vh auto; background: #fff; padding: 2rem;
            border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
   #login input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
                  border: 1px solid #ccc; border-radius: 4px; }
-  button { padding: .5rem 1.2rem; border: 0; border-radius: 4px;
-           background: #2563eb; color: #fff; cursor: pointer; }
-  .error { color: #c0392b; }
-  #logout { background: #999; float: right; }
+  .error { color: var(--away); }
+  /* 個人ページ: 日別タイムライン */
+  .month-nav { display: flex; align-items: center; gap: .8rem; margin: .8rem 0; }
+  .month-nav strong { font-size: 1.1rem; }
+  .tl-wrap { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .tl-row { display: grid; grid-template-columns: 7.5rem 4.5rem 1fr;
+            align-items: center; border-bottom: 1px solid var(--line);
+            padding: .35rem .9rem; gap: .6rem; font-size: .85rem; }
+  .tl-row.head { color: #6b7280; font-size: .75rem; background: #f9fafb; }
+  .tl-row .sat { color: var(--seated); } .tl-row .sun { color: var(--away); }
+  .tl { position: relative; height: 22px; background: #f3f4f6; border-radius: 3px; }
+  .tl .seg { position: absolute; top: 3px; bottom: 3px; background: var(--seated);
+             border-radius: 2px; min-width: 2px; }
+  .tl .seg.open { background: repeating-linear-gradient(45deg, var(--seated),
+                  var(--seated) 4px, #5b9bd5 4px, #5b9bd5 8px); }
+  .tl .dot { position: absolute; top: 50%; width: 9px; height: 9px; margin: -5px;
+             border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
+             cursor: pointer; z-index: 2; }
+  .tl .hour { position: absolute; top: 0; bottom: 0; width: 1px; background: #e5e7eb; }
+  .tl-scale { display: grid; grid-template-columns: 7.5rem 4.5rem 1fr; padding: 0 .9rem; }
+  .tl-scale div { position: relative; height: 1rem; font-size: .65rem; color: #9ca3af; }
+  .tl-scale span { position: absolute; transform: translateX(-50%); }
+  /* モーダル */
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+           align-items: center; justify-content: center; z-index: 10; }
+  #modal[hidden] { display: none; }  /* display指定がhidden属性に勝つのを防ぐ */
+  #modal .box { background: #fff; padding: 1rem; border-radius: 8px;
+                max-width: 86vw; max-height: 90vh; }
+  #modal img { max-width: 80vw; max-height: 70vh; display: block; margin-bottom: .8rem; }
+  #modal .bar { display: flex; gap: .6rem; align-items: center; }
+  #modal .bar span { flex: 1; color: #374151; font-size: .85rem; }
 </style>
 </head>
 <body>
@@ -32,23 +78,58 @@
   <p id="login-error" class="error" hidden>トークンが正しくないか、管理者権限がありません</p>
 </div>
 
-<div id="dashboard" hidden>
-<button id="logout">ログアウト</button>
-<h1>🪑 zatsumu — 稼働状況</h1>
-<table id="status">
-  <thead><tr><th>メンバー</th><th>状態</th><th>本日の勤務時間</th><th>最終スクショ</th></tr></thead>
-  <tbody></tbody>
-</table>
-<h2>最近のスクリーンショット</h2>
-<div id="shots"></div>
-<small>30秒ごとに自動更新</small>
+<div id="app" hidden>
+<header>
+  <h1>🪑 zatsumu</h1>
+  <button id="nav-home" class="ghost" hidden>← 稼働状況へ戻る</button>
+  <button id="logout">ログアウト</button>
+</header>
+<main>
+
+<section id="home">
+  <h2>稼働状況 <small>（行をクリックで個人ページ / 30秒ごとに自動更新）</small></h2>
+  <table id="status">
+    <thead><tr><th>メンバー</th><th>状態</th><th>本日の在席時間</th><th>最終キャプチャ</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <h2>最近のキャプチャ <small>（クリックで拡大・削除）</small></h2>
+  <div id="shots"></div>
+</section>
+
+<section id="detail" hidden>
+  <div class="month-nav">
+    <button id="prev-month" class="ghost">◀ 前月</button>
+    <strong id="detail-title"></strong>
+    <button id="next-month" class="ghost">翌月 ▶</button>
+    <button id="csv-monthly" class="ghost">月次集計CSV</button>
+    <button id="csv-sessions" class="ghost">在席データCSV</button>
+  </div>
+  <div class="tl-scale"><div></div><div></div><div id="scale"></div></div>
+  <div class="tl-wrap" id="timeline"></div>
+  <p><small>青=在席（斜線は勤務中）、●=画面キャプチャ。点をクリックすると画像を表示します。</small></p>
+</section>
+
+</main>
+</div>
+
+<div id="modal" hidden>
+  <div class="box">
+    <img id="modal-img" alt="screenshot">
+    <div class="bar">
+      <span id="modal-info"></span>
+      <button id="modal-del" class="danger">削除</button>
+      <button id="modal-close" class="ghost">閉じる</button>
+    </div>
+  </div>
 </div>
 
 <script>
 const KEY = "zatsumu_token";
+const $ = id => document.getElementById(id);
 let timer = null;
+let view = { userId: null, month: null };   // 個人ページの状態
 
-// 旧形式 (?token=...) からの移行: 保存してURLから即座に消す
+// 旧形式 (?token=...) からの移行: 保存して URL から即座に消す
 const url = new URL(location);
 if (url.searchParams.get("token")) {
   localStorage.setItem(KEY, url.searchParams.get("token"));
@@ -56,64 +137,168 @@ if (url.searchParams.get("token")) {
   history.replaceState(null, "", url);
 }
 
-function headers() {
-  return { Authorization: "Bearer " + localStorage.getItem(KEY) };
-}
+const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, { ...opts, headers: headers() });
+  if (r.status === 401 || r.status === 403) { showLogin(true); throw new Error("auth"); }
+  return r;
+};
 
 function showLogin(withError) {
   clearInterval(timer);
-  document.getElementById("dashboard").hidden = true;
-  document.getElementById("login").hidden = false;
-  document.getElementById("login-error").hidden = !withError;
+  $("app").hidden = true;
+  $("login").hidden = false;
+  $("login-error").hidden = !withError;
 }
 
-async function showDashboard() {
+async function showApp() {
   const r = await fetch("/api/status", { headers: headers() });
   if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
-  document.getElementById("login").hidden = true;
-  document.getElementById("dashboard").hidden = false;
-  await render(await r.json());
+  $("login").hidden = true;
+  $("app").hidden = false;
+  showHome(await r.json());
+}
+
+/* ---------- 稼働状況 ---------- */
+async function showHome(prefetched) {
+  view.userId = null;
+  $("detail").hidden = true;
+  $("home").hidden = false;
+  $("nav-home").hidden = true;
+  await renderHome(prefetched || await (await api("/api/status")).json());
   clearInterval(timer);
-  timer = setInterval(refresh, 30000);
+  timer = setInterval(async () => {
+    if (view.userId === null) renderHome(await (await api("/api/status")).json());
+  }, 30000);
 }
 
-async function refresh() {
-  const r = await fetch("/api/status", { headers: headers() });
-  if (!r.ok) { showLogin(true); return; }   // トークン失効時はログインへ戻す
-  await render(await r.json());
-}
-
-async function render(status) {
+async function renderHome(status) {
   document.querySelector("#status tbody").innerHTML = status.map(u => `
-    <tr>
+    <tr class="user-row" data-id="${u.user_id}" data-name="${u.name}">
       <td>${u.name}</td>
-      <td class="${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</td>
+      <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span></td>
       <td>${u.hours_today} h</td>
       <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleString("ja-JP") : "—"}</td>
     </tr>`).join("");
+  document.querySelectorAll("#status tr.user-row").forEach(tr =>
+    tr.onclick = () => showDetail(+tr.dataset.id, currentMonth()));
 
-  const shots = await (await fetch("/api/screenshots?limit=12", { headers: headers() })).json();
+  const shots = await (await api("/api/screenshots?limit=12")).json();
   const imgs = await Promise.all(shots.map(async s => {
-    const blob = await (await fetch(`/api/screenshots/${s.id}/image`, { headers: headers() })).blob();
-    return `<img src="${URL.createObjectURL(blob)}" title="${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}">`;
+    const blob = await (await api(`/api/screenshots/${s.id}/image`)).blob();
+    const u = URL.createObjectURL(blob);
+    return `<img src="${u}" data-id="${s.id}" title="${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}">`;
   }));
-  document.getElementById("shots").innerHTML = imgs.join("");
+  $("shots").innerHTML = imgs.join("");
+  document.querySelectorAll("#shots img").forEach(img =>
+    img.onclick = () => openModal(+img.dataset.id, img.title));
 }
 
-document.getElementById("login-btn").onclick = () => {
-  localStorage.setItem(KEY, document.getElementById("token-input").value.trim());
-  showDashboard();
+/* ---------- 個人ページ (日別タイムライン) ---------- */
+const currentMonth = () => new Date().toISOString().slice(0, 7);
+
+function shiftMonth(month, delta) {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+async function showDetail(userId, month) {
+  view = { userId, month };
+  const data = await (await api(`/api/users/${userId}/monthly?month=${month}`)).json();
+  if (view.userId !== userId || view.month !== month) return; // 連打対策
+  $("home").hidden = true;
+  $("detail").hidden = false;
+  $("nav-home").hidden = false;
+  $("detail-title").textContent = `${data.user.name} — ${month}`;
+  $("csv-monthly").onclick = () =>
+    downloadCsv(`/api/reports/monthly.csv?month=${month}`, `zatsumu_${month}.csv`);
+  $("csv-sessions").onclick = () =>
+    downloadCsv(`/api/reports/sessions.csv?month=${month}`, `zatsumu_sessions_${month}.csv`);
+  $("scale").innerHTML = [0, 3, 6, 9, 12, 15, 18, 21, 24]
+    .map(h => `<span style="left:${h / 24 * 100}%">${h}</span>`).join("");
+
+  const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const youbi = ["日", "月", "火", "水", "木", "金", "土"];
+  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
+  for (let day = 1; day <= lastDay; day++) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const dow = new Date(y, m - 1, day).getDay();
+    const d = byDate[date];
+    const pct = t => {
+      const dt = new Date(t);
+      return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
+    };
+    const segs = (d?.sessions || []).map(s => {
+      const left = pct(s.start);
+      const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
+      return `<div class="seg${s.open ? " open" : ""}" style="left:${left}%;width:${width}%"
+                title="${new Date(s.start).toLocaleTimeString("ja-JP")} - ${s.open ? "勤務中" : new Date(s.end).toLocaleTimeString("ja-JP")}"></div>`;
+    }).join("");
+    const dots = (d?.screenshots || []).map(sh =>
+      `<div class="dot" data-id="${sh.id}" data-at="${sh.taken_at}" style="left:${pct(sh.taken_at)}%"
+            title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`).join("");
+    const hours = [...Array(7)].map((_, i) =>
+      `<div class="hour" style="left:${(i + 1) * 3 / 24 * 100}%"></div>`).join("");
+    const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
+    html += `<div class="tl-row">
+      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
+      <div>${d ? d.hours + " h" : ""}</div>
+      <div class="tl">${hours}${segs}${dots}</div>
+    </div>`;
+  }
+  $("timeline").innerHTML = html;
+  document.querySelectorAll("#timeline .dot").forEach(dot =>
+    dot.onclick = () => openModal(+dot.dataset.id,
+      new Date(dot.dataset.at).toLocaleString("ja-JP")));
+}
+
+async function downloadCsv(path, filename) {
+  // 認証ヘッダが必要なため <a href> ではなく fetch でダウンロードする
+  const blob = await (await api(path)).blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ---------- キャプチャのモーダル表示・削除 ---------- */
+async function openModal(id, info) {
+  const blob = await (await api(`/api/screenshots/${id}/image`)).blob();
+  $("modal-img").src = URL.createObjectURL(blob);
+  $("modal-info").textContent = info;
+  $("modal").hidden = false;
+  $("modal-del").onclick = async () => {
+    if (!confirm("このキャプチャを削除しますか？（元に戻せません）")) return;
+    await api(`/api/screenshots/${id}`, { method: "DELETE" });
+    $("modal").hidden = true;
+    view.userId === null ? showHome() : showDetail(view.userId, view.month);
+  };
+}
+$("modal-close").onclick = () => $("modal").hidden = true;
+$("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = true; };
+
+/* ---------- ナビゲーション ---------- */
+$("nav-home").onclick = () => showHome();
+$("prev-month").onclick = () => showDetail(view.userId, shiftMonth(view.month, -1));
+$("next-month").onclick = () => showDetail(view.userId, shiftMonth(view.month, 1));
+$("login-btn").onclick = () => {
+  localStorage.setItem(KEY, $("token-input").value.trim());
+  showApp();
 };
-document.getElementById("token-input").addEventListener("keydown", e => {
-  if (e.key === "Enter") document.getElementById("login-btn").click();
+$("token-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("login-btn").click();
 });
-document.getElementById("logout").onclick = () => {
+$("logout").onclick = () => {
   localStorage.removeItem(KEY);
-  document.getElementById("token-input").value = "";
+  $("token-input").value = "";
   showLogin(false);
 };
 
-if (localStorage.getItem(KEY)) showDashboard(); else showLogin(false);
+if (localStorage.getItem(KEY)) showApp(); else showLogin(false);
 </script>
 </body>
 </html>
