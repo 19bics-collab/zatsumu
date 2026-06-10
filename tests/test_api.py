@@ -93,6 +93,29 @@ def test_root_redirects_to_admin(client):
     assert r.headers["location"] == "/admin"
 
 
+def test_me_and_member_page(client, users):
+    worker, _ = users
+    assert client.get("/api/me").status_code == 401
+
+    r = client.get("/api/me", headers=auth(worker))
+    assert r.status_code == 200
+    assert r.json()["name"] == "tanaka"
+    assert r.json()["seated"] is False
+
+    client.post("/api/clock-in", headers=auth(worker))
+    me = client.get("/api/me", headers=auth(worker)).json()
+    assert me["seated"] is True
+    assert me["open_since"] is not None
+    assert me["hours_today"] >= 0
+
+    client.post("/api/clock-out", headers=auth(worker))
+    assert client.get("/api/me", headers=auth(worker)).json()["seated"] is False
+
+    page = client.get("/me")
+    assert page.status_code == 200
+    assert "打刻" in page.text
+
+
 def test_jpeg_helper():
     from PIL import Image
     from client import capture

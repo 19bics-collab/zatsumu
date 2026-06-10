@@ -82,6 +82,29 @@ def require_admin(user=Depends(auth_user)):
     return user
 
 
+@app.get("/api/me")
+def me(user=Depends(auth_user), conn=Depends(get_conn)):
+    """自分の現在状態 (メンバー用打刻ページで使用)."""
+    now = datetime.now(timezone.utc)
+    day_start, _ = tz.today_window(now)
+    open_s = db.open_session(conn, user["id"])
+    sessions = conn.execute(
+        "SELECT clock_in, clock_out FROM sessions WHERE user_id = ? "
+        "AND (clock_out IS NULL OR clock_out > ?)",
+        (user["id"], tz.utc_iso(day_start)),
+    ).fetchall()
+    hours = sum(
+        tz.overlap_hours(s["clock_in"], s["clock_out"], day_start, now, now)
+        for s in sessions
+    )
+    return {
+        "name": user["name"],
+        "seated": open_s is not None,
+        "open_since": open_s["clock_in"] if open_s else None,
+        "hours_today": round(hours, 2),
+    }
+
+
 @app.post("/api/clock-in")
 def clock_in(user=Depends(auth_user), conn=Depends(get_conn)):
     if db.open_session(conn, user["id"]):
@@ -289,6 +312,14 @@ def healthz():
 def admin_page():
     # 静的ページ。データは全て Bearer 認証付き API 経由で取得する。
     return (Path(__file__).parent / "templates" / "admin.html").read_text(
+        encoding="utf-8"
+    )
+
+
+@app.get("/me", response_class=HTMLResponse)
+def member_page():
+    """メンバー用のWeb打刻ページ (スマホ対応)."""
+    return (Path(__file__).parent / "templates" / "member.html").read_text(
         encoding="utf-8"
     )
 

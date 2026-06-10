@@ -72,7 +72,13 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000
 
 ## 使い方
 
-**メンバー側**（各自の PC で実行。Ctrl+C で退席）:
+**メンバー側 — Webで打刻（インストール不要・スマホ対応）**:
+`http://<server>:8000/me` を開き、自分のトークンでログイン。大きなボタンを
+タップして着席/退席を切り替えます。
+※ Web 打刻では PC 画面のキャプチャは記録されません（キャプチャが必要な場合は
+下記の PC 用クライアントを使用）。
+
+**メンバー側 — PC 用クライアント**（スクショ送信あり。Ctrl+C で退席）:
 
 ```bash
 # CLI 版
@@ -118,6 +124,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 
 | メソッド | パス | 認証 | 説明 |
 |---|---|---|---|
+| GET | `/api/me` | Bearer | 自分の現在状態（Web打刻ページ用） |
 | POST | `/api/clock-in` | Bearer | 着席（重複は 409） |
 | POST | `/api/clock-out` | Bearer | 退席 |
 | POST | `/api/screenshots` | Bearer | スクショ送信（着席中のみ） |

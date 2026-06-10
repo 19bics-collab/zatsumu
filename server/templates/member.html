@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zatsumu 打刻</title>
+<style>
+  :root { --seated: #1565c0; --away: #c62828; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7;
+         display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+  .card { background: #fff; padding: 2rem; border-radius: 12px; width: 320px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.12); text-align: center; }
+  h1 { font-size: 1.2rem; margin: 0 0 .5rem; }
+  input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
+          border: 1px solid #ccc; border-radius: 6px; }
+  .error { color: var(--away); font-size: .85rem; }
+  button.small { padding: .5rem 1.2rem; border: 0; border-radius: 6px;
+                 background: #2563eb; color: #fff; cursor: pointer; }
+  button.ghost { background: #e5e7eb; color: #374151; }
+  /* 大きな打刻ボタン */
+  #punch { width: 190px; height: 190px; border-radius: 50%; border: 0;
+           color: #fff; font-size: 1.3rem; font-weight: 700; cursor: pointer;
+           margin: 1.2rem auto; display: block; transition: transform .1s;
+           box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+  #punch:active { transform: scale(.96); }
+  #punch.seated { background: var(--seated); }
+  #punch.away { background: var(--away); }
+  #punch small { display: block; font-size: .8rem; font-weight: 400; margin-top: .4rem; }
+  .stats { color: #374151; font-size: .9rem; }
+  .foot { margin-top: 1rem; }
+</style>
+</head>
+<body>
+<div class="card" id="login" hidden>
+  <h1>🪑 zatsumu 打刻</h1>
+  <p>自分のトークンを入力してください</p>
+  <input type="password" id="token-input" placeholder="トークン" autocomplete="current-password">
+  <button class="small" id="login-btn">ログイン</button>
+  <p id="login-error" class="error" hidden>トークンが正しくありません</p>
+</div>
+
+<div class="card" id="panel" hidden>
+  <h1 id="hello"></h1>
+  <button id="punch"></button>
+  <p class="stats">本日の在席時間: <strong id="hours"></strong></p>
+  <p class="error" id="punch-error" hidden></p>
+  <div class="foot"><button class="small ghost" id="logout">ログアウト</button></div>
+</div>
+
+<script>
+const KEY = "zatsumu_me_token";
+const $ = id => document.getElementById(id);
+let state = null;
+let timer = null;
+
+const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
+
+function showLogin(withError) {
+  clearInterval(timer);
+  $("panel").hidden = true;
+  $("login").hidden = false;
+  $("login-error").hidden = !withError;
+}
+
+async function load() {
+  const r = await fetch("/api/me", { headers: headers() });
+  if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
+  state = await r.json();
+  $("login").hidden = true;
+  $("panel").hidden = false;
+  $("hello").textContent = state.name + " さん";
+  draw();
+  clearInterval(timer);
+  timer = setInterval(draw, 1000);
+}
+
+function draw() {
+  const b = $("punch");
+  $("hours").textContent = state.hours_today + " h";
+  if (state.seated) {
+    const mins = Math.max(Math.floor((Date.now() - new Date(state.open_since)) / 60000), 0);
+    b.className = "seated";
+    b.innerHTML = `着席中 ${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, "0")}
+                   <small>タップで退席</small>`;
+  } else {
+    b.className = "away";
+    b.innerHTML = `退席中<small>タップで着席</small>`;
+  }
+}
+
+$("punch").onclick = async () => {
+  $("punch-error").hidden = true;
+  const path = state.seated ? "/api/clock-out" : "/api/clock-in";
+  const r = await fetch(path, { method: "POST", headers: headers() });
+  if (!r.ok && r.status !== 409) {   // 409=状態ずれは load() で同期される
+    $("punch-error").textContent = "打刻に失敗しました。通信環境を確認してください";
+    $("punch-error").hidden = false;
+  }
+  await load();
+};
+
+$("login-btn").onclick = () => {
+  localStorage.setItem(KEY, $("token-input").value.trim());
+  load();
+};
+$("token-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("login-btn").click();
+});
+$("logout").onclick = () => {
+  localStorage.removeItem(KEY);
+  $("token-input").value = "";
+  showLogin(false);
+};
+
+if (localStorage.getItem(KEY)) load(); else showLogin(false);
+</script>
+</body>
+</html>
