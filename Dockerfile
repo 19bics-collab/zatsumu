@@ -17,4 +17,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" || exit 1
 
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render などの PaaS は PORT 環境変数で待ち受けポートを指定してくる
+CMD ["sh", "-c", "uvicorn server.app:app --host 0.0.0.0 --port ${PORT:-8000}"]

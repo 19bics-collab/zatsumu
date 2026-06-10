@@ -22,6 +22,36 @@
 | `tests/` | API テスト |
 | `deploy/` + `Dockerfile` 等 | 本番デプロイ用（**[DEPLOY.md](DEPLOY.md)** 参照） |
 
+## 5分でデモサイトを立ち上げる
+
+`ZATSUMU_DEMO=1` を付けて起動すると、固定トークンのデモユーザーと架空の
+勤務データ・キャプチャが自動投入されます（DB が空のときのみ）。
+
+| 役割 | 名前 | トークン |
+|---|---|---|
+| 管理者 | 管理者 | `demo-admin` |
+| メンバー | 田中 / 鈴木 / 佐藤 | `demo-tanaka` / `demo-suzuki` / `demo-sato` |
+
+**クラウドで（無料・PC へのインストール不要）** — [Render](https://render.com) の無料プランを使用:
+
+1. GitHub アカウントで Render にサインアップ
+2. New + → Web Service → このリポジトリを接続
+3. Runtime: **Docker** / Instance Type: **Free** を選択
+4. Environment Variables に `ZATSUMU_DEMO` = `1` を追加して Create Web Service
+5. 発行された `https://xxx.onrender.com/admin` を開き、`demo-admin` でログイン
+
+無料プランはアクセスが無いとスリープし、データは再起動のたびにリセット
+されます（デモ用途には十分）。**固定トークンのため本番では絶対に
+`ZATSUMU_DEMO=1` を使わないでください。**
+
+**ローカルで**:
+
+```bash
+pip install -r server/requirements.txt
+ZATSUMU_DEMO=1 uvicorn server.app:app --port 8000
+# → http://localhost:8000/admin を開いて demo-admin でログイン
+```
+
 ## 本番公開
 
 社内サーバやクラウドへのデプロイ手順は **[DEPLOY.md](DEPLOY.md)** にまとめてあります

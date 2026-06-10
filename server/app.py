@@ -30,6 +30,15 @@ async def _purge_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if os.environ.get("ZATSUMU_DEMO") == "1":
+        from . import demo
+
+        conn = db.connect(DATA_DIR / "zatsumu.db")
+        try:
+            if demo.seed(conn, SCREENSHOT_DIR):
+                print("デモデータを投入しました (管理者トークン: demo-admin)")
+        finally:
+            conn.close()
     task = asyncio.create_task(_purge_loop()) if RETENTION_DAYS > 0 else None
     yield
     if task:
