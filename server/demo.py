@@ -100,5 +100,20 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
                 "事務作業")
     add_shots("佐藤", now - timedelta(hours=6), now - timedelta(hours=3))
 
+    # デモ用の日報
+    today = now.strftime("%Y-%m-%d")
+    yday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    journals = [
+        ("田中", today, "・午前: 請求書の処理\n・午後: A社現場で設備点検\n明日は見積書を作成予定。"),
+        ("田中", yday, "月次レポートの作成と、B社向け提案資料のレビュー対応。"),
+        ("鈴木", today, "問い合わせ対応(5件)と、マニュアルの更新作業を実施。"),
+        ("佐藤", today, "午前のみ勤務。経費精算をまとめて処理しました。"),
+    ]
+    for name, date, body in journals:
+        conn.execute(
+            "INSERT INTO journals (user_id, date, body, updated_at) VALUES (?,?,?,?)",
+            (ids[name], date, body, now_utc.isoformat()),
+        )
+
     conn.commit()
     return True

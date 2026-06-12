@@ -139,6 +139,20 @@ class SessionBody(BaseModel):
     category: str | None = None
 
 
+class JournalBody(BaseModel):
+    body: str
+    date: str | None = None
+
+
+def _valid_date(d: str | None) -> str:
+    d = d or tz.today_str()
+    try:
+        datetime.strptime(d, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "date must be 'YYYY-MM-DD'")
+    return d
+
+
 class ClockInBody(BaseModel):
     category: str | None = None
 
@@ -363,8 +377,18 @@ def _monthly_detail(conn, user, month: str) -> dict:
         t = tz.local(sh["taken_at"])
         day_of(t)["screenshots"].append({"id": sh["id"], "taken_at": t.isoformat()})
 
-    for d in days.values():
+    journ = conn.execute(
+        "SELECT date FROM journals WHERE user_id = ? AND date >= ? AND date < ?",
+        (user_id, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")),
+    ).fetchall()
+    journal_days = {r["date"] for r in journ}
+
+    for key, d in days.items():
         d["hours"] = round(d["hours"], 2)
+    for jd in journal_days:  # 在席が無くても日報がある日を含める
+        day_of(datetime.strptime(jd, "%Y-%m-%d").replace(tzinfo=tz.TZ))
+    for key, d in days.items():
+        d["has_journal"] = key in journal_days
     return {
         "user": {"id": user["id"], "name": user["name"]},
         "month": month,
@@ -641,6 +665,90 @@ def me_monthly(
     """自分の月次詳細 (メンバー本人用)."""
     month = _validate_month(month)
     return _monthly_detail(conn, user, month)
+
+
+def _get_journal(conn, user_id: int, date: str):
+    row = conn.execute(
+        "SELECT body, updated_at FROM journals WHERE user_id = ? AND date = ?",
+        (user_id, date),
+    ).fetchone()
+    return {
+        "date": date,
+        "body": row["body"] if row else "",
+        "updated_at": row["updated_at"] if row else None,
+    }
+
+
+@app.get("/api/me/journal")
+def get_my_journal(
+    date: str | None = None, user=Depends(auth_user), conn=Depends(get_conn)
+):
+    """自分の日報(業務報告)を取得."""
+    return _get_journal(conn, user["id"], _valid_date(date))
+
+
+@app.put("/api/me/journal")
+def put_my_journal(
+    body: JournalBody, user=Depends(auth_user), conn=Depends(get_conn)
+):
+    """自分の日報を保存 (本文が空なら削除)."""
+    date = _valid_date(body.date)
+    text = body.body.strip()
+    if not text:
+        conn.execute(
+            "DELETE FROM journals WHERE user_id = ? AND date = ?",
+            (user["id"], date),
+        )
+        return {"date": date, "body": ""}
+    conn.execute(
+        "INSERT INTO journals (user_id, date, body, updated_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, date) DO UPDATE SET body = excluded.body, "
+        "updated_at = excluded.updated_at",
+        (user["id"], date, text, now_iso()),
+    )
+    return {"date": date, "body": text}
+
+
+@app.get("/api/journals")
+def list_journals(
+    date: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """指定日の全メンバーの日報一覧 (未提出も分かるよう全員返す)."""
+    date = _valid_date(date)
+    rows = conn.execute(
+        """
+        SELECT u.id AS user_id, u.name, j.body, j.updated_at
+        FROM users u
+        LEFT JOIN journals j ON j.user_id = u.id AND j.date = ?
+        WHERE u.active = 1
+        ORDER BY u.name
+        """,
+        (date,),
+    ).fetchall()
+    return {
+        "date": date,
+        "entries": [
+            {
+                "user_id": r["user_id"],
+                "name": r["name"],
+                "body": r["body"] or "",
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/users/{user_id}/journal")
+def get_user_journal(
+    user_id: int,
+    date: str | None = None,
+    _admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    if not conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
+        raise HTTPException(404, "User not found")
+    return _get_journal(conn, user_id, _valid_date(date))
 
 
 @app.get("/api/screenshots")

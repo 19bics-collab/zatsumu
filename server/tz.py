@@ -36,6 +36,12 @@ def today_window(now: datetime) -> tuple[datetime, datetime]:
     return start, now
 
 
+def today_str(now: datetime | None = None) -> str:
+    """ローカルタイムゾーンでの今日の日付 'YYYY-MM-DD'."""
+    n = now or datetime.now(timezone.utc)
+    return n.astimezone(TZ).strftime("%Y-%m-%d")
+
+
 def month_window(month: str) -> tuple[datetime, datetime]:
     """'YYYY-MM' のローカル月の [開始, 翌月開始) を返す."""
     start = datetime.strptime(month, "%Y-%m").replace(tzinfo=TZ)

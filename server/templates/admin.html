@@ -80,6 +80,14 @@
                                 border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
   .set-row input[type=checkbox] { width: 1.3rem; height: 1.3rem; }
   .badge.warn { background: #d97706; }
+  /* 日報 */
+  .jr-item { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 6px;
+             padding: .8rem 1.1rem; margin-bottom: .7rem; }
+  .jr-item.empty { background: #fafafa; }
+  .jr-head { display: flex; align-items: center; gap: .8rem; margin-bottom: .3rem; }
+  .jr-head small { color: #9ca3af; }
+  .jr-body { white-space: pre-wrap; color: #374151; font-size: .95rem; }
+  .jr-mark { cursor: pointer; }
   /* メンバー管理 */
   .add-form { display: flex; gap: .6rem; align-items: center; margin: 1rem 0;
               flex-wrap: wrap; background: #fff; padding: 1rem;
@@ -127,6 +135,7 @@
 <header>
   <h1>🪑 <span id="brand">zatsumu</span></h1>
   <button id="nav-home">稼働状況</button>
+  <button id="nav-journal">日報</button>
   <button id="nav-users">メンバー管理</button>
   <button id="nav-report">月次レポート</button>
   <button id="nav-settings">設定</button>
@@ -158,6 +167,16 @@
     <thead><tr><th>メンバー</th><th>権限</th><th>状態</th><th>撮影</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
+</section>
+
+<section id="journal-view" hidden>
+  <div class="month-nav">
+    <button id="jr-prev" class="ghost">◀ 前日</button>
+    <input type="date" id="jr-date" style="padding:.5rem;border:1px solid #ccc;border-radius:6px;font-size:1rem">
+    <button id="jr-next" class="ghost">翌日 ▶</button>
+    <span id="jr-summary" style="color:#6b7280;font-size:.9rem"></span>
+  </div>
+  <div id="journal-list"></div>
 </section>
 
 <section id="report" hidden>
@@ -270,6 +289,15 @@
       <button id="token-copy">コピー</button>
       <button id="token-close" class="ghost">閉じる</button>
     </div>
+  </div>
+</div>
+
+<div id="journal-modal" class="modal" hidden>
+  <div class="box" style="min-width: 320px; max-width: 560px">
+    <h2 id="jrm-title"></h2>
+    <div class="jr-body" id="jrm-body"></div>
+    <div class="bar" style="margin-top: 1rem"><span></span>
+      <button id="jrm-close" class="ghost">閉じる</button></div>
   </div>
 </div>
 
@@ -388,12 +416,14 @@ async function showApp() {
 
 function switchView(name) {
   view.name = name;
-  for (const id of ["home", "users-view", "report", "settings-view", "detail"])
+  for (const id of ["home", "journal-view", "users-view", "report",
+                    "settings-view", "detail"])
     $(id).hidden = true;
-  $({ home: "home", users: "users-view", report: "report",
-      settings: "settings-view", detail: "detail" }[name]).hidden = false;
-  for (const [btn, v] of [["nav-home", "home"], ["nav-users", "users"],
-                          ["nav-report", "report"], ["nav-settings", "settings"]])
+  $({ home: "home", journal: "journal-view", users: "users-view",
+      report: "report", settings: "settings-view", detail: "detail" }[name]).hidden = false;
+  for (const [btn, v] of [["nav-home", "home"], ["nav-journal", "journal"],
+                          ["nav-users", "users"], ["nav-report", "report"],
+                          ["nav-settings", "settings"]])
     $(btn).classList.toggle("active", v === name || (v === "home" && name === "detail"));
 }
 
@@ -521,6 +551,46 @@ $("token-copy").onclick = async () => {
 $("token-close").onclick = () => $("token-modal").hidden = true;
 
 /* ---------- 月次レポート ---------- */
+/* ---------- 日報 ---------- */
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function shiftDate(date, delta) {
+  const d = new Date(date + "T00:00:00");
+  d.setDate(d.getDate() + delta);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const esc = s => (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+async function showJournal(date) {
+  switchView("journal");
+  const d = date || $("jr-date").value || todayStr();
+  $("jr-date").value = d;
+  const data = await apiJson(`/api/journals?date=${d}`);
+  const submitted = data.entries.filter(e => e.body).length;
+  $("jr-summary").textContent = `提出 ${submitted} / ${data.entries.length} 人`;
+  $("journal-list").innerHTML = data.entries.map(e => `
+    <div class="jr-item ${e.body ? "" : "empty"}">
+      <div class="jr-head"><strong>${e.name}</strong>
+        ${e.body ? `<small>${e.updated_at ? new Date(e.updated_at).toLocaleString("ja-JP") : ""}</small>`
+                 : '<span class="badge gray">未提出</span>'}</div>
+      ${e.body ? `<div class="jr-body">${esc(e.body)}</div>` : ""}
+    </div>`).join("");
+}
+$("jr-prev").onclick = () => showJournal(shiftDate($("jr-date").value, -1));
+$("jr-next").onclick = () => showJournal(shiftDate($("jr-date").value, 1));
+$("jr-date").onchange = () => showJournal($("jr-date").value);
+
+// 個人ページの📝から日報を表示
+async function openJournal(userId, name, date) {
+  const j = await apiJson(`/api/users/${userId}/journal?date=${date}`);
+  $("jrm-title").textContent = `${name} の日報 — ${date}`;
+  $("jrm-body").textContent = j.body || "(空)";
+  $("journal-modal").hidden = false;
+}
+$("jrm-close").onclick = () => $("journal-modal").hidden = true;
+$("journal-modal").onclick = e => { if (e.target === $("journal-modal")) $("journal-modal").hidden = true; };
+
 async function showReport(month) {
   switchView("report");
   repMonth = month || repMonth || currentMonth();
@@ -637,13 +707,17 @@ async function showDetail(userId, userName, month) {
     const hours = [...Array(7)].map((_, i) =>
       `<div class="hour" style="left:${(i + 1) * 3 / 24 * 100}%"></div>`).join("");
     const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
+    const jr = d?.has_journal
+      ? ` <span class="jr-mark" data-date="${date}" title="日報あり（クリックで表示）">📝</span>` : "";
     html += `<div class="tl-row">
-      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
+      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})${jr}</div>
       <div>${d ? d.hours + " h" : ""}</div>
       <div class="tl">${work}${hours}${segs}${dots}</div>
     </div>`;
   }
   $("timeline").innerHTML = html;
+  document.querySelectorAll("#timeline .jr-mark").forEach(mk =>
+    mk.onclick = () => openJournal(userId, data.user.name, mk.dataset.date));
   document.querySelectorAll("#timeline .dot").forEach(dot =>
     dot.onclick = () => openModal(dayShots, +dot.dataset.i));
   document.querySelectorAll("#timeline .seg").forEach(seg =>
@@ -740,6 +814,7 @@ $("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = tru
 /* ---------- ナビゲーション ---------- */
 $("nav-home").onclick = () => showHome();
 $("nav-users").onclick = () => showUsers();
+$("nav-journal").onclick = () => showJournal();
 $("nav-report").onclick = () => showReport();
 $("nav-settings").onclick = () => showSettings();
 $("back-home").onclick = () => showHome();

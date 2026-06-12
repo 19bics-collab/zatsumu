@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS journals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    date TEXT NOT NULL,
+    body TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, date)
+);
 """
 
 # 全社設定の既定値 (整数)。settings テーブルの値で上書きされる

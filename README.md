@@ -116,6 +116,9 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
 - **作業区分**: 「事務作業／現場」などの区分を設定でき、メンバーが在席中に
   切り替え可能。個人ページのタイムラインは区分ごとに色分けされ、区分別の
   合計時間も集計されます（在席データ CSV にも区分列が出力されます）
+- **日報（業務報告）**: メンバーは `/me` で当日の業務内容を記録でき、管理者は
+  「日報」タブで日付ごとに全員分を確認（未提出者も分かります）。個人ページの
+  タイムラインには日報のある日に 📝 が付き、クリックで内容を表示できます
 - **設定**: 会社名／サービス名（ヘッダー表示）・タイムゾーン・勤務時間帯の目安・
   作業区分・撮影間隔（頻度）・画質・ぼかし・全社撮影 ON/OFF・キャプチャ保存日数・
   連続在席アラート閾値を画面から変更。撮影設定はクライアントの次の撮影
@@ -154,6 +157,9 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/me` | Bearer | 自分の現在状態（Web打刻ページ用） |
 | GET | `/api/me/monthly` | Bearer | 自分の月次詳細（日別タイムライン用） |
 | GET | `/api/me/settings` | Bearer | クライアント用の実効撮影設定 |
+| GET/PUT | `/api/me/journal` | Bearer | 自分の日報の取得 / 保存 |
+| GET | `/api/journals` | admin | 指定日の全メンバーの日報 |
+| GET | `/api/users/{id}/journal` | admin | メンバーの日報を取得 |
 | GET/PATCH | `/api/settings` | admin | 全社設定の取得 / 変更 |
 | GET | `/api/config` | なし | 表示用の公開設定(会社名・勤務時間帯) |
 | POST | `/api/clock-in` | Bearer | 着席（任意で作業区分を指定。重複は 409） |

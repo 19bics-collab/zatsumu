@@ -63,6 +63,8 @@
     .tl { height: 26px; }
     .tl .dot { width: 11px; height: 11px; margin: -5.5px; }
   }
+  textarea { width: 100%; box-sizing: border-box; padding: .6rem; border: 1px solid #ccc;
+             border-radius: 6px; font-size: 1rem; font-family: inherit; resize: vertical; }
   /* 作業区分の切り替え */
   #cat-switch { margin-top: .8rem; }
   .cat-label { font-size: .85rem; color: #6b7280; margin: .3rem 0; }
@@ -98,6 +100,15 @@
     <div id="cat-buttons"></div>
   </div>
   <p class="error" id="punch-error" hidden></p>
+</div>
+
+<div class="card" id="journal-card" hidden>
+  <h2>今日の日報 <small style="color:#777" id="journal-date"></small></h2>
+  <textarea id="journal-body" rows="5" placeholder="今日やったこと・進捗・連絡事項などを記録"></textarea>
+  <div style="display:flex;align-items:center;gap:.8rem;margin-top:.5rem">
+    <button class="small" id="journal-save">保存</button>
+    <span id="journal-msg" style="color:#0a7d32;font-size:.85rem"></span>
+  </div>
 </div>
 
 <div class="card" id="history" hidden>
@@ -163,6 +174,7 @@ const catColor = cat => {
 function showLogin(withError) {
   clearInterval(timer);
   $("panel").hidden = true;
+  $("journal-card").hidden = true;
   $("history").hidden = true;
   $("login").hidden = false;
   $("login-error").hidden = !withError;
@@ -174,8 +186,10 @@ async function load() {
   state = await r.json();
   $("login").hidden = true;
   $("panel").hidden = false;
+  $("journal-card").hidden = false;
   $("history").hidden = false;
   $("hello").textContent = state.name + " さん";
+  loadJournal();
   draw();
   clearInterval(timer);
   timer = setInterval(draw, 1000);
@@ -327,6 +341,22 @@ $("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = tru
 
 $("prev-month").onclick = () => { month = shiftMonth(month, -1); loadHistory(); };
 $("next-month").onclick = () => { month = shiftMonth(month, 1); loadHistory(); };
+
+/* ---------- 日報 ---------- */
+async function loadJournal() {
+  const j = await (await fetch("/api/me/journal", { headers: headers() })).json();
+  $("journal-body").value = j.body;
+  $("journal-date").textContent = j.date;
+  $("journal-msg").textContent = "";
+}
+$("journal-save").onclick = async () => {
+  const r = await fetch("/api/me/journal", {
+    method: "PUT", headers: { ...headers(), "Content-Type": "application/json" },
+    body: JSON.stringify({ body: $("journal-body").value }),
+  });
+  $("journal-msg").textContent = r.ok ? "保存しました ✓" : "保存に失敗しました";
+  setTimeout(() => $("journal-msg").textContent = "", 2500);
+};
 
 $("punch").onclick = () =>
   // 着席中はタップで退席、退席中は既定区分で着席

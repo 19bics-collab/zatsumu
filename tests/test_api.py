@@ -45,6 +45,55 @@ def test_clock_in_out_flow(client, users):
     assert client.post("/api/clock-out", headers=auth(worker)).status_code == 409
 
 
+def test_journal_member_and_admin(client, users):
+    worker, admin = users
+    # 初期は空
+    assert client.get("/api/me/journal", headers=auth(worker)).json()["body"] == ""
+
+    # 保存 (日付指定)
+    r = client.put("/api/me/journal", headers=auth(worker),
+                   json={"date": "2026-05-10", "body": "  現場対応をしました  "})
+    assert r.status_code == 200
+    assert client.get("/api/me/journal?date=2026-05-10",
+                      headers=auth(worker)).json()["body"] == "現場対応をしました"
+
+    # 管理者は日付ごとに全員分を取得 (未提出も含む)
+    j = client.get("/api/journals?date=2026-05-10", headers=auth(admin)).json()
+    assert j["date"] == "2026-05-10"
+    by = {e["name"]: e for e in j["entries"]}
+    assert by["tanaka"]["body"] == "現場対応をしました"
+    assert by["boss"]["body"] == ""  # 未提出
+
+    # 一般ユーザーは一覧・他人の日報を見られない
+    assert client.get("/api/journals?date=2026-05-10",
+                      headers=auth(worker)).status_code == 403
+    assert client.get(f"/api/users/{worker['id']}/journal?date=2026-05-10",
+                      headers=auth(worker)).status_code == 403
+    assert client.get(f"/api/users/{worker['id']}/journal?date=2026-05-10",
+                      headers=auth(admin)).json()["body"] == "現場対応をしました"
+
+    # 本文を空にすると削除される
+    client.put("/api/me/journal", headers=auth(worker),
+               json={"date": "2026-05-10", "body": "  "})
+    assert client.get("/api/me/journal?date=2026-05-10",
+                      headers=auth(worker)).json()["body"] == ""
+
+    # 不正な日付は400
+    assert client.get("/api/me/journal?date=bad",
+                      headers=auth(worker)).status_code == 400
+
+
+def test_journal_flag_in_monthly(client, users):
+    worker, admin = users
+    client.put("/api/me/journal", headers=auth(worker),
+               json={"date": "2026-05-03", "body": "日報テスト"})
+    detail = client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
+                        headers=auth(admin)).json()
+    days = {d["date"]: d for d in detail["days"]}
+    # 在席が無くても日報がある日は含まれ、has_journal が立つ
+    assert days["2026-05-03"]["has_journal"] is True
+
+
 def test_auth_required(client, users):
     assert client.post("/api/clock-in").status_code == 401
     assert client.post(
