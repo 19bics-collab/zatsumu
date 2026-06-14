@@ -86,8 +86,10 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
         day = (now - timedelta(days=back)).date()
         add_session("田中", datetime.combine(day, dtime(9, 0), tz.TZ),
                     datetime.combine(day, dtime(12, 0), tz.TZ), "事務作業")
+        # 午後は日により 18:00 / 19:00 で終わり、残業・不足が分かるように
+        end_h = 19 if back % 2 else 17
         add_session("田中", datetime.combine(day, dtime(13, 0), tz.TZ),
-                    datetime.combine(day, dtime(18, 0), tz.TZ), "現場")
+                    datetime.combine(day, dtime(end_h, 0), tz.TZ), "現場")
 
     # 今日: 田中=2時間前から着席中(現場) / 鈴木=45分前から着席中(事務作業)
     t_start = now - timedelta(hours=2)

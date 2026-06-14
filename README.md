@@ -125,8 +125,12 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   サイクルから自動反映されます
 - **勤務時間帯の帯**: 設定した勤務時間帯（既定 9:00〜18:00）がタイムライン上に
   薄い帯で表示され、在席が時間内/時間外かひと目で分かります
+- **予定勤務時間・残業/不足**: 1日の予定勤務時間（既定 8 時間）を設定でき、
+  月次レポートに残業・不足を集計、個人ページの各日に過不足を表示します
+- **通知（Slack / メール）**: 着席・退席や長時間在席アラートを Slack の Incoming
+  Webhook や SMTP メールへ通知できます（設定画面で「テスト送信」可）
 - **連続在席アラート**: 閾値（既定 6 時間）を超えて着席し続けているメンバーに
-  稼働状況で ⚠ を表示（働き過ぎ・退席忘れの検知）
+  稼働状況で ⚠ を表示し、設定により Slack/メール通知も送ります
 - メンバー管理から**個人ごとの撮影停止/再開**も可能（本家 F-Chair+ と同様、
   会社全体・ユーザー個人の両方で頻度変更・停止ができる設計）
 
@@ -161,6 +165,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/journals` | admin | 指定日の全メンバーの日報 |
 | GET | `/api/users/{id}/journal` | admin | メンバーの日報を取得 |
 | GET/PATCH | `/api/settings` | admin | 全社設定の取得 / 変更 |
+| POST | `/api/settings/test-notify` | admin | 通知のテスト送信 |
 | GET | `/api/config` | なし | 表示用の公開設定(会社名・勤務時間帯) |
 | POST | `/api/clock-in` | Bearer | 着席（任意で作業区分を指定。重複は 409） |
 | POST | `/api/switch-category` | Bearer | 在席中に作業区分を切り替え |

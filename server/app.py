@@ -15,24 +15,50 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import db, reports, retention, tz
+from . import db, notify, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
-# 自動削除の実行間隔(時間)。保存日数自体は設定(retention_days)で管理する
-PURGE_INTERVAL_HOURS = float(os.environ.get("ZATSUMU_PURGE_INTERVAL_HOURS", "6"))
+# バックグラウンド処理(キャプチャ自動削除・長時間在席チェック)の実行間隔(分)
+ALERT_CHECK_INTERVAL_MIN = float(os.environ.get("ZATSUMU_CHECK_INTERVAL_MIN", "10"))
 
 
-async def _purge_loop() -> None:
+def check_long_seated(conn) -> int:
+    """alert_hours を超えて在席中のセッションを通知する (重複通知はしない)."""
+    s = db.get_settings(conn)
+    if not s["notify_alert"]:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=s["alert_hours"])
+    rows = conn.execute(
+        """
+        SELECT se.id, se.clock_in, u.name FROM sessions se
+        JOIN users u ON u.id = se.user_id
+        WHERE se.clock_out IS NULL AND se.alert_notified = 0 AND se.clock_in <= ?
+        """,
+        (tz.utc_iso(cutoff),),
+    ).fetchall()
+    for r in rows:
+        notify.deliver_async(
+            s, f"⚠ {r['name']} さんが {s['alert_hours']} 時間以上連続で在席中です"
+        )
+        conn.execute(
+            "UPDATE sessions SET alert_notified = 1 WHERE id = ?", (r["id"],)
+        )
+    conn.commit()
+    return len(rows)
+
+
+async def _background_loop() -> None:
     while True:
+        await asyncio.sleep(ALERT_CHECK_INTERVAL_MIN * 60)
         conn = db.connect(DATA_DIR / "zatsumu.db")
         try:
             days = db.get_settings(conn)["retention_days"]
             if days > 0:
                 retention.purge_old_screenshots(conn, SCREENSHOT_DIR, days)
+            check_long_seated(conn)
         finally:
             conn.close()
-        await asyncio.sleep(PURGE_INTERVAL_HOURS * 3600)
 
 
 @asynccontextmanager
@@ -48,7 +74,7 @@ async def lifespan(app: FastAPI):
         tz.set_tz(db.get_settings(conn)["timezone"])
     finally:
         conn.close()
-    task = asyncio.create_task(_purge_loop())
+    task = asyncio.create_task(_background_loop())
     yield
     task.cancel()
 
@@ -82,6 +108,11 @@ def require_admin(user=Depends(auth_user)):
     if not user["is_admin"]:
         raise HTTPException(403, "Admin only")
     return user
+
+
+def _notify(conn, text: str) -> None:
+    """設定が有効なら通知を非同期送信する (失敗してもリクエストは止めない)."""
+    notify.deliver_async(db.get_settings(conn), text)
 
 
 def _audit(conn, admin, action, target_user_id=None, session_id=None, detail=""):
@@ -126,11 +157,21 @@ class SettingsPatch(BaseModel):
     capture_enabled: bool | None = None
     retention_days: int | None = None
     alert_hours: int | None = None
+    daily_target_minutes: int | None = None
+    notify_clock: bool | None = None
+    notify_alert: bool | None = None
     company_name: str | None = None
     timezone: str | None = None
     work_start: str | None = None
     work_end: str | None = None
     work_categories: str | None = None
+    slack_webhook_url: str | None = None
+    mail_to: str | None = None
+    smtp_host: str | None = None
+    smtp_port: str | None = None
+    smtp_user: str | None = None
+    smtp_pass: str | None = None
+    mail_from: str | None = None
 
 
 class SessionBody(BaseModel):
@@ -208,6 +249,8 @@ def clock_in(
         "INSERT INTO sessions (user_id, clock_in, category) VALUES (?, ?, ?)",
         (user["id"], now_iso(), category),
     )
+    if db.get_settings(conn)["notify_clock"]:
+        _notify(conn, f"🟢 {user['name']} さんが着席しました（{category}）")
     return {"session_id": cur.lastrowid, "clock_in": now_iso(), "category": category}
 
 
@@ -241,6 +284,17 @@ def clock_out(user=Depends(auth_user), conn=Depends(get_conn)):
     conn.execute(
         "UPDATE sessions SET clock_out = ? WHERE id = ?", (now_iso(), session["id"])
     )
+    if db.get_settings(conn)["notify_clock"]:
+        now = datetime.now(timezone.utc)
+        day_start, _ = tz.today_window(now)
+        rows = conn.execute(
+            "SELECT clock_in, clock_out FROM sessions WHERE user_id = ? "
+            "AND (clock_out IS NULL OR clock_out > ?)",
+            (user["id"], tz.utc_iso(day_start)),
+        ).fetchall()
+        h = sum(tz.overlap_hours(r["clock_in"], r["clock_out"], day_start, now, now)
+                for r in rows)
+        _notify(conn, f"🔴 {user['name']} さんが退席しました（本日 {round(h, 1)}h）")
     return {"session_id": session["id"], "clock_out": now_iso()}
 
 
@@ -383,18 +437,23 @@ def _monthly_detail(conn, user, month: str) -> dict:
     ).fetchall()
     journal_days = {r["date"] for r in journ}
 
+    target = db.get_settings(conn)["daily_target_minutes"] / 60
     for key, d in days.items():
+        # 予定時間に対する過不足 (在席のあった日のみ)
+        d["over"] = round(d["hours"] - target, 2) if d["hours"] > 0 else None
         d["hours"] = round(d["hours"], 2)
     for jd in journal_days:  # 在席が無くても日報がある日を含める
         day_of(datetime.strptime(jd, "%Y-%m-%d").replace(tzinfo=tz.TZ))
     for key, d in days.items():
         d["has_journal"] = key in journal_days
+        d.setdefault("over", None)
     return {
         "user": {"id": user["id"], "name": user["name"]},
         "month": month,
         "days": sorted(days.values(), key=lambda d: d["date"]),
         "categories": db.work_categories(conn),
         "by_category": {k: round(v, 2) for k, v in by_category.items()},
+        "target_hours": round(target, 2),
     }
 
 
@@ -416,6 +475,9 @@ def patch_settings(
         "capture_enabled": (0, 1),
         "retention_days": (0, 3650),
         "alert_hours": (1, 24),
+        "daily_target_minutes": (0, 1440),
+        "notify_clock": (0, 1),
+        "notify_alert": (0, 1),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -447,9 +509,22 @@ def patch_settings(
 
     for key, val in changes.items():
         db.set_setting(conn, key, val)
-    _audit(conn, admin, "settings_update",
-           detail=", ".join(f"{k}={v}" for k, v in changes.items()))
+    secret = {"slack_webhook_url", "smtp_pass", "smtp_user"}
+    _audit(conn, admin, "settings_update", detail=", ".join(
+        f"{k}=***" if k in secret else f"{k}={v}" for k, v in changes.items()))
     return db.get_settings(conn)
+
+
+@app.post("/api/settings/test-notify")
+def test_notify(admin=Depends(require_admin), conn=Depends(get_conn)):
+    """設定済みの通知チャネルへテスト送信し、成功したチャネルを返す."""
+    s = db.get_settings(conn)
+    if not notify.channels(s):
+        raise HTTPException(400, "通知先 (Slack または メール) が未設定です")
+    sent = notify.deliver(s, f"[テスト] zatsumu からの通知です（{admin['name']}）")
+    if not sent:
+        raise HTTPException(502, "送信に失敗しました。設定値を確認してください")
+    return {"sent": sent}
 
 
 @app.get("/api/config")
@@ -839,7 +914,9 @@ def monthly_report(
     month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
 ):
     month = _validate_month(month)
-    return {"month": month, "rows": reports.monthly_report(conn, month)}
+    target = db.get_settings(conn)["daily_target_minutes"] / 60
+    return {"month": month, "target_hours": round(target, 2),
+            "rows": reports.monthly_report(conn, month, target)}
 
 
 @app.get("/api/reports/monthly.csv", response_class=PlainTextResponse)
@@ -847,7 +924,8 @@ def monthly_report_csv(
     month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
 ):
     month = _validate_month(month)
-    csv_text = reports.report_to_csv(reports.monthly_report(conn, month), month)
+    target = db.get_settings(conn)["daily_target_minutes"] / 60
+    csv_text = reports.report_to_csv(reports.monthly_report(conn, month, target), month)
     return Response(
         content="﻿" + csv_text,  # Excel 用 BOM
         media_type="text/csv; charset=utf-8",

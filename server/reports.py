@@ -20,44 +20,74 @@ def _month_sessions(conn: sqlite3.Connection, month: str):
     ).fetchall()
 
 
-def monthly_report(conn: sqlite3.Connection, month: str) -> list[dict]:
-    """month は 'YYYY-MM'。ユーザーごとに勤務日数・合計時間を集計する.
+def daily_hours_by_user(conn: sqlite3.Connection, month: str) -> dict:
+    """{user_id: {date: 在席時間}} を返す (日跨ぎはローカル日付で分割)."""
+    start, end = tz.month_window(month)
+    now = datetime.now(timezone.utc)
+    res: dict[int, dict[str, float]] = {}
+    for s in _month_sessions(conn, month):
+        seg_start = max(tz.local(s["clock_in"]), start)
+        seg_close = min(
+            tz.local(s["clock_out"]) if s["clock_out"] else now.astimezone(tz.TZ), end
+        )
+        while seg_start < seg_close:
+            day_end = (seg_start + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            seg_end = min(day_end, seg_close)
+            d = res.setdefault(s["user_id"], {})
+            key = seg_start.date().isoformat()
+            d[key] = d.get(key, 0.0) + (seg_end - seg_start).total_seconds() / 3600
+            seg_start = seg_end
+    return res
+
+
+def monthly_report(
+    conn: sqlite3.Connection, month: str, target_hours: float = 8.0
+) -> list[dict]:
+    """month は 'YYYY-MM'。ユーザーごとに勤務日数・合計時間・残業/不足を集計する.
 
     終了していないセッションは現在時刻までで計上する。日付・月の境界は
-    ローカルタイムゾーン (ZATSUMU_TZ) で判定する。
+    ローカルタイムゾーン (ZATSUMU_TZ) で判定する。残業=各勤務日で予定時間を
+    超えた分の合計、不足=勤務日で予定時間に満たない分の合計。
     """
-    start, end = tz.month_window(month)  # validates format, raises ValueError
-    now = datetime.now(timezone.utc)
-    stats: dict[int, dict] = {}
+    daily = daily_hours_by_user(conn, month)  # validates format
+    counts: dict[int, int] = {}
     for s in _month_sessions(conn, month):
-        hours = tz.overlap_hours(s["clock_in"], s["clock_out"], start, end, now)
-        if hours <= 0:
-            continue
-        st = stats.setdefault(s["user_id"], {"hours": 0.0, "days": set(), "n": 0})
-        st["hours"] += hours
-        st["days"].add(max(tz.local(s["clock_in"]), start).date())
-        st["n"] += 1
+        start, end = tz.month_window(month)
+        if tz.overlap_hours(s["clock_in"], s["clock_out"], start, end,
+                            datetime.now(timezone.utc)) > 0:
+            counts[s["user_id"]] = counts.get(s["user_id"], 0) + 1
 
-    rows = conn.execute("SELECT id, name FROM users ORDER BY name").fetchall()
-    return [
-        {
+    out = []
+    for r in conn.execute("SELECT id, name FROM users ORDER BY name"):
+        days = daily.get(r["id"], {})
+        worked = [h for h in days.values() if h > 0]
+        total = sum(worked)
+        overtime = sum(max(0.0, h - target_hours) for h in worked)
+        shortfall = sum(max(0.0, target_hours - h) for h in worked)
+        out.append({
             "user_id": r["id"],
             "name": r["name"],
-            "work_days": len(stats[r["id"]]["days"]) if r["id"] in stats else 0,
-            "sessions": stats[r["id"]]["n"] if r["id"] in stats else 0,
-            "total_hours": round(stats[r["id"]]["hours"], 2) if r["id"] in stats else 0,
-        }
-        for r in rows
-    ]
+            "work_days": len(worked),
+            "sessions": counts.get(r["id"], 0),
+            "total_hours": round(total, 2),
+            "target_hours": round(len(worked) * target_hours, 2),
+            "overtime": round(overtime, 2),
+            "shortfall": round(shortfall, 2),
+        })
+    return out
 
 
 def report_to_csv(report: list[dict], month: str) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["月", "メンバー", "勤務日数", "セッション数", "合計勤務時間(h)"])
+    writer.writerow(["月", "メンバー", "勤務日数", "セッション数", "合計勤務時間(h)",
+                     "予定時間(h)", "残業(h)", "不足(h)"])
     for r in report:
         writer.writerow(
-            [month, r["name"], r["work_days"], r["sessions"], r["total_hours"]]
+            [month, r["name"], r["work_days"], r["sessions"], r["total_hours"],
+             r["target_hours"], r["overtime"], r["shortfall"]]
         )
     return buf.getvalue()
 
@@ -65,31 +95,16 @@ def report_to_csv(report: list[dict], month: str) -> str:
 def daily_csv(conn: sqlite3.Connection, month: str) -> str:
     """日別集計: 日付 × メンバーの在席時間マトリクス (給与計算用)."""
     start, end = tz.month_window(month)
-    now = datetime.now(timezone.utc)
     users = conn.execute(
         "SELECT id, name FROM users WHERE is_admin = 0 OR id IN "
         "(SELECT DISTINCT user_id FROM sessions) ORDER BY name"
     ).fetchall()
-    # hours[date][user_id] = 在席時間
+    by_user = daily_hours_by_user(conn, month)
+    # hours[date][user_id]
     hours: dict[str, dict[int, float]] = {}
-    for s in _month_sessions(conn, month):
-        seg_start = max(tz.local(s["clock_in"]), start)
-        seg_close = min(
-            tz.local(s["clock_out"]) if s["clock_out"] else now.astimezone(tz.TZ),
-            end,
-        )
-        while seg_start < seg_close:
-            day_end = (seg_start + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            seg_end = min(day_end, seg_close)
-            key = seg_start.date().isoformat()
-            day = hours.setdefault(key, {})
-            day[s["user_id"]] = (
-                day.get(s["user_id"], 0.0)
-                + (seg_end - seg_start).total_seconds() / 3600
-            )
-            seg_start = seg_end
+    for uid, days in by_user.items():
+        for key, h in days.items():
+            hours.setdefault(key, {})[uid] = h
 
     buf = io.StringIO()
     writer = csv.writer(buf)

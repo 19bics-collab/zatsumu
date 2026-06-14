@@ -428,6 +428,105 @@ def test_daily_csv(client, users, tmp_path):
     assert len([l for l in lines if l.startswith("2026-05")]) == 31  # 全日分
 
 
+def test_target_hours_overtime_shortfall(client, users, tmp_path):
+    worker, admin = users
+    # JST 5/1 09:00-19:00 = 10h (残業2h), 5/2 09:00-15:00 = 6h (不足2h)
+    _record_session(tmp_path, worker["id"], "2026-05-01T00:00:00+00:00",
+                    "2026-05-01T10:00:00+00:00")
+    _record_session(tmp_path, worker["id"], "2026-05-02T00:00:00+00:00",
+                    "2026-05-02T06:00:00+00:00")
+    # 既定の予定時間=8h
+    rep = client.get("/api/reports/monthly?month=2026-05", headers=auth(admin)).json()
+    assert rep["target_hours"] == 8.0
+    row = {r["name"]: r for r in rep["rows"]}["tanaka"]
+    assert row["work_days"] == 2
+    assert row["total_hours"] == 16.0
+    assert row["target_hours"] == 16.0   # 2日 × 8h
+    assert row["overtime"] == 2.0        # 5/1 の +2h
+    assert row["shortfall"] == 2.0       # 5/2 の -2h
+
+    # 予定時間を7時間に変更すると残業/不足が変わる
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"daily_target_minutes": 420})
+    row = {r["name"]: r for r in client.get(
+        "/api/reports/monthly?month=2026-05", headers=auth(admin)).json()["rows"]}["tanaka"]
+    assert row["overtime"] == 3.0   # 5/1:+3, 5/2:-1
+    assert row["shortfall"] == 1.0
+
+    # 個人月次の各日に over (過不足) が出る
+    detail = client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
+                        headers=auth(admin)).json()
+    assert detail["target_hours"] == 7.0
+    days = {d["date"]: d for d in detail["days"]}
+    assert days["2026-05-01"]["over"] == 3.0
+    assert days["2026-05-02"]["over"] == -1.0
+
+    # CSV にも列が出る
+    csv = client.get("/api/reports/monthly.csv?month=2026-05", headers=auth(admin))
+    assert "残業(h)" in csv.text and "不足(h)" in csv.text
+
+
+def test_notifications(client, users, monkeypatch):
+    worker, admin = users
+    from server import notify
+
+    sent = []
+    monkeypatch.setattr(notify, "send_slack",
+                        lambda url, text: sent.append(("slack", url, text)))
+
+    # 未設定ではテスト送信は400
+    assert client.post("/api/settings/test-notify",
+                       headers=auth(admin)).status_code == 400
+
+    # Slack URL を設定 → テスト送信が届く
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"slack_webhook_url": "https://hooks.slack.test/xxx",
+                       "notify_clock": True})
+    r = client.post("/api/settings/test-notify", headers=auth(admin))
+    assert r.status_code == 200 and r.json()["sent"] == ["slack"]
+    assert len(sent) == 1
+
+    # 着席で通知が飛ぶ (notify_clock 有効)
+    client.post("/api/clock-in", headers=auth(worker), json={"category": "現場"})
+    assert any("着席" in t for _, _, t in sent)
+    client.post("/api/clock-out", headers=auth(worker))
+    assert any("退席" in t for _, _, t in sent)
+
+    # 秘密情報は監査ログに残さない
+    month = __import__("datetime").datetime.now().strftime("%Y-%m")
+    audit = client.get(f"/api/reports/audit.csv?month={month}", headers=auth(admin))
+    assert "hooks.slack.test" not in audit.text
+    assert "slack_webhook_url=***" in audit.text
+
+
+def test_long_seated_notification(client, users, tmp_path, monkeypatch):
+    worker, admin = users
+    from server import app as m, notify
+    sent = []
+    monkeypatch.setattr(notify, "deliver_async",
+                        lambda settings, text: sent.append(text))
+
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"slack_webhook_url": "https://hooks.slack.test/x",
+                       "notify_alert": True, "alert_hours": 6})
+    # 7時間前から在席中のセッションを直接投入
+    from datetime import datetime, timedelta, timezone
+    from server import db
+    old = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("INSERT INTO sessions (user_id, clock_in) VALUES (?, ?)",
+                     (worker["id"], old))
+
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        n = m.check_long_seated(conn)
+    assert n == 1
+    assert any("連続で在席" in t for t in sent)
+
+    # 2回目は重複通知しない
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert m.check_long_seated(conn) == 0
+
+
 def test_screenshot_owner_can_view(client, users, tmp_path):
     worker, admin = users
     from server import db

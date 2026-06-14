@@ -190,7 +190,7 @@
     <button id="rep-csv-audit" class="ghost">修正履歴CSV</button>
   </div>
   <table id="report-table">
-    <thead><tr><th>メンバー</th><th>勤務日数</th><th>セッション数</th><th>合計勤務時間</th></tr></thead>
+    <thead><tr><th>メンバー</th><th>勤務日数</th><th>合計勤務時間</th><th>予定時間</th><th>残業</th><th>不足</th></tr></thead>
     <tbody></tbody>
   </table>
 </section>
@@ -234,13 +234,40 @@
         <input type="number" id="set-blur" min="0" max="20"></label>
     </div>
     <div class="set-card">
-      <h3>保存・アラート</h3>
+      <h3>勤務・保存・アラート</h3>
+      <label class="set-row"><span>1日の予定勤務時間（時間）</span>
+        <input type="number" id="set-target" min="0" max="24" step="0.5"></label>
       <label class="set-row"><span>キャプチャ保存日数（0=自動削除なし）</span>
         <input type="number" id="set-retention" min="0" max="3650"></label>
       <label class="set-row"><span>連続在席アラート（時間）</span>
         <input type="number" id="set-alert" min="1" max="24"></label>
-      <p><small>保存日数を超えたキャプチャは6時間ごとに自動削除されます。
-      連続在席がアラート時間を超えると稼働状況に⚠が表示されます。</small></p>
+      <p><small>予定勤務時間を基準に、月次レポートと個人ページで残業/不足を集計します。
+      保存日数を超えたキャプチャは自動削除、連続在席がアラート時間を超えると⚠表示・通知されます。</small></p>
+    </div>
+    <div class="set-card">
+      <h3>通知（Slack / メール）</h3>
+      <label class="set-row"><span>着席・退席を通知</span>
+        <input type="checkbox" id="set-notify-clock"></label>
+      <label class="set-row"><span>長時間在席を通知</span>
+        <input type="checkbox" id="set-notify-alert"></label>
+      <label class="set-row"><span>Slack Webhook URL</span>
+        <input type="text" id="set-slack" placeholder="https://hooks.slack.com/..."></label>
+      <label class="set-row"><span>通知メール宛先（カンマ区切り）</span>
+        <input type="text" id="set-mail-to" placeholder="boss@example.com"></label>
+      <label class="set-row"><span>SMTPサーバ</span>
+        <input type="text" id="set-smtp-host" placeholder="smtp.example.com"></label>
+      <label class="set-row"><span>SMTPポート</span>
+        <input type="text" id="set-smtp-port" placeholder="587"></label>
+      <label class="set-row"><span>SMTPユーザー</span>
+        <input type="text" id="set-smtp-user"></label>
+      <label class="set-row"><span>SMTPパスワード</span>
+        <input type="password" id="set-smtp-pass" placeholder="(変更時のみ入力)"></label>
+      <label class="set-row"><span>差出人メール</span>
+        <input type="text" id="set-mail-from"></label>
+      <p><small>Slack は Incoming Webhook の URL を貼り付けるだけ。メールは SMTP の設定が必要です。
+      保存後に「テスト送信」で疎通確認できます。</small></p>
+      <button class="ghost" id="set-test-notify">テスト送信</button>
+      <span id="test-notify-msg" style="margin-left:.6rem;font-size:.85rem"></span>
     </div>
   </div>
   <p style="margin-top:1rem">
@@ -595,10 +622,12 @@ async function showReport(month) {
   switchView("report");
   repMonth = month || repMonth || currentMonth();
   const data = await apiJson(`/api/reports/monthly?month=${repMonth}`);
-  $("rep-title").textContent = repMonth;
+  $("rep-title").textContent = `${repMonth}（予定 ${data.target_hours}h/日）`;
   document.querySelector("#report-table tbody").innerHTML = data.rows.map(r => `
     <tr><td><strong>${r.name}</strong></td><td>${r.work_days} 日</td>
-        <td>${r.sessions}</td><td>${r.total_hours} h</td></tr>`).join("");
+        <td>${r.total_hours} h</td><td>${r.target_hours} h</td>
+        <td style="color:#c2410c">${r.overtime ? "+" + r.overtime + " h" : "—"}</td>
+        <td style="color:#1565c0">${r.shortfall ? "−" + r.shortfall + " h" : "—"}</td></tr>`).join("");
 }
 $("rep-prev").onclick = () => showReport(shiftMonth(repMonth, -1));
 $("rep-next").onclick = () => showReport(shiftMonth(repMonth, 1));
@@ -629,7 +658,18 @@ async function showSettings() {
   $("set-blur").value = s.capture_blur;
   $("set-retention").value = s.retention_days;
   $("set-alert").value = s.alert_hours;
+  $("set-target").value = (s.daily_target_minutes / 60);
+  $("set-notify-clock").checked = !!s.notify_clock;
+  $("set-notify-alert").checked = !!s.notify_alert;
+  $("set-slack").value = s.slack_webhook_url;
+  $("set-mail-to").value = s.mail_to;
+  $("set-smtp-host").value = s.smtp_host;
+  $("set-smtp-port").value = s.smtp_port;
+  $("set-smtp-user").value = s.smtp_user;
+  $("set-smtp-pass").value = "";  // パスワードは表示しない
+  $("set-mail-from").value = s.mail_from;
   $("set-msg").textContent = "";
+  $("test-notify-msg").textContent = "";
   freqHint();
 }
 $("set-min").oninput = freqHint;
@@ -648,7 +688,17 @@ $("set-save").onclick = async () => {
     capture_blur: +$("set-blur").value,
     retention_days: +$("set-retention").value,
     alert_hours: +$("set-alert").value,
+    daily_target_minutes: Math.round(+$("set-target").value * 60),
+    notify_clock: $("set-notify-clock").checked,
+    notify_alert: $("set-notify-alert").checked,
+    slack_webhook_url: $("set-slack").value,
+    mail_to: $("set-mail-to").value,
+    smtp_host: $("set-smtp-host").value,
+    smtp_port: $("set-smtp-port").value,
+    smtp_user: $("set-smtp-user").value,
+    mail_from: $("set-mail-from").value,
   };
+  if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
   appSettings = await apiJson("/api/settings", {
     method: "PATCH", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -656,6 +706,17 @@ $("set-save").onclick = async () => {
   applyBranding();
   $("set-msg").textContent = "保存しました ✓";
   setTimeout(() => $("set-msg").textContent = "", 2500);
+};
+$("set-test-notify").onclick = async () => {
+  $("test-notify-msg").textContent = "送信中...";
+  try {
+    const r = await apiJson("/api/settings/test-notify", { method: "POST" });
+    $("test-notify-msg").style.color = "#0a7d32";
+    $("test-notify-msg").textContent = "送信しました: " + r.sent.join(", ");
+  } catch {
+    $("test-notify-msg").style.color = "#c62828";
+    $("test-notify-msg").textContent = "送信できませんでした（保存後にお試しください）";
+  }
 };
 
 async function downloadCsv(path, filename) {
@@ -711,7 +772,8 @@ async function showDetail(userId, userName, month) {
       ? ` <span class="jr-mark" data-date="${date}" title="日報あり（クリックで表示）">📝</span>` : "";
     html += `<div class="tl-row">
       <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})${jr}</div>
-      <div>${d ? d.hours + " h" : ""}</div>
+      <div>${d ? d.hours + " h" : ""}${d && d.over != null && Math.abs(d.over) >= 0.01
+        ? `<br><small style="color:${d.over > 0 ? "#c2410c" : "#1565c0"}">${d.over > 0 ? "+" : "−"}${Math.abs(d.over)}</small>` : ""}</div>
       <div class="tl">${work}${hours}${segs}${dots}</div>
     </div>`;
   }

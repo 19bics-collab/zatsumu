@@ -65,6 +65,9 @@ INT_SETTINGS = {
     # キャプチャ保存日数 (0=自動削除なし)。環境変数は初期値として機能する
     "retention_days": int(os.environ.get("ZATSUMU_RETENTION_DAYS", "30")),
     "alert_hours": 6,              # 連続在席アラート(時間)
+    "daily_target_minutes": 480,   # 1日の予定勤務時間(分) 既定8時間
+    "notify_clock": 0,             # 着席/退席を通知するか
+    "notify_alert": 1,             # 長時間在席を通知するか
 }
 
 # 全社設定の既定値 (文字列)
@@ -74,6 +77,13 @@ STR_SETTINGS = {
     "work_start": "09:00",         # 勤務時間帯の目安(開始) タイムライン表示用
     "work_end": "18:00",           # 勤務時間帯の目安(終了)
     "work_categories": "事務作業,現場",  # 作業区分(カンマ区切り、先頭が既定)
+    "slack_webhook_url": "",       # Slack Incoming Webhook URL
+    "mail_to": "",                 # 通知メール宛先(カンマ区切り)
+    "smtp_host": "",               # SMTPサーバ (空ならメール無効)
+    "smtp_port": "587",
+    "smtp_user": "",
+    "smtp_pass": "",
+    "mail_from": "",               # 差出人 (空なら smtp_user を使用)
 }
 
 # 後方互換: 旧名を参照しているコード向け
@@ -115,6 +125,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
     if "category" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN category TEXT")
+    if "alert_notified" not in scols:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN alert_notified INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def work_categories(conn: sqlite3.Connection) -> list[str]:
