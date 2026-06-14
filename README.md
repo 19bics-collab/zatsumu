@@ -116,6 +116,11 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
 - **作業区分**: 「事務作業／現場」などの区分を設定でき、メンバーが在席中に
   切り替え可能。個人ページのタイムラインは区分ごとに色分けされ、区分別の
   合計時間も集計されます（在席データ CSV にも区分列が出力されます）
+- **チーム（部署）**: メンバーをチームに分け、稼働状況をチームで絞り込み表示。
+  メンバー管理タブでチームの作成・改名・削除と所属の割り当てができます
+- **休暇・欠勤の申請／承認**: メンバーは `/me` から休暇（有給・半休・欠勤など）を
+  申請でき、管理者は「申請」タブで承認/却下します（承認待ち件数をバッジ表示、
+  通知が有効なら申請を Slack/メールへ周知）。承認状況は個人ページの該当日に表示
 - **日報（業務報告）**: メンバーは `/me` で当日の業務内容を記録でき、管理者は
   「日報」タブで日付ごとに全員分を確認（未提出者も分かります）。個人ページの
   タイムラインには日報のある日に 📝 が付き、クリックで内容を表示できます
@@ -166,6 +171,11 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/users/{id}/journal` | admin | メンバーの日報を取得 |
 | GET/PATCH | `/api/settings` | admin | 全社設定の取得 / 変更 |
 | POST | `/api/settings/test-notify` | admin | 通知のテスト送信 |
+| GET/POST | `/api/teams` | admin | チーム一覧 / 作成 |
+| PATCH/DELETE | `/api/teams/{id}` | admin | チーム改名 / 削除 |
+| GET/POST/DELETE | `/api/me/leave` | Bearer | 自分の休暇申請の一覧 / 申請 / 取消 |
+| GET | `/api/leave` | admin | 休暇申請の一覧（status で絞り込み） |
+| POST | `/api/leave/{id}/decision` | admin | 休暇申請の承認 / 却下 |
 | GET | `/api/config` | なし | 表示用の公開設定(会社名・勤務時間帯) |
 | POST | `/api/clock-in` | Bearer | 着席（任意で作業区分を指定。重複は 409） |
 | POST | `/api/switch-category` | Bearer | 在席中に作業区分を切り替え |

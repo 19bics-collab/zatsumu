@@ -80,6 +80,10 @@
                                 border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
   .set-row input[type=checkbox] { width: 1.3rem; height: 1.3rem; }
   .badge.warn { background: #d97706; }
+  .ntf { background: #c62828; color: #fff; border-radius: 99px; font-size: .7rem;
+         padding: .05rem .4rem; margin-left: .3rem; }
+  .lv-approved { color: #0a7d32; } .lv-rejected { color: #c62828; }
+  .lv-pending { color: #d97706; }
   /* 日報 */
   .jr-item { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 6px;
              padding: .8rem 1.1rem; margin-bottom: .7rem; }
@@ -136,6 +140,7 @@
   <h1>🪑 <span id="brand">zatsumu</span></h1>
   <button id="nav-home">稼働状況</button>
   <button id="nav-journal">日報</button>
+  <button id="nav-leave">申請<span id="leave-badge" class="ntf" hidden></span></button>
   <button id="nav-users">メンバー管理</button>
   <button id="nav-report">月次レポート</button>
   <button id="nav-settings">設定</button>
@@ -145,9 +150,11 @@
 <main>
 
 <section id="home" hidden>
-  <h2>稼働状況 <small>（名前をクリックで個人ページ / 30秒ごとに自動更新）</small></h2>
+  <h2>稼働状況 <small>（名前をクリックで個人ページ / 30秒ごとに自動更新）</small>
+    <select id="home-team" style="margin-left:1rem;padding:.4rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem"></select>
+  </h2>
   <table id="status">
-    <thead><tr><th>メンバー</th><th>状態</th><th>本日の在席</th>
+    <thead><tr><th>メンバー</th><th>チーム</th><th>状態</th><th>本日の在席</th>
       <th>本日のタイムライン (0〜24時)</th><th>最終キャプチャ</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
@@ -164,7 +171,17 @@
     <small>追加するとトークンが一度だけ表示されます。本人に安全な方法で渡してください</small>
   </div>
   <table id="users-table">
-    <thead><tr><th>メンバー</th><th>権限</th><th>状態</th><th>撮影</th><th>操作</th></tr></thead>
+    <thead><tr><th>メンバー</th><th>チーム</th><th>権限</th><th>状態</th><th>撮影</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2 style="margin-top:1.5rem">チーム</h2>
+  <div class="add-form">
+    <input type="text" id="new-team" placeholder="チーム名（例：営業部）">
+    <button id="add-team">チームを追加</button>
+  </div>
+  <table id="teams-table">
+    <thead><tr><th>チーム</th><th>人数</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
 </section>
@@ -177,6 +194,21 @@
     <span id="jr-summary" style="color:#6b7280;font-size:.9rem"></span>
   </div>
   <div id="journal-list"></div>
+</section>
+
+<section id="leave-view" hidden>
+  <h2>休暇・欠勤の申請
+    <select id="leave-filter" style="margin-left:1rem;padding:.4rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem">
+      <option value="pending">承認待ち</option>
+      <option value="approved">承認済み</option>
+      <option value="rejected">却下</option>
+      <option value="">すべて</option>
+    </select>
+  </h2>
+  <table id="leave-table">
+    <thead><tr><th>メンバー</th><th>日付</th><th>種別</th><th>理由</th><th>状態</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table>
 </section>
 
 <section id="report" hidden>
@@ -428,6 +460,7 @@ function showLogin(withError) {
 
 let appSettings = { alert_hours: 6, work_start: "09:00", work_end: "18:00",
                     company_name: "zatsumu" };
+let teams = [];
 function applyBranding() {
   $("brand").textContent = appSettings.company_name || "zatsumu";
   document.title = (appSettings.company_name || "zatsumu") + " 管理画面";
@@ -438,31 +471,51 @@ async function showApp() {
   $("login").hidden = true;
   $("app").hidden = false;
   try { appSettings = await apiJson("/api/settings"); applyBranding(); } catch {}
+  try { teams = await apiJson("/api/teams"); } catch {}
+  refreshLeaveBadge();
   showHome(await r.json());
+}
+
+async function refreshLeaveBadge() {
+  try {
+    const pend = await apiJson("/api/leave?status=pending");
+    const b = $("leave-badge");
+    b.hidden = pend.length === 0;
+    b.textContent = pend.length;
+  } catch {}
 }
 
 function switchView(name) {
   view.name = name;
-  for (const id of ["home", "journal-view", "users-view", "report",
+  for (const id of ["home", "journal-view", "leave-view", "users-view", "report",
                     "settings-view", "detail"])
     $(id).hidden = true;
-  $({ home: "home", journal: "journal-view", users: "users-view",
-      report: "report", settings: "settings-view", detail: "detail" }[name]).hidden = false;
+  $({ home: "home", journal: "journal-view", leave: "leave-view",
+      users: "users-view", report: "report", settings: "settings-view",
+      detail: "detail" }[name]).hidden = false;
   for (const [btn, v] of [["nav-home", "home"], ["nav-journal", "journal"],
-                          ["nav-users", "users"], ["nav-report", "report"],
-                          ["nav-settings", "settings"]])
+                          ["nav-leave", "leave"], ["nav-users", "users"],
+                          ["nav-report", "report"], ["nav-settings", "settings"]])
     $(btn).classList.toggle("active", v === name || (v === "home" && name === "detail"));
 }
 
 /* ---------- 稼働状況 ---------- */
+function homeTeamQuery() {
+  const v = $("home-team").value;
+  return v ? `?team_id=${v}` : "";
+}
 async function showHome(prefetched) {
   switchView("home");
+  $("home-team").innerHTML = `<option value="">全チーム</option>` +
+    teams.map(t => `<option value="${t.id}">${t.name}</option>`).join("");
   await renderHome(prefetched || await apiJson("/api/status"));
   clearInterval(timer);
   timer = setInterval(async () => {
-    if (view.name === "home") renderHome(await apiJson("/api/status"));
+    if (view.name === "home") renderHome(await apiJson("/api/status" + homeTeamQuery()));
   }, 30000);
 }
+$("home-team").onchange = async () =>
+  renderHome(await apiJson("/api/status" + homeTeamQuery()));
 
 async function renderHome(status) {
   document.querySelector("#status tbody").innerHTML = status.map(u => {
@@ -475,6 +528,7 @@ async function renderHome(status) {
     return `
     <tr class="user-row" data-id="${u.user_id}" data-name="${u.name}">
       <td class="click"><strong>${u.name}</strong></td>
+      <td>${u.team_name || "—"}</td>
       <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${u.seated && u.category ? ` <span class="badge" style="background:${catColor(u.category)}">${u.category}</span>` : ""}${warn}</td>
       <td>${u.hours_today} h</td>
       <td><div class="tl mini">${workBandHtml()}${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
@@ -508,10 +562,15 @@ async function renderHome(status) {
 /* ---------- メンバー管理 ---------- */
 async function showUsers() {
   switchView("users");
+  teams = await apiJson("/api/teams");
   const users = await apiJson("/api/users");
+  const teamOpts = u => `<option value="">未所属</option>` + teams.map(t =>
+    `<option value="${t.id}" ${u.team_id === t.id ? "selected" : ""}>${t.name}</option>`).join("");
   document.querySelector("#users-table tbody").innerHTML = users.map(u => `
     <tr>
       <td><strong>${u.name}</strong></td>
+      <td><select class="set-team" data-id="${u.id}"
+        style="padding:.3rem;border:1px solid #ccc;border-radius:5px">${teamOpts(u)}</select></td>
       <td>${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
       <td>${u.active ? "有効" : '<span class="badge gray">無効</span>'}</td>
       <td>${u.capture_enabled ? "ON" : '<span class="badge gray">停止中</span>'}
@@ -525,6 +584,14 @@ async function showUsers() {
           ${u.active ? "無効化" : "有効化"}</button>
       </td>
     </tr>`).join("");
+  document.querySelectorAll(".set-team").forEach(sel => sel.onchange = async () => {
+    const body = sel.value ? { team_id: +sel.value } : { clear_team: true };
+    await apiJson(`/api/users/${sel.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  });
+  renderTeams();
   document.querySelectorAll(".regen").forEach(b => b.onclick = async () => {
     if (!confirm(`${b.dataset.name} さんのトークンを再発行しますか？\n(今のトークンは使えなくなります)`)) return;
     const r = await apiJson(`/api/users/${b.dataset.id}/token`, { method: "POST" });
@@ -564,6 +631,67 @@ $("add-user").onclick = async () => {
   showToken(r.name, r.token);
   showUsers();
 };
+
+/* ---------- チーム管理 ---------- */
+function renderTeams() {
+  document.querySelector("#teams-table tbody").innerHTML = teams.map(t => `
+    <tr><td><strong>${t.name}</strong></td><td>${t.members} 人</td>
+      <td>
+        <button class="mini ghost team-rename" data-id="${t.id}" data-name="${t.name}">改名</button>
+        <button class="mini danger team-delete" data-id="${t.id}" data-name="${t.name}">削除</button>
+      </td></tr>`).join("") ||
+    `<tr><td colspan="3"><small>チームがありません</small></td></tr>`;
+  document.querySelectorAll(".team-rename").forEach(b => b.onclick = async () => {
+    const name = prompt("新しいチーム名", b.dataset.name);
+    if (!name) return;
+    await apiJson(`/api/teams/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".team-delete").forEach(b => b.onclick = async () => {
+    if (!confirm(`チーム「${b.dataset.name}」を削除しますか？\n(所属メンバーは未所属に戻ります)`)) return;
+    await apiJson(`/api/teams/${b.dataset.id}`, { method: "DELETE" });
+    showUsers();
+  });
+}
+$("add-team").onclick = async () => {
+  const name = $("new-team").value.trim();
+  if (!name) { alert("チーム名を入力してください"); return; }
+  await apiJson("/api/teams", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  $("new-team").value = "";
+  showUsers();
+};
+
+/* ---------- 休暇・欠勤の申請 ---------- */
+async function showLeave() {
+  switchView("leave");
+  const status = $("leave-filter").value;
+  const list = await apiJson("/api/leave" + (status ? `?status=${status}` : ""));
+  const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
+  document.querySelector("#leave-table tbody").innerHTML = list.map(l => `
+    <tr>
+      <td><strong>${l.name}</strong></td><td>${l.date}</td><td>${l.leave_type}</td>
+      <td>${esc(l.reason) || "—"}</td>
+      <td class="lv-${l.status}">${label[l.status] || l.status}</td>
+      <td>${l.status === "pending" ? `
+        <button class="mini approve" data-id="${l.id}">承認</button>
+        <button class="mini danger reject" data-id="${l.id}">却下</button>` : "—"}</td>
+    </tr>`).join("") || `<tr><td colspan="6"><small>申請はありません</small></td></tr>`;
+  document.querySelectorAll(".approve, .reject").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/leave/${b.dataset.id}/decision`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approve: b.classList.contains("approve") }),
+    });
+    refreshLeaveBadge();
+    showLeave();
+  });
+}
+$("leave-filter").onchange = () => showLeave();
 
 function showToken(name, token) {
   $("token-title").textContent = `${name} さんのトークン`;
@@ -770,8 +898,10 @@ async function showDetail(userId, userName, month) {
     const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
     const jr = d?.has_journal
       ? ` <span class="jr-mark" data-date="${date}" title="日報あり（クリックで表示）">📝</span>` : "";
+    const lv = d?.leave
+      ? ` <span class="badge ${d.leave.status === "approved" ? "" : "gray"}" style="${d.leave.status === "approved" ? "background:#7c3aed" : ""}" title="${d.leave.status === "approved" ? "承認済" : "申請中"}">${d.leave.type}</span>` : "";
     html += `<div class="tl-row">
-      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})${jr}</div>
+      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})${jr}${lv}</div>
       <div>${d ? d.hours + " h" : ""}${d && d.over != null && Math.abs(d.over) >= 0.01
         ? `<br><small style="color:${d.over > 0 ? "#c2410c" : "#1565c0"}">${d.over > 0 ? "+" : "−"}${Math.abs(d.over)}</small>` : ""}</div>
       <div class="tl">${work}${hours}${segs}${dots}</div>
@@ -877,6 +1007,7 @@ $("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = tru
 $("nav-home").onclick = () => showHome();
 $("nav-users").onclick = () => showUsers();
 $("nav-journal").onclick = () => showJournal();
+$("nav-leave").onclick = () => showLeave();
 $("nav-report").onclick = () => showReport();
 $("nav-settings").onclick = () => showSettings();
 $("back-home").onclick = () => showHome();

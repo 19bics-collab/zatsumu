@@ -189,6 +189,98 @@ def test_me_monthly(client, users, tmp_path):
     assert client.get("/api/me/monthly?month=2026-05").status_code == 401
 
 
+def test_teams(client, users):
+    worker, admin = users
+    # 作成は管理者のみ
+    assert client.post("/api/teams", headers=auth(worker),
+                       json={"name": "営業部"}).status_code == 403
+    t = client.post("/api/teams", headers=auth(admin), json={"name": "営業部"}).json()
+    assert client.post("/api/teams", headers=auth(admin),
+                       json={"name": "営業部"}).status_code == 409  # 重複
+
+    # メンバーをチームに割り当て
+    r = client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                     json={"team_id": t["id"]})
+    assert r.json()["team_id"] == t["id"]
+    # 不明なチームは拒否
+    assert client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                        json={"team_id": 9999}).status_code == 400
+
+    # 稼働状況にチーム名が出る & チームで絞り込める
+    st = client.get("/api/status", headers=auth(admin)).json()
+    assert {u["name"]: u["team_name"] for u in st}["tanaka"] == "営業部"
+    filtered = client.get(f"/api/status?team_id={t['id']}",
+                          headers=auth(admin)).json()
+    assert [u["name"] for u in filtered] == ["tanaka"]
+    teams = client.get("/api/teams", headers=auth(admin)).json()
+    assert {x["name"]: x["members"] for x in teams}["営業部"] == 1
+
+    # チーム削除でメンバーは未所属に戻る
+    client.delete(f"/api/teams/{t['id']}", headers=auth(admin))
+    assert client.get("/api/users", headers=auth(admin)).json()
+    by = {u["name"]: u for u in client.get("/api/users", headers=auth(admin)).json()}
+    assert by["tanaka"]["team_id"] is None
+
+    # clear_team で未所属に戻せる
+    t2 = client.post("/api/teams", headers=auth(admin), json={"name": "開発"}).json()
+    client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                 json={"team_id": t2["id"]})
+    client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                 json={"clear_team": True})
+    by = {u["name"]: u for u in client.get("/api/users", headers=auth(admin)).json()}
+    assert by["tanaka"]["team_id"] is None
+
+
+def test_leave_request_and_approval(client, users):
+    worker, admin = users
+    assert "有給休暇" in client.get("/api/leave/types",
+                                 headers=auth(worker)).json()["types"]
+
+    # 申請
+    r = client.post("/api/me/leave", headers=auth(worker),
+                    json={"date": "2026-07-01", "leave_type": "有給休暇",
+                          "reason": "私用"})
+    assert r.status_code == 200 and r.json()["status"] == "pending"
+    # 不明な種別は拒否
+    assert client.post("/api/me/leave", headers=auth(worker),
+                       json={"date": "2026-07-02", "leave_type": "X"}).status_code == 400
+
+    # 本人は自分の申請を見られる
+    mine = client.get("/api/me/leave", headers=auth(worker)).json()
+    assert mine[0]["date"] == "2026-07-01" and mine[0]["status"] == "pending"
+
+    # 管理者は pending 一覧を取得し承認
+    pend = client.get("/api/leave?status=pending", headers=auth(admin)).json()
+    assert len(pend) == 1 and pend[0]["name"] == "tanaka"
+    lid = pend[0]["id"]
+    # 一般ユーザーは承認不可
+    assert client.post(f"/api/leave/{lid}/decision", headers=auth(worker),
+                       json={"approve": True}).status_code == 403
+    assert client.post(f"/api/leave/{lid}/decision", headers=auth(admin),
+                       json={"approve": True}).json()["status"] == "approved"
+
+    # 承認済みは取り消せない & 上書き申請もできない
+    assert client.delete(f"/api/me/leave/{lid}",
+                         headers=auth(worker)).status_code == 409
+    assert client.post("/api/me/leave", headers=auth(worker),
+                       json={"date": "2026-07-01",
+                             "leave_type": "欠勤"}).status_code == 409
+
+    # 個人月次に休暇が反映される
+    detail = client.get(f"/api/users/{worker['id']}/monthly?month=2026-07",
+                        headers=auth(admin)).json()
+    days = {d["date"]: d for d in detail["days"]}
+    assert days["2026-07-01"]["leave"] == {"type": "有給休暇", "status": "approved"}
+
+    # 未承認の申請は本人が取り消せる
+    client.post("/api/me/leave", headers=auth(worker),
+                json={"date": "2026-07-05", "leave_type": "半休"})
+    lid2 = [x for x in client.get("/api/me/leave", headers=auth(worker)).json()
+            if x["date"] == "2026-07-05"][0]["id"]
+    assert client.delete(f"/api/me/leave/{lid2}",
+                         headers=auth(worker)).status_code == 200
+
+
 def test_user_management(client, users):
     worker, admin = users
     # 一覧は管理者のみ。トークンは含まれない

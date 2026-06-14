@@ -111,6 +111,18 @@
   </div>
 </div>
 
+<div class="card" id="leave-card" hidden>
+  <h2>休暇・欠勤の申請</h2>
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+    <input type="date" id="lv-date">
+    <select id="lv-type"></select>
+    <input type="text" id="lv-reason" placeholder="理由（任意）" style="flex:1;min-width:120px">
+    <button class="small" id="lv-submit">申請</button>
+  </div>
+  <p id="lv-msg" style="font-size:.85rem;margin:.4rem 0"></p>
+  <div id="lv-list"></div>
+</div>
+
 <div class="card" id="history" hidden>
   <h2>勤務実績</h2>
   <div class="month-nav">
@@ -175,6 +187,7 @@ function showLogin(withError) {
   clearInterval(timer);
   $("panel").hidden = true;
   $("journal-card").hidden = true;
+  $("leave-card").hidden = true;
   $("history").hidden = true;
   $("login").hidden = false;
   $("login-error").hidden = !withError;
@@ -187,9 +200,11 @@ async function load() {
   $("login").hidden = true;
   $("panel").hidden = false;
   $("journal-card").hidden = false;
+  $("leave-card").hidden = false;
   $("history").hidden = false;
   $("hello").textContent = state.name + " さん";
   loadJournal();
+  loadLeave();
   draw();
   clearInterval(timer);
   timer = setInterval(draw, 1000);
@@ -356,6 +371,48 @@ $("journal-save").onclick = async () => {
   });
   $("journal-msg").textContent = r.ok ? "保存しました ✓" : "保存に失敗しました";
   setTimeout(() => $("journal-msg").textContent = "", 2500);
+};
+
+/* ---------- 休暇・欠勤の申請 ---------- */
+const esc2 = s => (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+async function loadLeave() {
+  if (!$("lv-type").options.length) {
+    const t = await (await fetch("/api/leave/types", { headers: headers() })).json();
+    $("lv-type").innerHTML = t.types.map(x => `<option>${x}</option>`).join("");
+  }
+  const list = await (await fetch("/api/me/leave", { headers: headers() })).json();
+  const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
+  $("lv-list").innerHTML = list.length ? list.map(l => `
+    <div style="display:flex;gap:.6rem;align-items:center;border-bottom:1px solid #eee;padding:.35rem 0;font-size:.9rem">
+      <span style="width:6.5rem">${l.date}</span>
+      <span style="flex:1">${l.leave_type}${l.reason ? " / " + esc2(l.reason) : ""}</span>
+      <span class="lv-${l.status}">${label[l.status]}</span>
+      ${l.status !== "approved"
+        ? `<button class="small ghost lv-cancel" data-id="${l.id}">取消</button>` : ""}
+    </div>`).join("") : `<small style="color:#777">申請はありません</small>`;
+  document.querySelectorAll(".lv-cancel").forEach(b => b.onclick = async () => {
+    await fetch(`/api/me/leave/${b.dataset.id}`, { method: "DELETE", headers: headers() });
+    loadLeave();
+  });
+}
+$("lv-submit").onclick = async () => {
+  if (!$("lv-date").value) { $("lv-msg").textContent = "日付を選んでください"; return; }
+  const r = await fetch("/api/me/leave", {
+    method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+    body: JSON.stringify({ date: $("lv-date").value, leave_type: $("lv-type").value,
+                           reason: $("lv-reason").value }),
+  });
+  if (r.ok) {
+    $("lv-reason").value = "";
+    $("lv-msg").style.color = "#0a7d32";
+    $("lv-msg").textContent = "申請しました（承認待ち）";
+    loadLeave();
+  } else {
+    const e = await r.json().catch(() => ({}));
+    $("lv-msg").style.color = "#c62828";
+    $("lv-msg").textContent = e.detail || "申請に失敗しました";
+  }
+  setTimeout(() => $("lv-msg").textContent = "", 3000);
 };
 
 $("punch").onclick = () =>

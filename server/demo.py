@@ -52,6 +52,17 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
         )
         ids[name] = cur.lastrowid
 
+    # デモ用チームと所属
+    team_ids = {}
+    for tname in ("営業部", "開発部"):
+        team_ids[tname] = conn.execute(
+            "INSERT INTO teams (name) VALUES (?)", (tname,)
+        ).lastrowid
+    conn.execute("UPDATE users SET team_id = ? WHERE id IN (?, ?)",
+                 (team_ids["営業部"], ids["田中"], ids["佐藤"]))
+    conn.execute("UPDATE users SET team_id = ? WHERE id = ?",
+                 (team_ids["開発部"], ids["鈴木"]))
+
     now_utc = datetime.now(timezone.utc)
     now = now_utc.astimezone(tz.TZ)
     accents = {"田中": "#45475a", "鈴木": "#3a5a40", "佐藤": "#5a3a50"}
@@ -116,6 +127,21 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
             "INSERT INTO journals (user_id, date, body, updated_at) VALUES (?,?,?,?)",
             (ids[name], date, body, now_utc.isoformat()),
         )
+
+    # デモ用の休暇申請 (承認待ち1件・承認済み1件)
+    d5 = (now + timedelta(days=5)).strftime("%Y-%m-%d")
+    d10 = (now + timedelta(days=10)).strftime("%Y-%m-%d")
+    conn.execute(
+        "INSERT INTO leave_requests (user_id, date, leave_type, reason, status, "
+        "created_at) VALUES (?,?,?,?, 'pending', ?)",
+        (ids["鈴木"], d5, "有給休暇", "私用のため", now_utc.isoformat()),
+    )
+    conn.execute(
+        "INSERT INTO leave_requests (user_id, date, leave_type, reason, status, "
+        "created_at, decided_at, decided_by) VALUES (?,?,?,?, 'approved', ?, ?, ?)",
+        (ids["田中"], d10, "有給休暇", "通院", now_utc.isoformat(),
+         now_utc.isoformat(), ids["管理者"]),
+    )
 
     conn.commit()
     return True

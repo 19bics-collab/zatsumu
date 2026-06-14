@@ -53,7 +53,26 @@ CREATE TABLE IF NOT EXISTS journals (
     updated_at TEXT NOT NULL,
     UNIQUE(user_id, date)
 );
+CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS leave_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    date TEXT NOT NULL,
+    leave_type TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by INTEGER,
+    UNIQUE(user_id, date)
+);
 """
+
+# 休暇の種別
+LEAVE_TYPES = ["有給休暇", "半休", "欠勤", "特別休暇", "その他"]
 
 # 全社設定の既定値 (整数)。settings テーブルの値で上書きされる
 INT_SETTINGS = {
@@ -122,6 +141,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE users ADD COLUMN capture_enabled INTEGER NOT NULL DEFAULT 1"
         )
+    if "team_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN team_id INTEGER")
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
     if "category" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN category TEXT")

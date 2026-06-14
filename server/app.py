@@ -147,6 +147,22 @@ class UserPatch(BaseModel):
     active: bool | None = None
     is_admin: bool | None = None
     capture_enabled: bool | None = None
+    team_id: int | None = None
+    clear_team: bool = False  # team_id を未所属(NULL)に戻す
+
+
+class TeamBody(BaseModel):
+    name: str
+
+
+class LeaveBody(BaseModel):
+    date: str
+    leave_type: str
+    reason: str = ""
+
+
+class DecisionBody(BaseModel):
+    approve: bool
 
 
 class SettingsPatch(BaseModel):
@@ -317,21 +333,27 @@ async def upload_screenshot(
 
 
 @app.get("/api/status")
-def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
+def status(
+    team_id: int | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
     now = datetime.now(timezone.utc)
     day_start, _ = tz.today_window(now)
-    rows = conn.execute(
-        """
-        SELECT u.id, u.name,
+    q = """
+        SELECT u.id, u.name, u.team_id, t.name AS team_name,
                s.clock_in AS open_since,
                s.category AS open_category,
                (SELECT taken_at FROM screenshots WHERE user_id = u.id
                 ORDER BY taken_at DESC LIMIT 1) AS last_screenshot
         FROM users u
+        LEFT JOIN teams t ON t.id = u.team_id
         LEFT JOIN sessions s ON s.user_id = u.id AND s.clock_out IS NULL
-        ORDER BY u.name
-        """
-    ).fetchall()
+    """
+    args: list = []
+    if team_id is not None:
+        q += " WHERE u.team_id = ?"
+        args.append(team_id)
+    q += " ORDER BY u.name"
+    rows = conn.execute(q, args).fetchall()
     # 「今日」(ローカルTZ) に重なるセッションだけ取り、Python側で時間を合算
     today_sessions = conn.execute(
         "SELECT user_id, clock_in, clock_out, category FROM sessions "
@@ -361,6 +383,7 @@ def status(_admin=Depends(require_admin), conn=Depends(get_conn)):
         {
             "user_id": r["id"],
             "name": r["name"],
+            "team_name": r["team_name"],
             "seated": r["open_since"] is not None,
             "open_since": r["open_since"],
             "category": r["open_category"],
@@ -431,21 +454,31 @@ def _monthly_detail(conn, user, month: str) -> dict:
         t = tz.local(sh["taken_at"])
         day_of(t)["screenshots"].append({"id": sh["id"], "taken_at": t.isoformat()})
 
+    mstart, mend = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
     journ = conn.execute(
         "SELECT date FROM journals WHERE user_id = ? AND date >= ? AND date < ?",
-        (user_id, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")),
+        (user_id, mstart, mend),
     ).fetchall()
     journal_days = {r["date"] for r in journ}
+    leaves = {
+        r["date"]: {"type": r["leave_type"], "status": r["status"]}
+        for r in conn.execute(
+            "SELECT date, leave_type, status FROM leave_requests "
+            "WHERE user_id = ? AND date >= ? AND date < ?", (user_id, mstart, mend)
+        )
+    }
 
     target = db.get_settings(conn)["daily_target_minutes"] / 60
     for key, d in days.items():
         # 予定時間に対する過不足 (在席のあった日のみ)
         d["over"] = round(d["hours"] - target, 2) if d["hours"] > 0 else None
         d["hours"] = round(d["hours"], 2)
-    for jd in journal_days:  # 在席が無くても日報がある日を含める
+    # 在席が無くても日報・休暇のある日を行に含める
+    for jd in journal_days | set(leaves):
         day_of(datetime.strptime(jd, "%Y-%m-%d").replace(tzinfo=tz.TZ))
     for key, d in days.items():
         d["has_journal"] = key in journal_days
+        d["leave"] = leaves.get(key)
         d.setdefault("over", None)
     return {
         "user": {"id": user["id"], "name": user["name"]},
@@ -557,10 +590,63 @@ def list_users(_admin=Depends(require_admin), conn=Depends(get_conn)):
     return [
         dict(r)
         for r in conn.execute(
-            "SELECT id, name, is_admin, active, capture_enabled "
-            "FROM users ORDER BY name"
+            "SELECT u.id, u.name, u.is_admin, u.active, u.capture_enabled, "
+            "u.team_id, t.name AS team_name "
+            "FROM users u LEFT JOIN teams t ON t.id = u.team_id ORDER BY u.name"
         )
     ]
+
+
+@app.get("/api/teams")
+def list_teams(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT t.id, t.name, "
+            "(SELECT COUNT(*) FROM users u WHERE u.team_id = t.id) AS members "
+            "FROM teams t ORDER BY t.name"
+        )
+    ]
+
+
+@app.post("/api/teams")
+def create_team(body: TeamBody, admin=Depends(require_admin), conn=Depends(get_conn)):
+    import sqlite3 as _sq
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "チーム名を入力してください")
+    try:
+        cur = conn.execute("INSERT INTO teams (name) VALUES (?)", (name,))
+    except _sq.IntegrityError:
+        raise HTTPException(409, "同じ名前のチームが既に存在します")
+    _audit(conn, admin, "team_create", detail=name)
+    return {"id": cur.lastrowid, "name": name}
+
+
+@app.patch("/api/teams/{team_id}")
+def rename_team(
+    team_id: int, body: TeamBody, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    if not conn.execute("SELECT 1 FROM teams WHERE id = ?", (team_id,)).fetchone():
+        raise HTTPException(404, "Team not found")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "チーム名を入力してください")
+    conn.execute("UPDATE teams SET name = ? WHERE id = ?", (name, team_id))
+    _audit(conn, admin, "team_rename", detail=name)
+    return {"id": team_id, "name": name}
+
+
+@app.delete("/api/teams/{team_id}")
+def delete_team(team_id: int, admin=Depends(require_admin), conn=Depends(get_conn)):
+    if not conn.execute("SELECT 1 FROM teams WHERE id = ?", (team_id,)).fetchone():
+        raise HTTPException(404, "Team not found")
+    # 所属メンバーは未所属に戻す
+    conn.execute("UPDATE users SET team_id = NULL WHERE team_id = ?", (team_id,))
+    conn.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+    _audit(conn, admin, "team_delete", detail=str(team_id))
+    return {"deleted": team_id}
 
 
 @app.post("/api/users")
@@ -610,8 +696,18 @@ def patch_user(
         )
         _audit(conn, admin, "user_capture", user_id,
                detail=str(body.capture_enabled))
+    if body.clear_team:
+        conn.execute("UPDATE users SET team_id = NULL WHERE id = ?", (user_id,))
+        _audit(conn, admin, "user_team", user_id, detail="(未所属)")
+    elif body.team_id is not None:
+        if not conn.execute("SELECT 1 FROM teams WHERE id = ?",
+                            (body.team_id,)).fetchone():
+            raise HTTPException(400, "不明なチームです")
+        conn.execute("UPDATE users SET team_id = ? WHERE id = ?",
+                     (body.team_id, user_id))
+        _audit(conn, admin, "user_team", user_id, detail=str(body.team_id))
     row = conn.execute(
-        "SELECT id, name, is_admin, active, capture_enabled FROM users "
+        "SELECT id, name, is_admin, active, capture_enabled, team_id FROM users "
         "WHERE id = ?", (user_id,)
     ).fetchone()
     return dict(row)
@@ -824,6 +920,106 @@ def get_user_journal(
     if not conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
         raise HTTPException(404, "User not found")
     return _get_journal(conn, user_id, _valid_date(date))
+
+
+# ---------------- 休暇・欠勤の申請／承認 ----------------
+
+@app.get("/api/leave/types")
+def leave_types(user=Depends(auth_user)):
+    return {"types": db.LEAVE_TYPES}
+
+
+@app.get("/api/me/leave")
+def my_leave(user=Depends(auth_user), conn=Depends(get_conn)):
+    rows = conn.execute(
+        "SELECT id, date, leave_type, reason, status FROM leave_requests "
+        "WHERE user_id = ? ORDER BY date DESC LIMIT 60",
+        (user["id"],),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/me/leave")
+def request_leave(
+    body: LeaveBody, user=Depends(auth_user), conn=Depends(get_conn)
+):
+    date = _valid_date(body.date)
+    if body.leave_type not in db.LEAVE_TYPES:
+        raise HTTPException(400, "不明な休暇種別です")
+    existing = conn.execute(
+        "SELECT id, status FROM leave_requests WHERE user_id = ? AND date = ?",
+        (user["id"], date),
+    ).fetchone()
+    if existing and existing["status"] == "approved":
+        raise HTTPException(409, "その日は既に承認済みの申請があります")
+    # 未承認の申請は上書き(再申請)できる
+    conn.execute(
+        "INSERT INTO leave_requests (user_id, date, leave_type, reason, status, "
+        "created_at) VALUES (?, ?, ?, ?, 'pending', ?) "
+        "ON CONFLICT(user_id, date) DO UPDATE SET leave_type = excluded.leave_type, "
+        "reason = excluded.reason, status = 'pending', created_at = excluded.created_at",
+        (user["id"], date, body.leave_type, body.reason.strip(), now_iso()),
+    )
+    s = db.get_settings(conn)
+    if s["notify_clock"] or s["notify_alert"]:  # 通知が有効なら申請を周知
+        _notify(conn, f"📝 {user['name']} さんが休暇申請（{body.leave_type} / {date}）")
+    return {"date": date, "status": "pending"}
+
+
+@app.delete("/api/me/leave/{leave_id}")
+def cancel_leave(leave_id: int, user=Depends(auth_user), conn=Depends(get_conn)):
+    row = conn.execute(
+        "SELECT * FROM leave_requests WHERE id = ? AND user_id = ?",
+        (leave_id, user["id"]),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    if row["status"] == "approved":
+        raise HTTPException(409, "承認済みの申請は取り消せません（管理者に連絡）")
+    conn.execute("DELETE FROM leave_requests WHERE id = ?", (leave_id,))
+    return {"deleted": leave_id}
+
+
+@app.get("/api/leave")
+def list_leave(
+    status: str | None = None,
+    _admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """休暇申請の一覧 (status で絞り込み: pending/approved/rejected)."""
+    q = (
+        "SELECT l.id, l.user_id, u.name, l.date, l.leave_type, l.reason, l.status, "
+        "l.created_at FROM leave_requests l JOIN users u ON u.id = l.user_id"
+    )
+    args: list = []
+    if status:
+        q += " WHERE l.status = ?"
+        args.append(status)
+    q += " ORDER BY l.date DESC, u.name"
+    return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+
+@app.post("/api/leave/{leave_id}/decision")
+def decide_leave(
+    leave_id: int,
+    body: DecisionBody,
+    admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    row = conn.execute(
+        "SELECT l.*, u.name FROM leave_requests l JOIN users u ON u.id = l.user_id "
+        "WHERE l.id = ?", (leave_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    status = "approved" if body.approve else "rejected"
+    conn.execute(
+        "UPDATE leave_requests SET status = ?, decided_at = ?, decided_by = ? "
+        "WHERE id = ?", (status, now_iso(), admin["id"], leave_id),
+    )
+    _audit(conn, admin, "leave_" + status, row["user_id"],
+           detail=f"{row['leave_type']} {row['date']}")
+    return {"id": leave_id, "status": status}
 
 
 @app.get("/api/screenshots")
