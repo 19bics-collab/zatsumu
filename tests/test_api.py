@@ -928,7 +928,8 @@ def test_db_indexes_created(client, users, tmp_path):
     with db.get_db(tmp_path / "zatsumu.db") as conn:
         names = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index'")}
-    for idx in ("idx_sessions_user_open", "idx_screenshots_user_taken",
+    for idx in ("idx_sessions_user_open", "idx_sessions_clock_in",
+                "idx_screenshots_user_taken", "idx_screenshots_taken",
                 "idx_leave_date", "idx_audit_at", "idx_users_team"):
         assert idx in names
 
@@ -1105,3 +1106,35 @@ def test_long_seated_alert_once_per_session(client, users, tmp_path, monkeypatch
     with db.get_db(tmp_path / "zatsumu.db") as conn:
         assert m.check_long_seated(conn) == 1
     assert len(sent) == 2
+
+
+def test_background_loop_survives_errors_and_cancels(client, users, monkeypatch):
+    """_background_loop は1回の失敗で死なず、cancel では速やかに終了する."""
+    import asyncio
+    from server import app as m
+
+    # この実装が依拠する不変条件: CancelledError は Exception では捕捉されない
+    assert not issubclass(asyncio.CancelledError, Exception)
+
+    calls = {"n": 0}
+
+    def boom(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("DB down")
+
+    monkeypatch.setattr(m.db, "connect", boom)
+    monkeypatch.setattr(m, "ALERT_CHECK_INTERVAL_MIN", 0.0001)  # ほぼ即時に反復
+
+    async def run():
+        task = asyncio.create_task(m._background_loop())
+        await asyncio.sleep(0.05)            # 数回反復させる(毎回失敗)
+        assert not task.done()               # 失敗してもループは生存
+        assert calls["n"] >= 1               # 実際に失敗を踏んでいる
+        task.cancel()                        # cancel で確実に終了する
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        assert task.cancelled() or task.done()
+
+    asyncio.run(run())
