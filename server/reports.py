@@ -26,19 +26,12 @@ def daily_hours_by_user(conn: sqlite3.Connection, month: str) -> dict:
     now = datetime.now(timezone.utc)
     res: dict[int, dict[str, float]] = {}
     for s in _month_sessions(conn, month):
-        seg_start = max(tz.local(s["clock_in"]), start)
-        seg_close = min(
-            tz.local(s["clock_out"]) if s["clock_out"] else now.astimezone(tz.TZ), end
-        )
-        while seg_start < seg_close:
-            day_end = (seg_start + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            seg_end = min(day_end, seg_close)
+        for seg_start, seg_end, _open in tz.day_segments(
+            s["clock_in"], s["clock_out"], start, end, now
+        ):
             d = res.setdefault(s["user_id"], {})
             key = seg_start.date().isoformat()
             d[key] = d.get(key, 0.0) + (seg_end - seg_start).total_seconds() / 3600
-            seg_start = seg_end
     return res
 
 

@@ -980,3 +980,128 @@ def test_templates_escape_user_content():
     # 生挿入が残っていない
     assert "${u.name}" not in admin
     assert "${l.leave_type}" not in admin
+
+
+# ---- 自動改善フェーズ2で追加したテスト ----
+
+def test_day_segments_helper():
+    """tz.day_segments: 日跨ぎ分割・is_open・月境界クランプ."""
+    from datetime import datetime, timezone
+    from server import tz
+    tz.set_tz("Asia/Tokyo")
+    start, end = tz.month_window("2026-05")
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    # JST 5/2 23:00 - 5/3 01:00 (= UTC 5/2 14:00 - 16:00) → 2区間に分割
+    segs = list(tz.day_segments("2026-05-02T14:00:00+00:00",
+                                "2026-05-02T16:00:00+00:00", start, end, now))
+    assert len(segs) == 2
+    assert [s[0].date().isoformat() for s in segs] == ["2026-05-02", "2026-05-03"]
+    assert all(s[2] is False for s in segs)        # 退席済みは is_open=False
+    # 合計2時間
+    total = sum((e - s).total_seconds() for s, e, _ in segs) / 3600
+    assert round(total, 2) == 2.0
+    # 未退席は末尾区間が is_open=True、now までで打ち切り
+    openseg = list(tz.day_segments("2026-05-10T00:00:00+00:00", None,
+                                   start, end, datetime(2026, 5, 10, 3, tzinfo=timezone.utc)))
+    assert openseg[-1][2] is True
+
+
+def test_to_jpeg_quality_and_no_resize():
+    from PIL import Image
+    from client import capture
+    big = Image.new("RGB", (400, 200), "white")
+    # 元画像が max_width 以下ならリサイズしない
+    out = Image.open(__import__("io").BytesIO(
+        capture.to_jpeg(big, max_width=1280)))
+    assert out.width == 400
+    # 同じノイズ画像で低品質 < 高品質 のバイト数
+    import random
+    noise = Image.new("RGB", (300, 300))
+    noise.putdata([(random.randint(0, 255),) * 3 for _ in range(300 * 300)])
+    lo = capture.to_jpeg(noise, quality=10)
+    hi = capture.to_jpeg(noise, quality=90)
+    assert len(lo) < len(hi)
+
+
+def test_send_email_builds_mime(monkeypatch):
+    from server import notify
+
+    class FakeSMTP:
+        last = None
+
+        def __init__(self, host, port, timeout=None):
+            self.host, self.port = host, port
+            self.tls = False; self.logged = None; self.sent = None
+            FakeSMTP.last = self
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def ehlo(self): pass
+        def starttls(self): self.tls = True
+        def login(self, u, p): self.logged = (u, p)
+        def sendmail(self, frm, to, msg): self.sent = (frm, to, msg)
+
+    monkeypatch.setattr(notify.smtplib, "SMTP", FakeSMTP)
+    cfg = {"smtp_host": "smtp.e", "smtp_port": "587", "smtp_user": "u@e",
+           "smtp_pass": "pw", "mail_from": "from@e", "mail_to": "a@e.com, b@e.com"}
+    notify.send_email(cfg, "件名X", "本文Y")
+    f = FakeSMTP.last
+    assert (f.host, f.port) == ("smtp.e", 587)
+    assert f.tls is True and f.logged == ("u@e", "pw")
+    frm, to, raw = f.sent
+    assert frm == "from@e"
+    assert to == ["a@e.com", "b@e.com"]          # 複数宛先を分割
+    assert "from@e" in raw and "a@e.com" in raw
+    # mail_from 未設定なら smtp_user が差出人になる
+    notify.send_email({**cfg, "mail_from": ""}, "s", "t")
+    assert FakeSMTP.last.sent[0] == "u@e"
+
+
+def test_migrate_idempotent(tmp_path):
+    from server import db
+    p = tmp_path / "mig.db"
+    db.connect(p).close()
+    db.connect(p).close()  # 2回目もエラーにならない(ALTERはガード済み)
+    conn = db.connect(p)
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)")]
+    assert cols.count("team_id") == 1 and cols.count("active") == 1
+    conn.close()
+
+
+def test_demo_seed_idempotent(tmp_path):
+    from server import db, demo
+    shots = tmp_path / "shots"
+    with db.get_db(tmp_path / "demo.db") as conn:
+        assert demo.seed(conn, shots) is True       # 空DBには投入
+    with db.get_db(tmp_path / "demo.db") as conn:
+        assert demo.seed(conn, shots) is False      # 2回目はスキップ
+        # ユーザーが重複していない
+        names = [r["name"] for r in conn.execute("SELECT name FROM users")]
+        assert len(names) == len(set(names))
+
+
+def test_long_seated_alert_once_per_session(client, users, tmp_path, monkeypatch):
+    worker, admin = users
+    from server import app as m, notify, db
+    from datetime import datetime, timedelta, timezone
+    sent = []
+    monkeypatch.setattr(notify, "deliver_async", lambda s, t: sent.append(t))
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"slack_webhook_url": "https://h.test/x",
+                       "notify_alert": True, "alert_hours": 6})
+    old = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("INSERT INTO sessions (user_id, clock_in) VALUES (?, ?)",
+                     (worker["id"], old))
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert m.check_long_seated(conn) == 1       # 初回通知
+        assert m.check_long_seated(conn) == 0       # 同一セッションは再通知しない
+    # 退席→再着席した新セッションは再び対象になりうる(alert_notified=0)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("UPDATE sessions SET clock_out = ? WHERE user_id = ?",
+                     (datetime.now(timezone.utc).isoformat(), worker["id"]))
+        conn.execute("INSERT INTO sessions (user_id, clock_in) VALUES (?, ?)",
+                     (worker["id"], old))
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert m.check_long_seated(conn) == 1
+    assert len(sent) == 2

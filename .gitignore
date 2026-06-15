@@ -5,3 +5,4 @@ __pycache__/
 
 review_digest.txt
 .venv/
+.pwtest/

@@ -547,8 +547,10 @@ async function renderHome(status) {
   document.querySelectorAll("#status .force-out").forEach(b => b.onclick = async e => {
     e.stopPropagation();
     if (!confirm(`${b.dataset.name} さんを退席にしますか？`)) return;
-    await apiJson(`/api/users/${b.dataset.id}/clock-out`, { method: "POST" });
-    renderHome(await apiJson("/api/status"));
+    try {
+      await apiJson(`/api/users/${b.dataset.id}/clock-out`, { method: "POST" });
+      renderHome(await apiJson("/api/status" + homeTeamQuery()));  // 絞り込みを維持
+    } catch { /* apiJson が通知・再ログイン処理済み */ }
   });
 
   const shots = await apiJson("/api/screenshots?limit=12");
@@ -1002,7 +1004,7 @@ $("modal-del").onclick = async () => {
   $("modal").hidden = true;
   view.name === "detail"
     ? showDetail(view.userId, view.userName, view.month)
-    : renderHome(await apiJson("/api/status"));
+    : renderHome(await apiJson("/api/status" + homeTeamQuery()));
 };
 $("modal-close").onclick = () => $("modal").hidden = true;
 $("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = true; };

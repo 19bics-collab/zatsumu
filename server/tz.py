@@ -57,3 +57,24 @@ def overlap_hours(
     s = max(local(clock_in), start)
     e = min(local(clock_out) if clock_out else now.astimezone(TZ), end)
     return max((e - s).total_seconds() / 3600, 0.0)
+
+
+def day_segments(
+    clock_in: str, clock_out: str | None, start: datetime, end: datetime,
+    now: datetime,
+):
+    """セッションを [start, end) 内のローカル日付ごとの区間に分割して列挙する.
+
+    日跨ぎのセッションは 0:00 で区切られる。未退席(clock_out=None)は now まで。
+    各要素は (seg_start, seg_end, is_open) のタプル。is_open は未退席かつ末尾区間。
+    在席時間集計・日別タイムライン・当日表示で共通利用する。
+    """
+    seg_start = max(local(clock_in), start)
+    seg_close = min(local(clock_out) if clock_out else now.astimezone(TZ), end)
+    while seg_start < seg_close:
+        day_end = (seg_start + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        seg_end = min(day_end, seg_close)
+        yield seg_start, seg_end, (clock_out is None and seg_end == seg_close)
+        seg_start = seg_end

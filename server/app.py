@@ -420,23 +420,17 @@ def _monthly_detail(conn, user, month: str) -> dict:
         (user_id, tz.utc_iso(end), tz.utc_iso(start)),
     ).fetchall()
     for s in sessions:
-        # 日をまたぐセッションはローカル日付ごとの区間に分割する
-        seg_start = max(tz.local(s["clock_in"]), start)
-        seg_close = min(
-            tz.local(s["clock_out"]) if s["clock_out"] else now.astimezone(tz.TZ), end
-        )
-        while seg_start < seg_close:
-            day_end = (seg_start + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-            seg_end = min(day_end, seg_close)
+        # 日をまたぐセッションはローカル日付ごとの区間に分割する(共通ヘルパ)
+        for seg_start, seg_end, is_open in tz.day_segments(
+            s["clock_in"], s["clock_out"], start, end, now
+        ):
             day = day_of(seg_start)
             day["sessions"].append(
                 {
                     "id": s["id"],
                     "start": seg_start.isoformat(),
                     "end": seg_end.isoformat(),
-                    "open": s["clock_out"] is None and seg_end == seg_close,
+                    "open": is_open,
                     "category": s["category"],
                     # 修正モーダル用に元セッションの全体時刻も返す
                     "clock_in": tz.local(s["clock_in"]).isoformat(),
@@ -448,7 +442,6 @@ def _monthly_detail(conn, user, month: str) -> dict:
             day["hours"] += seg_hours
             cat = s["category"] or "未分類"
             by_category[cat] = by_category.get(cat, 0.0) + seg_hours
-            seg_start = seg_end
 
     shots = conn.execute(
         "SELECT id, taken_at FROM screenshots WHERE user_id = ? "
