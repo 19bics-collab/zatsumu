@@ -420,6 +420,10 @@ const pct = t => {
   const dt = new Date(t);
   return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
 };
+// HTML(本文・属性)に安全に埋め込むためのエスケープ。innerHTMLへ入れる
+// ユーザー由来の文字列(名前・区分・理由など)は必ずこれを通す。
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // 作業区分の色 (設定順のインデックスでパレットから割り当て)
 const CAT_PALETTE = ["#1565c0", "#2e7d32", "#6a1b9a", "#00838f", "#ad1457", "#5d4037"];
 const catColor = cat => {
@@ -432,12 +436,12 @@ const segHtml = (s, mini) => {
   const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
   const time = `${new Date(s.start).toLocaleTimeString("ja-JP")} - ${s.open ? "勤務中" : new Date(s.end).toLocaleTimeString("ja-JP")}`;
   const title = (s.category ? s.category + " " : "") + time;
-  const data = mini ? "" : ` data-id="${s.id}" data-in="${s.clock_in}" data-out="${s.clock_out ?? ""}" data-cat="${s.category ?? ""}"`;
+  const data = mini ? "" : ` data-id="${s.id}" data-in="${esc(s.clock_in)}" data-out="${esc(s.clock_out ?? "")}" data-cat="${esc(s.category ?? "")}"`;
   const col = catColor(s.category);
   const bg = s.open
     ? `repeating-linear-gradient(45deg,${col},${col} 4px,#ffffffaa 4px,#ffffffaa 8px)`
     : col;
-  return `<div class="seg"${data} style="left:${pct(s.start)}%;width:${width}%;background:${bg}" title="${title}"></div>`;
+  return `<div class="seg"${data} style="left:${pct(s.start)}%;width:${width}%;background:${bg}" title="${esc(title)}"></div>`;
 };
 const hhmmPct = hhmm => {
   const [h, mn] = (hhmm || "").split(":").map(Number);
@@ -507,7 +511,7 @@ function homeTeamQuery() {
 async function showHome(prefetched) {
   switchView("home");
   $("home-team").innerHTML = `<option value="">全チーム</option>` +
-    teams.map(t => `<option value="${t.id}">${t.name}</option>`).join("");
+    teams.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("");
   await renderHome(prefetched || await apiJson("/api/status"));
   clearInterval(timer);
   timer = setInterval(async () => {
@@ -526,14 +530,14 @@ async function renderHome(status) {
         warn = ` <span class="badge warn" title="連続在席が${appSettings.alert_hours}時間を超えています">⚠ ${Math.floor(h)}h連続</span>`;
     }
     return `
-    <tr class="user-row" data-id="${u.user_id}" data-name="${u.name}">
-      <td class="click"><strong>${u.name}</strong></td>
-      <td>${u.team_name || "—"}</td>
-      <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${u.seated && u.category ? ` <span class="badge" style="background:${catColor(u.category)}">${u.category}</span>` : ""}${warn}</td>
+    <tr class="user-row" data-id="${u.user_id}" data-name="${esc(u.name)}">
+      <td class="click"><strong>${esc(u.name)}</strong></td>
+      <td>${esc(u.team_name) || "—"}</td>
+      <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${u.seated && u.category ? ` <span class="badge" style="background:${catColor(u.category)}">${esc(u.category)}</span>` : ""}${warn}</td>
       <td>${u.hours_today} h</td>
       <td><div class="tl mini">${workBandHtml()}${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
       <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleTimeString("ja-JP") : "—"}</td>
-      <td>${u.seated ? `<button class="mini danger force-out" data-id="${u.user_id}" data-name="${u.name}">強制退席</button>` : ""}</td>
+      <td>${u.seated ? `<button class="mini danger force-out" data-id="${u.user_id}" data-name="${esc(u.name)}">強制退席</button>` : ""}</td>
     </tr>`;
   }).join("");
   document.querySelectorAll("#status td.click").forEach(td => {
@@ -554,7 +558,7 @@ async function renderHome(status) {
              url: URL.createObjectURL(blob) };
   }));
   $("shots").innerHTML = items.map((it, i) =>
-    `<img src="${it.url}" data-i="${i}" title="${it.info}">`).join("");
+    `<img src="${it.url}" data-i="${i}" title="${esc(it.info)}">`).join("");
   document.querySelectorAll("#shots img").forEach(img =>
     img.onclick = () => openModal(items.map(({ id, info }) => ({ id, info })), +img.dataset.i));
 }
@@ -565,10 +569,10 @@ async function showUsers() {
   teams = await apiJson("/api/teams");
   const users = await apiJson("/api/users");
   const teamOpts = u => `<option value="">未所属</option>` + teams.map(t =>
-    `<option value="${t.id}" ${u.team_id === t.id ? "selected" : ""}>${t.name}</option>`).join("");
+    `<option value="${t.id}" ${u.team_id === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("");
   document.querySelector("#users-table tbody").innerHTML = users.map(u => `
     <tr>
-      <td><strong>${u.name}</strong></td>
+      <td><strong>${esc(u.name)}</strong></td>
       <td><select class="set-team" data-id="${u.id}"
         style="padding:.3rem;border:1px solid #ccc;border-radius:5px">${teamOpts(u)}</select></td>
       <td>${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
@@ -577,7 +581,7 @@ async function showUsers() {
         <button class="mini ghost toggle-capture" data-id="${u.id}" data-cap="${u.capture_enabled}">
           ${u.capture_enabled ? "停止" : "再開"}</button></td>
       <td>
-        <button class="mini ghost regen" data-id="${u.id}" data-name="${u.name}">トークン再発行</button>
+        <button class="mini ghost regen" data-id="${u.id}" data-name="${esc(u.name)}">トークン再発行</button>
         <button class="mini ghost toggle-admin" data-id="${u.id}" data-admin="${u.is_admin}">
           ${u.is_admin ? "管理者を解除" : "管理者にする"}</button>
         <button class="mini ${u.active ? "danger" : ""} toggle-active" data-id="${u.id}" data-active="${u.active}">
@@ -635,10 +639,10 @@ $("add-user").onclick = async () => {
 /* ---------- チーム管理 ---------- */
 function renderTeams() {
   document.querySelector("#teams-table tbody").innerHTML = teams.map(t => `
-    <tr><td><strong>${t.name}</strong></td><td>${t.members} 人</td>
+    <tr><td><strong>${esc(t.name)}</strong></td><td>${t.members} 人</td>
       <td>
-        <button class="mini ghost team-rename" data-id="${t.id}" data-name="${t.name}">改名</button>
-        <button class="mini danger team-delete" data-id="${t.id}" data-name="${t.name}">削除</button>
+        <button class="mini ghost team-rename" data-id="${t.id}" data-name="${esc(t.name)}">改名</button>
+        <button class="mini danger team-delete" data-id="${t.id}" data-name="${esc(t.name)}">削除</button>
       </td></tr>`).join("") ||
     `<tr><td colspan="3"><small>チームがありません</small></td></tr>`;
   document.querySelectorAll(".team-rename").forEach(b => b.onclick = async () => {
@@ -675,7 +679,7 @@ async function showLeave() {
   const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
   document.querySelector("#leave-table tbody").innerHTML = list.map(l => `
     <tr>
-      <td><strong>${l.name}</strong></td><td>${l.date}</td><td>${l.leave_type}</td>
+      <td><strong>${esc(l.name)}</strong></td><td>${esc(l.date)}</td><td>${esc(l.leave_type)}</td>
       <td>${esc(l.reason) || "—"}</td>
       <td class="lv-${l.status}">${label[l.status] || l.status}</td>
       <td>${l.status === "pending" ? `
@@ -716,7 +720,6 @@ function shiftDate(date, delta) {
   d.setDate(d.getDate() + delta);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-const esc = s => (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 async function showJournal(date) {
   switchView("journal");
   const d = date || $("jr-date").value || todayStr();
@@ -726,7 +729,7 @@ async function showJournal(date) {
   $("jr-summary").textContent = `提出 ${submitted} / ${data.entries.length} 人`;
   $("journal-list").innerHTML = data.entries.map(e => `
     <div class="jr-item ${e.body ? "" : "empty"}">
-      <div class="jr-head"><strong>${e.name}</strong>
+      <div class="jr-head"><strong>${esc(e.name)}</strong>
         ${e.body ? `<small>${e.updated_at ? new Date(e.updated_at).toLocaleString("ja-JP") : ""}</small>`
                  : '<span class="badge gray">未提出</span>'}</div>
       ${e.body ? `<div class="jr-body">${esc(e.body)}</div>` : ""}
@@ -752,7 +755,7 @@ async function showReport(month) {
   const data = await apiJson(`/api/reports/monthly?month=${repMonth}`);
   $("rep-title").textContent = `${repMonth}（予定 ${data.target_hours}h/日）`;
   document.querySelector("#report-table tbody").innerHTML = data.rows.map(r => `
-    <tr><td><strong>${r.name}</strong></td><td>${r.work_days} 日</td>
+    <tr><td><strong>${esc(r.name)}</strong></td><td>${r.work_days} 日</td>
         <td>${r.total_hours} h</td><td>${r.target_hours} h</td>
         <td style="color:#c2410c">${r.overtime ? "+" + r.overtime + " h" : "—"}</td>
         <td style="color:#1565c0">${r.shortfall ? "−" + r.shortfall + " h" : "—"}</td></tr>`).join("");
@@ -794,7 +797,8 @@ async function showSettings() {
   $("set-smtp-host").value = s.smtp_host;
   $("set-smtp-port").value = s.smtp_port;
   $("set-smtp-user").value = s.smtp_user;
-  $("set-smtp-pass").value = "";  // パスワードは表示しない
+  $("set-smtp-pass").value = "";  // パスワードは表示しない(サーバも返さない)
+  $("set-smtp-pass").placeholder = s.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
   $("set-mail-from").value = s.mail_from;
   $("set-msg").textContent = "";
   $("test-notify-msg").textContent = "";
@@ -873,7 +877,7 @@ async function showDetail(userId, userName, month) {
     `<span style="font-size:.85rem;margin-right:1rem;white-space:nowrap">
        <span style="display:inline-block;width:.9rem;height:.9rem;border-radius:2px;
        background:${catColor(c)};vertical-align:middle"></span>
-       ${c} ${bc[c] ? "<strong>" + bc[c] + "h</strong>" : ""}</span>`).join("");
+       ${esc(c)} ${bc[c] ? "<strong>" + bc[c] + "h</strong>" : ""}</span>`).join("");
 
   const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
   const [y, m] = month.split("-").map(Number);
@@ -899,7 +903,7 @@ async function showDetail(userId, userName, month) {
     const jr = d?.has_journal
       ? ` <span class="jr-mark" data-date="${date}" title="日報あり（クリックで表示）">📝</span>` : "";
     const lv = d?.leave
-      ? ` <span class="badge ${d.leave.status === "approved" ? "" : "gray"}" style="${d.leave.status === "approved" ? "background:#7c3aed" : ""}" title="${d.leave.status === "approved" ? "承認済" : "申請中"}">${d.leave.type}</span>` : "";
+      ? ` <span class="badge ${d.leave.status === "approved" ? "" : "gray"}" style="${d.leave.status === "approved" ? "background:#7c3aed" : ""}" title="${d.leave.status === "approved" ? "承認済" : "申請中"}">${esc(d.leave.type)}</span>` : "";
     html += `<div class="tl-row">
       <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})${jr}${lv}</div>
       <div>${d ? d.hours + " h" : ""}${d && d.over != null && Math.abs(d.over) >= 0.01
@@ -925,7 +929,7 @@ let sessEdit = null;   // {id} 編集 or null=新規追加
 function openSessionModal(sess) {
   sessEdit = sess;
   $("sess-error").hidden = true;
-  $("sess-cat").innerHTML = detailCats.map(c => `<option>${c}</option>`).join("");
+  $("sess-cat").innerHTML = detailCats.map(c => `<option>${esc(c)}</option>`).join("");
   if (sess) {
     $("session-title").textContent = "打刻の修正";
     $("sess-cat").value = sess.category || detailCats[0] || "";

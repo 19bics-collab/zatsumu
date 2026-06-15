@@ -150,6 +150,9 @@
 <script>
 const KEY = "zatsumu_me_token";
 const $ = id => document.getElementById(id);
+// HTML(本文・属性)に安全に埋め込むためのエスケープ
+const esc2 = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let state = null;
 let timer = null;
 const _n = new Date();
@@ -218,7 +221,7 @@ function draw() {
     const mins = Math.max(Math.floor((Date.now() - new Date(state.open_since)) / 60000), 0);
     b.className = "seated";
     b.style.background = catColor(state.category);
-    b.innerHTML = `着席中（${state.category || ""}）<br>${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, "0")}
+    b.innerHTML = `着席中（${esc2(state.category)}）<br>${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, "0")}
                    <small>タップで退席</small>`;
   } else {
     b.className = "away";
@@ -237,8 +240,8 @@ function drawCategoryButtons() {
     ? "作業区分を切り替え" : "区分を選んで着席";
   $("cat-buttons").innerHTML = cats.map(c => {
     const cur = state.seated && state.category === c;
-    return `<button class="cat-btn${cur ? " current" : ""}" data-cat="${c}"
-            style="${cur ? `background:${catColor(c)}` : ""}">${c}</button>`;
+    return `<button class="cat-btn${cur ? " current" : ""}" data-cat="${esc2(c)}"
+            style="${cur ? `background:${catColor(c)}` : ""}">${esc2(c)}</button>`;
   }).join("");
   document.querySelectorAll(".cat-btn").forEach(btn => btn.onclick = async () => {
     const cat = btn.dataset.cat;
@@ -295,7 +298,7 @@ async function loadHistory() {
       const bg = s.open
         ? `repeating-linear-gradient(45deg,${col},${col} 4px,#ffffffaa 4px,#ffffffaa 8px)`
         : col;
-      return `<div class="seg" title="${s.category || ""}${s.open ? "（勤務中）" : ""}"
+      return `<div class="seg" title="${esc2(s.category || "")}${s.open ? "（勤務中）" : ""}"
               style="left:${pct(s.start)}%;width:${width}%;background:${bg}"></div>`;
     }).join("");
     const dots = (d?.screenshots || []).map(sh => {
@@ -318,7 +321,7 @@ async function loadHistory() {
     `<span style="font-size:.78rem;margin-right:.8rem;white-space:nowrap">
        <span style="display:inline-block;width:.8rem;height:.8rem;border-radius:2px;
        background:${catColor(c)};vertical-align:middle"></span>
-       ${c} ${bc[c] ? bc[c] + "h" : ""}</span>`).join("");
+       ${esc2(c)} ${bc[c] ? bc[c] + "h" : ""}</span>`).join("");
   document.querySelectorAll("#timeline .dot").forEach(dot =>
     dot.onclick = () => openModal(+dot.dataset.i));
 }
@@ -374,18 +377,17 @@ $("journal-save").onclick = async () => {
 };
 
 /* ---------- 休暇・欠勤の申請 ---------- */
-const esc2 = s => (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 async function loadLeave() {
   if (!$("lv-type").options.length) {
     const t = await (await fetch("/api/leave/types", { headers: headers() })).json();
-    $("lv-type").innerHTML = t.types.map(x => `<option>${x}</option>`).join("");
+    $("lv-type").innerHTML = t.types.map(x => `<option>${esc2(x)}</option>`).join("");
   }
   const list = await (await fetch("/api/me/leave", { headers: headers() })).json();
   const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
   $("lv-list").innerHTML = list.length ? list.map(l => `
     <div style="display:flex;gap:.6rem;align-items:center;border-bottom:1px solid #eee;padding:.35rem 0;font-size:.9rem">
-      <span style="width:6.5rem">${l.date}</span>
-      <span style="flex:1">${l.leave_type}${l.reason ? " / " + esc2(l.reason) : ""}</span>
+      <span style="width:6.5rem">${esc2(l.date)}</span>
+      <span style="flex:1">${esc2(l.leave_type)}${l.reason ? " / " + esc2(l.reason) : ""}</span>
       <span class="lv-${l.status}">${label[l.status]}</span>
       ${l.status !== "approved"
         ? `<button class="small ghost lv-cancel" data-id="${l.id}">取消</button>` : ""}

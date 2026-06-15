@@ -52,11 +52,11 @@ def monthly_report(
     超えた分の合計、不足=勤務日で予定時間に満たない分の合計。
     """
     daily = daily_hours_by_user(conn, month)  # validates format
+    start, end = tz.month_window(month)
+    now = datetime.now(timezone.utc)
     counts: dict[int, int] = {}
     for s in _month_sessions(conn, month):
-        start, end = tz.month_window(month)
-        if tz.overlap_hours(s["clock_in"], s["clock_out"], start, end,
-                            datetime.now(timezone.utc)) > 0:
+        if tz.overlap_hours(s["clock_in"], s["clock_out"], start, end, now) > 0:
             counts[s["user_id"]] = counts.get(s["user_id"], 0) + 1
 
     out = []

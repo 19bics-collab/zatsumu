@@ -870,3 +870,113 @@ def test_categories_setting_and_breakdown(client, users):
     detail = client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
                         headers=auth(admin)).json()
     assert detail["by_category"] == {"開発": 3.0, "会議": 1.0}
+
+
+# ===================== 自動改善で追加したテスト =====================
+from pathlib import Path as _Path
+
+_TPL = _Path(__file__).resolve().parents[1] / "server" / "templates"
+
+
+def test_settings_redacts_smtp_password(client, users, tmp_path):
+    _, admin = users
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"smtp_host": "smtp.example.com", "mail_to": "b@example.com",
+                       "smtp_pass": "s3cret"})
+    s = client.get("/api/settings", headers=auth(admin)).json()
+    assert s["smtp_pass"] == ""          # 平文パスワードは返さない
+    assert s["smtp_pass_set"] is True     # 設定済みフラグのみ
+    # DB には保存されており、通知処理からは参照できる
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert db.get_settings(conn)["smtp_pass"] == "s3cret"
+    # パスワードを送らない更新では既存値が保持される
+    client.patch("/api/settings", headers=auth(admin), json={"mail_from": "x@e.com"})
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert db.get_settings(conn)["smtp_pass"] == "s3cret"
+
+
+def test_smtp_port_validation(client, users):
+    _, admin = users
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"smtp_port": "abc"}).status_code == 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"smtp_port": "70000"}).status_code == 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"smtp_port": "465"}).status_code == 200
+
+
+def test_leave_approved_not_clobbered_by_resubmit(client, users):
+    worker, admin = users
+    client.post("/api/me/leave", headers=auth(worker),
+                json={"date": "2026-08-01", "leave_type": "有給休暇", "reason": "A"})
+    lid = client.get("/api/leave?status=pending", headers=auth(admin)).json()[0]["id"]
+    client.post(f"/api/leave/{lid}/decision", headers=auth(admin),
+                json={"approve": True})
+    # 承認後の再申請は 409 で拒否され、内容も上書きされない
+    assert client.post("/api/me/leave", headers=auth(worker),
+                       json={"date": "2026-08-01", "leave_type": "欠勤",
+                             "reason": "B"}).status_code == 409
+    detail = client.get(f"/api/users/{worker['id']}/monthly?month=2026-08",
+                        headers=auth(admin)).json()
+    day = {d["date"]: d for d in detail["days"]}["2026-08-01"]
+    assert day["leave"] == {"type": "有給休暇", "status": "approved"}
+
+
+def test_db_indexes_created(client, users, tmp_path):
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        names = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'")}
+    for idx in ("idx_sessions_user_open", "idx_screenshots_user_taken",
+                "idx_leave_date", "idx_audit_at", "idx_users_team"):
+        assert idx in names
+
+
+def test_notify_deliver_payload_and_gating(monkeypatch):
+    from server import notify
+    sent = []
+    monkeypatch.setattr(notify, "send_slack",
+                        lambda url, text: sent.append(("slack", url, text)))
+    monkeypatch.setattr(notify, "send_email",
+                        lambda s, subj, text: sent.append(("email", subj, text)))
+
+    # 未設定なら何も送らない
+    assert notify.deliver({}, "hi") == []
+    assert sent == []
+    # Slack のみ設定
+    assert notify.deliver({"slack_webhook_url": "https://h.test/x"}, "着席") == ["slack"]
+    assert sent[-1] == ("slack", "https://h.test/x", "着席")
+    # Slack + メール両方
+    cfg = {"slack_webhook_url": "https://h.test/x", "smtp_host": "smtp.e",
+           "mail_to": "a@e.com"}
+    assert set(notify.deliver(cfg, "退席")) == {"slack", "email"}
+    # 送信失敗チャネルは結果に含めない(例外は握りつぶす)
+    monkeypatch.setattr(notify, "send_slack",
+                        lambda url, text: (_ for _ in ()).throw(RuntimeError("net")))
+    assert notify.deliver({"slack_webhook_url": "https://h.test/x"}, "x") == []
+
+
+def test_notify_channels_helper():
+    from server import notify
+    assert notify.channels({}) == []
+    assert notify.channels({"slack_webhook_url": "u"}) == ["slack"]
+    # メールは host と宛先の両方が必要
+    assert notify.channels({"smtp_host": "h"}) == []
+    assert notify.channels({"smtp_host": "h", "mail_to": "a@e"}) == ["email"]
+
+
+def test_templates_escape_user_content():
+    """テンプレートがユーザー由来文字列を esc/esc2 で囲んでいる(XSS回帰防止)."""
+    admin = (_TPL / "admin.html").read_text(encoding="utf-8")
+    member = (_TPL / "member.html").read_text(encoding="utf-8")
+    # 強化版エスケープ(引用符も対象)が定義されている
+    assert "&quot;" in admin and "&#39;" in admin
+    assert "&quot;" in member
+    # 代表的なユーザー由来フィールドが esc を通っている
+    for token in ("${esc(u.name)}", "${esc(l.name)}", "${esc(l.leave_type)}",
+                  "${esc(t.name)}"):
+        assert token in admin, token
+    # 生挿入が残っていない
+    assert "${u.name}" not in admin
+    assert "${l.leave_type}" not in admin

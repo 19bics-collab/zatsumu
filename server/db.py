@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS leave_requests (
     decided_by INTEGER,
     UNIQUE(user_id, date)
 );
+-- 集計・参照でよく使う列のインデックス(IF NOT EXISTS で冪等)
+CREATE INDEX IF NOT EXISTS idx_sessions_user_open ON sessions(user_id, clock_out);
+CREATE INDEX IF NOT EXISTS idx_sessions_clock_in ON sessions(clock_in);
+CREATE INDEX IF NOT EXISTS idx_screenshots_user_taken ON screenshots(user_id, taken_at);
+CREATE INDEX IF NOT EXISTS idx_screenshots_taken ON screenshots(taken_at);
+CREATE INDEX IF NOT EXISTS idx_leave_date ON leave_requests(date);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
 """
 
 # 休暇の種別
@@ -150,6 +157,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE sessions ADD COLUMN alert_notified INTEGER NOT NULL DEFAULT 0"
         )
+    # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
 
 
 def work_categories(conn: sqlite3.Connection) -> list[str]:

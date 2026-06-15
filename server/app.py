@@ -51,14 +51,19 @@ def check_long_seated(conn) -> int:
 async def _background_loop() -> None:
     while True:
         await asyncio.sleep(ALERT_CHECK_INTERVAL_MIN * 60)
-        conn = db.connect(DATA_DIR / "zatsumu.db")
+        # 1 回の失敗(DB/IO/送信エラー等)でループ自体が死なないよう握りつぶす。
+        # CancelledError は BaseException なので捕捉せず shutdown を妨げない。
         try:
-            days = db.get_settings(conn)["retention_days"]
-            if days > 0:
-                retention.purge_old_screenshots(conn, SCREENSHOT_DIR, days)
-            check_long_seated(conn)
-        finally:
-            conn.close()
+            conn = db.connect(DATA_DIR / "zatsumu.db")
+            try:
+                days = db.get_settings(conn)["retention_days"]
+                if days > 0:
+                    retention.purge_old_screenshots(conn, SCREENSHOT_DIR, days)
+                check_long_seated(conn)
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            print(f"バックグラウンド処理でエラー: {e}")
 
 
 @asynccontextmanager
@@ -492,7 +497,11 @@ def _monthly_detail(conn, user, month: str) -> dict:
 
 @app.get("/api/settings")
 def get_settings_api(_admin=Depends(require_admin), conn=Depends(get_conn)):
-    return db.get_settings(conn)
+    s = db.get_settings(conn)
+    # SMTPパスワードはレスポンスに含めない(設定済みかだけ返す)
+    s["smtp_pass_set"] = bool(s.get("smtp_pass"))
+    s["smtp_pass"] = ""
+    return s
 
 
 @app.patch("/api/settings")
@@ -534,6 +543,11 @@ def patch_settings(
                 raise HTTPException(400, f"{key} は HH:MM 形式で入力してください")
     if "timezone" in changes and not tz.set_tz(changes["timezone"]):
         raise HTTPException(400, "不明なタイムゾーンです (例: Asia/Tokyo)")
+    if "smtp_port" in changes and str(changes["smtp_port"]).strip():
+        port = str(changes["smtp_port"]).strip()
+        if not (port.isdigit() and 1 <= int(port) <= 65535):
+            raise HTTPException(400, "SMTPポートは1〜65535の数値で指定してください")
+        changes["smtp_port"] = port
     if "work_categories" in changes:
         cats = [c.strip() for c in changes["work_categories"].split(",") if c.strip()]
         if not cats:
@@ -946,20 +960,22 @@ def request_leave(
     date = _valid_date(body.date)
     if body.leave_type not in db.LEAVE_TYPES:
         raise HTTPException(400, "不明な休暇種別です")
-    existing = conn.execute(
-        "SELECT id, status FROM leave_requests WHERE user_id = ? AND date = ?",
-        (user["id"], date),
-    ).fetchone()
-    if existing and existing["status"] == "approved":
-        raise HTTPException(409, "その日は既に承認済みの申請があります")
-    # 未承認の申請は上書き(再申請)できる
+    # 未承認の申請のみ上書き(再申請)できる。承認済みは clobber しない。
+    # ON CONFLICT の WHERE で原子的に判定し、SELECT→INSERT 間の競合を防ぐ。
     conn.execute(
         "INSERT INTO leave_requests (user_id, date, leave_type, reason, status, "
         "created_at) VALUES (?, ?, ?, ?, 'pending', ?) "
         "ON CONFLICT(user_id, date) DO UPDATE SET leave_type = excluded.leave_type, "
-        "reason = excluded.reason, status = 'pending', created_at = excluded.created_at",
+        "reason = excluded.reason, status = 'pending', created_at = excluded.created_at "
+        "WHERE leave_requests.status != 'approved'",
         (user["id"], date, body.leave_type, body.reason.strip(), now_iso()),
     )
+    final = conn.execute(
+        "SELECT status FROM leave_requests WHERE user_id = ? AND date = ?",
+        (user["id"], date),
+    ).fetchone()
+    if final and final["status"] == "approved":
+        raise HTTPException(409, "その日は既に承認済みの申請があります")
     s = db.get_settings(conn)
     if s["notify_clock"] or s["notify_alert"]:  # 通知が有効なら申請を周知
         _notify(conn, f"📝 {user['name']} さんが休暇申請（{body.leave_type} / {date}）")
