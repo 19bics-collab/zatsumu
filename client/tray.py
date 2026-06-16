@@ -16,7 +16,7 @@ import time
 import httpx
 from PIL import Image, ImageDraw
 
-from . import capture, settings
+from . import capture, config, settings
 
 
 class Agent:
@@ -86,20 +86,51 @@ def _make_icon(seated: bool) -> Image.Image:
     return img
 
 
+def _show_error(message: str) -> None:
+    """GUI でエラーを伝える (GUI 不可ならコンソールへ)."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("zatsumu", message)
+        root.destroy()
+    except Exception:
+        print(message)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="zatsumu tray client")
-    p.add_argument("--server", required=True)
-    p.add_argument("--token", required=True)
+    # 引数を省略した場合は zatsumu_config.json / 環境変数 / 初回入力から補完する
+    p.add_argument("--server")
+    p.add_argument("--token")
     p.add_argument("--min-interval", type=int, default=300)
     p.add_argument("--max-interval", type=int, default=900)
     p.add_argument("--blur", type=int, default=0)
     args = p.parse_args()
 
+    server, token = config.resolve(args.server, args.token)
+
     import pystray
 
     agent = Agent(
-        args.server, args.token, args.min_interval, args.max_interval, args.blur
+        server, token, args.min_interval, args.max_interval, args.blur
     )
+
+    # 起動時に接続を確認し、URL/トークン誤りを分かりやすく知らせる
+    try:
+        r = agent.client.get("/api/me")
+        if r.status_code == 401:
+            _show_error("トークンが正しくありません。設定を確認してください。")
+            return
+        r.raise_for_status()
+    except httpx.HTTPError:
+        _show_error(
+            "サーバに接続できません。サーバ URL とネットワークを確認してください。\n"
+            f"接続先: {server}"
+        )
+        return
 
     def on_quit(icon, item):
         if agent.seated:

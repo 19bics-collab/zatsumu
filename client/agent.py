@@ -13,13 +13,13 @@ import time
 
 import httpx
 
-from . import capture, settings
+from . import capture, config, settings
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="zatsumu agent")
-    p.add_argument("--server", required=True)
-    p.add_argument("--token", required=True)
+    p.add_argument("--server")
+    p.add_argument("--token")
     # 既定は平均10分(1時間に約6回)のランダム間隔。F-Chair+ の標準と同等
     p.add_argument("--min-interval", type=int, default=300,
                    help="スクショ最短間隔(秒) デフォルト300")
@@ -29,9 +29,12 @@ def main() -> None:
                    help="ぼかし強度(0=なし)。プライバシー配慮用")
     args = p.parse_args()
 
+    # CLI で省略した接続情報は設定ファイル/環境変数から補完する
+    server, token = config.resolve(args.server, args.token, allow_prompt=False)
+
     client = httpx.Client(
-        base_url=args.server,
-        headers={"Authorization": f"Bearer {args.token}"},
+        base_url=server,
+        headers={"Authorization": f"Bearer {token}"},
         timeout=30,
     )
 

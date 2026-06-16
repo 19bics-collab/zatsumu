@@ -179,6 +179,36 @@ C:\zatsumu\.venv\Scripts\uvicorn.exe server.app:app --host 127.0.0.1 --port 8000
 
 ## メンバー側の設定（各自のPC）
 
+### 方法A: `.exe` を配布する（社員配布におすすめ・Python不要）
+
+社員のPCに Python を入れずに済む配布方法です。**管理者が一度だけ exe をビルド**し、
+できた `zatsumu.exe` と `zatsumu_config.json` を各PCに配ります。
+
+1. ビルド用の1台（Windows）で:
+
+   ```powershell
+   git clone https://github.com/19bics-collab/zatsumu.git
+   cd zatsumu
+   .\build_client.ps1      # dist\zatsumu.exe と dist\zatsumu_config.json ができる
+   ```
+
+2. `dist\zatsumu_config.json` の `server` を実際のドメインに変更:
+
+   ```json
+   { "server": "https://kintai.example.com" }
+   ```
+
+3. `dist\zatsumu.exe` と `zatsumu_config.json` を**セットで**各メンバーのPCに配布
+   （任意のフォルダ、またはスタートアップに置く）。
+4. メンバーは `zatsumu.exe` をダブルクリック → **初回だけ自分のトークンを入力**
+   （以降は `%APPDATA%\zatsumu\config.json` に保存され、ダブルクリックだけで起動）。
+   トレイアイコンから「着席する/退席する」を切り替えます。
+
+> 自動起動したい場合は、`zatsumu.exe` のショートカットを
+> `shell:startup`（スタートアップフォルダ）に置きます。
+
+### 方法B: Python から直接動かす（開発・少人数向け）
+
 ```bash
 git clone https://github.com/19bics-collab/zatsumu.git
 cd zatsumu
@@ -187,6 +217,8 @@ python -m client.tray --server https://kintai.example.com --token <自分のト�
 ```
 
 トレイのアイコンから「着席する/退席する」を切り替えます。
+`--server` / `--token` を省略した場合は、環境変数（`ZATSUMU_SERVER` /
+`ZATSUMU_TOKEN`）や同じフォルダの `zatsumu_config.json` から読み込みます。
 
 ---
 

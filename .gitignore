@@ -7,3 +7,8 @@ review_digest.txt
 .venv/
 .pwtest/
 improve.diff
+
+# PyInstaller のビルド生成物 (.exe 等)
+build/
+dist/
+*.spec

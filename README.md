@@ -100,6 +100,11 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
 オプション: `--min-interval/--max-interval`（間隔・秒）、
 `--blur N`（プライバシー配慮のぼかし）。
 
+`--server`/`--token` は省略可能で、環境変数（`ZATSUMU_SERVER`/`ZATSUMU_TOKEN`）や
+同じフォルダの `zatsumu_config.json` からも読み込みます。社員に配布する場合は、
+**Python 不要の単体 `.exe`**（`build_client.ps1` でビルド、初回だけトークン入力）が
+便利です。手順は **[DEPLOY.md](DEPLOY.md)** の「メンバー側の設定」を参照してください。
+
 **管理者側**: ブラウザで `http://<server>:8000/admin` を開き、管理者トークンで
 ログインします。
 

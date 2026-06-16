@@ -11,6 +11,7 @@ import argparse
 import time
 import tkinter as tk
 
+from . import config
 from .tray import Agent
 
 SEATED_BG = "#1565c0"   # 青 = 着席中
@@ -19,15 +20,17 @@ AWAY_BG = "#c62828"     # 赤 = 退席
 
 def main() -> None:
     p = argparse.ArgumentParser(description="zatsumu widget client")
-    p.add_argument("--server", required=True)
-    p.add_argument("--token", required=True)
+    p.add_argument("--server")
+    p.add_argument("--token")
     p.add_argument("--min-interval", type=int, default=300)
     p.add_argument("--max-interval", type=int, default=900)
     p.add_argument("--blur", type=int, default=0)
     args = p.parse_args()
 
+    server, token = config.resolve(args.server, args.token)
+
     agent = Agent(
-        args.server, args.token, args.min_interval, args.max_interval, args.blur
+        server, token, args.min_interval, args.max_interval, args.blur
     )
 
     root = tk.Tk()
