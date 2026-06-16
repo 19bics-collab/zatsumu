@@ -70,6 +70,7 @@ class Agent:
     def _capture_loop(self):
         fallback = {"min_interval": self.min_iv, "max_interval": self.max_iv,
                     "quality": 60, "blur": self.blur}
+        first = True
         while not self._stop.is_set():
             # 管理画面の設定を毎サイクル反映する
             conf = settings.fetch(self.client, fallback)
@@ -77,7 +78,12 @@ class Agent:
                 if self._stop.wait(300):
                     break
                 continue
-            wait = random.randint(conf["min_interval"], conf["max_interval"])
+            # 着席直後の1枚目は短い待ちで撮る(動作確認しやすく・記録の取りこぼし防止)
+            if first:
+                wait = random.randint(15, 45)
+                first = False
+            else:
+                wait = random.randint(conf["min_interval"], conf["max_interval"])
             if self._stop.wait(wait):
                 break
             try:

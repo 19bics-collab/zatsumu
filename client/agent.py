@@ -56,6 +56,7 @@ def main() -> None:
     fallback = {"min_interval": args.min_interval,
                 "max_interval": args.max_interval,
                 "quality": 60, "blur": args.blur}
+    first = True
     while True:
         # 管理画面の設定を毎サイクル反映する (間隔・画質・ぼかし・撮影ON/OFF)
         conf = settings.fetch(client, fallback)
@@ -63,7 +64,12 @@ def main() -> None:
             print("撮影は管理者により停止中です (打刻のみ記録)")
             time.sleep(300)
             continue
-        wait = random.randint(conf["min_interval"], conf["max_interval"])
+        # 着席直後の1枚目は短い待ちで撮る(動作確認しやすく・記録の取りこぼし防止)
+        if first:
+            wait = random.randint(15, 45)
+            first = False
+        else:
+            wait = random.randint(conf["min_interval"], conf["max_interval"])
         print(f"次のスクリーンショットまで {wait} 秒")
         time.sleep(wait)
         try:
