@@ -1,4 +1,5 @@
-# zatsumu トレイ常駐クライアントを単体 .exe にビルドする (Windows / PowerShell)
+# zatsumu 操作ウィンドウ版クライアントを単体 .exe にビルドする (Windows / PowerShell)
+# (大きな着席/退席ボタン・状態表示・作業区分切替のある操作画面を出す)
 #
 #   使い方:  PowerShell で  .\build_client.ps1
 #
@@ -22,9 +23,11 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name zatsumu `
   --hidden-import PIL._tkinter_finder `
   run_client.py
 
-# 配布フォルダに設定テンプレートを置く
-$tpl = '{ "server": "https://kintai.example.com" }'
-Set-Content -Path "dist\zatsumu_config.json" -Value $tpl -Encoding UTF8
+# 配布フォルダに設定テンプレートを置く (既存の設定は上書きしない)
+$cfg = "dist\zatsumu_config.json"
+if (-not (Test-Path $cfg)) {
+  Set-Content -Path $cfg -Value '{ "server": "https://kintai.example.com" }' -Encoding UTF8
+}
 
 Write-Host ""
 Write-Host "完成: dist\zatsumu.exe" -ForegroundColor Green

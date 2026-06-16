@@ -54,6 +54,19 @@ class Agent:
         self._stop.set()
         self.client.post("/api/clock-out")
 
+    def switch_category(self, category: str):
+        """在席中に作業区分を切り替える."""
+        self.client.post("/api/switch-category", json={"category": category})
+
+    def resume(self, since_epoch: float):
+        """サーバ上で既に着席中だった場合に、打刻し直さず状態だけ復元して
+        スクショ送信を再開する (操作ウィンドウの起動時用)."""
+        self.seated = True
+        self.since = since_epoch
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+
     def _capture_loop(self):
         fallback = {"min_interval": self.min_iv, "max_interval": self.max_iv,
                     "quality": 60, "blur": self.blur}
