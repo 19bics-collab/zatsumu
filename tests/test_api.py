@@ -1024,6 +1024,33 @@ def test_to_jpeg_quality_and_no_resize():
     assert len(lo) < len(hi)
 
 
+def test_tile_horizontally_lays_out_side_by_side():
+    from PIL import Image
+    from client import capture
+    a = Image.new("RGB", (1920, 1080), "red")
+    b = Image.new("RGB", (1280, 1024), "blue")  # 別解像度・別アスペクトでも揃う
+    out = capture.tile_horizontally([a, b], gap=8)
+    h = min(1080, 1024)  # 共通の高さ = 最小の高さ
+    assert out.height == h
+    wa = round(1920 * h / 1080)
+    wb = round(1280 * h / 1024)
+    assert out.width == wa + wb + 8  # 横に並べた幅 + すき間
+
+
+def test_to_jpeg_widens_cap_for_multimonitor():
+    import io
+    from PIL import Image
+    from client import capture
+    # マルチモニターを並べた横長画像(aspect>2)は上限幅が広がり縮みすぎない
+    wide = Image.new("RGB", (3840, 1080), "white")
+    out = Image.open(io.BytesIO(capture.to_jpeg(wide, max_width=1280)))
+    assert out.width == 3840
+    # 単一モニター相当(16:9)は従来どおり max_width に縮小
+    normal = Image.new("RGB", (1920, 1080), "white")
+    out2 = Image.open(io.BytesIO(capture.to_jpeg(normal, max_width=1280)))
+    assert out2.width == 1280
+
+
 def test_send_email_builds_mime(monkeypatch):
     from server import notify
 
