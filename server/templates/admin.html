@@ -103,8 +103,11 @@
            align-items: center; justify-content: center; z-index: 10; }
   .modal[hidden] { display: none; }
   .modal .box { background: #fff; padding: 1.2rem; border-radius: 8px;
-                max-width: 88vw; max-height: 92vh; }
-  #modal img { max-width: 78vw; max-height: 70vh; display: block; margin-bottom: .8rem; }
+                max-width: 94vw; max-height: 94vh; display: flex; flex-direction: column; }
+  .modal .imgwrap { overflow: auto; max-width: 90vw; max-height: 78vh; margin-bottom: .8rem; }
+  #modal img { max-width: 88vw; max-height: 74vh; display: block; cursor: zoom-in; }
+  /* クリックで実寸ズーム: マルチモニターの横長画像も各画面を細かく見られる */
+  #modal img.zoomed { max-width: none; max-height: none; cursor: zoom-out; }
   .modal .bar { display: flex; gap: .6rem; align-items: center; }
   .modal .bar span { flex: 1; color: #374151; font-size: .9rem; }
   .navbtn { font-size: 1.1rem; padding: .45rem .9rem; }
@@ -327,7 +330,7 @@
 
 <div id="modal" class="modal" hidden>
   <div class="box">
-    <img id="modal-img" alt="screenshot">
+    <div class="imgwrap"><img id="modal-img" alt="screenshot"></div>
     <div class="bar">
       <button id="modal-prev" class="ghost navbtn">←</button>
       <button id="modal-next" class="ghost navbtn">→</button>
@@ -979,8 +982,12 @@ async function openModal(list, index) {
 async function renderModalImage() {
   const cur = gallery.list[gallery.i];
   const blob = await (await api(`/api/screenshots/${cur.id}/image`)).blob();
-  $("modal-img").src = URL.createObjectURL(blob);
-  $("modal-info").textContent = `${cur.info}（${gallery.i + 1}/${gallery.list.length}）`;
+  const img = $("modal-img");
+  img.classList.remove("zoomed");      // 新しい画像は全体表示から開く
+  img.parentElement.scrollTo(0, 0);    // スクロール位置もリセット
+  img.src = URL.createObjectURL(blob);
+  $("modal-info").textContent =
+    `${cur.info}（${gallery.i + 1}/${gallery.list.length}）　画像クリックで拡大/縮小`;
   $("modal-prev").disabled = gallery.i === 0;
   $("modal-next").disabled = gallery.i === gallery.list.length - 1;
 }
@@ -992,6 +999,8 @@ function modalMove(delta) {
 }
 $("modal-prev").onclick = () => modalMove(-1);
 $("modal-next").onclick = () => modalMove(1);
+// 画像クリックで実寸ズーム⇔全体表示を切り替え(横長は横スクロールで確認)
+$("modal-img").onclick = () => $("modal-img").classList.toggle("zoomed");
 document.addEventListener("keydown", e => {
   if ($("modal").hidden) return;
   if (e.key === "ArrowLeft") modalMove(-1);
