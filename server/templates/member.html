@@ -95,6 +95,13 @@
   <h1 id="hello"></h1>
   <button id="punch"></button>
   <p class="stats">本日の在席時間: <strong id="hours"></strong></p>
+  <div id="webcap" style="margin-top:.5rem;font-size:.9rem">
+    <button class="small" id="webcap-btn">🖥 画面共有して撮影する</button>
+    <span id="webcap-status" style="margin-left:.4rem;color:#6b7280"></span>
+    <p style="font-size:.78rem;color:#999;margin:.3rem 0 0">
+      アプリを入れない場合の撮影用。<strong>着席中</strong>に開始し、画面共有を許可してください
+      （共有中はブラウザに表示が出ます／タブを閉じると止まります）。</p>
+  </div>
   <div id="cat-switch">
     <p class="cat-label" id="cat-label"></p>
     <div id="cat-buttons"></div>
@@ -210,6 +217,7 @@ const catColor = cat => {
 
 function showLogin(withError) {
   clearInterval(timer);
+  webcapStop();
   $("panel").hidden = true;
   $("journal-card").hidden = true;
   $("leave-card").hidden = true;
@@ -289,7 +297,72 @@ async function punch(path, body) {
     $("punch-error").hidden = false;
   }
   await load();
+  if (!state || !state.seated) webcapStop();   // 退席したら画面共有撮影を停止
 }
+
+/* ---------- Web画面共有での撮影 (アプリを入れない人向け) ---------- */
+let webcapStream = null, webcapVideo = null, webcapTimer = null;
+
+async function webcapStart() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    $("webcap-status").textContent = "このブラウザは画面共有に未対応です";
+    return;
+  }
+  try {
+    webcapStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  } catch {
+    $("webcap-status").textContent = "画面共有がキャンセルされました";
+    return;
+  }
+  webcapVideo = document.createElement("video");
+  webcapVideo.srcObject = webcapStream;
+  webcapVideo.muted = true;
+  try { await webcapVideo.play(); } catch {}
+  // ブラウザのバナーから共有停止された場合も片付ける
+  webcapStream.getVideoTracks()[0].addEventListener("ended", webcapStop);
+  $("webcap-btn").textContent = "■ 撮影を停止";
+  $("webcap-status").textContent = "画面共有で撮影中";
+  webcapTimer = setTimeout(webcapTick, 3000);   // 数秒後に1枚目
+}
+
+function webcapStop() {
+  if (webcapTimer) { clearTimeout(webcapTimer); webcapTimer = null; }
+  if (webcapStream) { webcapStream.getTracks().forEach(t => t.stop()); webcapStream = null; }
+  webcapVideo = null;
+  $("webcap-btn").textContent = "🖥 画面共有して撮影する";
+  $("webcap-status").textContent = "";
+}
+
+async function webcapTick() {
+  if (!webcapStream) return;
+  let conf = { min_interval: 300, max_interval: 900, quality: 60, blur: 0, capture_enabled: true };
+  try { conf = await (await fetch("/api/me/settings", { headers: headers() })).json(); } catch {}
+  if (state && state.seated && conf.capture_enabled) await webcapShot(conf);
+  const lo = Math.max(5, conf.min_interval || 300);
+  const hi = Math.max(lo, conf.max_interval || 900);
+  const wait = (lo + Math.floor(Math.random() * (hi - lo + 1))) * 1000;
+  webcapTimer = setTimeout(webcapTick, wait);
+}
+
+async function webcapShot(conf) {
+  const v = webcapVideo;
+  if (!v || !v.videoWidth) return;
+  const maxW = 1280;
+  const scale = v.videoWidth > maxW ? maxW / v.videoWidth : 1;
+  const c = document.createElement("canvas");
+  c.width = Math.round(v.videoWidth * scale);
+  c.height = Math.round(v.videoHeight * scale);
+  const ctx = c.getContext("2d");
+  if (conf.blur > 0) ctx.filter = `blur(${conf.blur}px)`;
+  ctx.drawImage(v, 0, 0, c.width, c.height);
+  const blob = await new Promise(res => c.toBlob(res, "image/jpeg", (conf.quality || 60) / 100));
+  if (!blob) return;
+  const fd = new FormData();
+  fd.append("image", blob, "shot.jpg");
+  try { await fetch("/api/screenshots", { method: "POST", headers: headers(), body: fd }); } catch {}
+}
+
+$("webcap-btn").onclick = () => (webcapStream ? webcapStop() : webcapStart());
 
 /* ---------- 自分の勤務実績 ---------- */
 function shiftMonth(m, delta) {
