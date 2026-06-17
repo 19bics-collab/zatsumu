@@ -350,11 +350,15 @@
 <div id="token-modal" class="modal" hidden>
   <div class="box">
     <h2 id="token-title"></h2>
-    <p>このトークンは<strong>今だけ</strong>表示されます。コピーして本人に渡してください。</p>
+    <p>この情報は<strong>今だけ</strong>表示されます。本人に渡してください。</p>
+    <label style="font-size:.85rem;color:#374151">ログインURL（このリンクを送るだけで本人がログインできます）</label>
+    <code id="token-url"></code>
+    <button id="token-url-copy" class="ghost">URLをコピー</button>
+    <label style="font-size:.85rem;color:#374151;display:block;margin-top:1rem">トークン（PC常駐アプリ用）</label>
     <code id="token-value"></code>
     <div class="bar">
       <span></span>
-      <button id="token-copy">コピー</button>
+      <button id="token-copy">トークンをコピー</button>
       <button id="token-close" class="ghost">閉じる</button>
     </div>
   </div>
@@ -758,13 +762,19 @@ $("leave-filter").onchange = () => showLeave();
 function showToken(name, token) {
   $("token-title").textContent = `${name} さんのトークン`;
   $("token-value").textContent = token;
+  $("token-url").textContent =
+    location.origin + "/me?token=" + encodeURIComponent(token);
   $("token-modal").hidden = false;
 }
-$("token-copy").onclick = async () => {
-  await navigator.clipboard.writeText($("token-value").textContent);
-  $("token-copy").textContent = "コピーしました";
-  setTimeout(() => $("token-copy").textContent = "コピー", 1500);
-};
+async function copyText(text, btnId, label) {
+  await navigator.clipboard.writeText(text);
+  $(btnId).textContent = "コピーしました";
+  setTimeout(() => $(btnId).textContent = label, 1500);
+}
+$("token-copy").onclick = () =>
+  copyText($("token-value").textContent, "token-copy", "トークンをコピー");
+$("token-url-copy").onclick = () =>
+  copyText($("token-url").textContent, "token-url-copy", "URLをコピー");
 $("token-close").onclick = () => $("token-modal").hidden = true;
 
 /* ---------- 月次レポート ---------- */
