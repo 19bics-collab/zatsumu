@@ -591,7 +591,8 @@ async function showUsers() {
     `<option value="${t.id}" ${u.team_id === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("");
   document.querySelector("#users-table tbody").innerHTML = users.map(u => `
     <tr>
-      <td><strong>${esc(u.name)}</strong></td>
+      <td><strong>${esc(u.name)}</strong><br>
+        <code style="font-size:.66rem;color:#6b7280;word-break:break-all">${esc(u.token)}</code></td>
       <td><select class="set-team" data-id="${u.id}"
         style="padding:.3rem;border:1px solid #ccc;border-radius:5px">${teamOpts(u)}</select></td>
       <td>${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
@@ -605,6 +606,8 @@ async function showUsers() {
       <td><input type="email" class="set-email" data-id="${u.id}" value="${esc(u.email || "")}"
         placeholder="メール(任意)" style="padding:.3rem;border:1px solid #ccc;border-radius:5px;width:11rem"></td>
       <td>
+        <button class="mini ghost copy-token" data-token="${esc(u.token)}">トークンコピー</button>
+        <button class="mini ghost copy-url" data-token="${esc(u.token)}">URLコピー</button>
         <button class="mini ghost regen" data-id="${u.id}" data-name="${esc(u.name)}">トークン再発行</button>
         <button class="mini ghost toggle-admin" data-id="${u.id}" data-admin="${u.is_admin}">
           ${u.is_admin ? "管理者を解除" : "管理者にする"}</button>
@@ -625,6 +628,10 @@ async function showUsers() {
     const r = await apiJson(`/api/users/${b.dataset.id}/token`, { method: "POST" });
     showToken(r.name, r.token);
   });
+  document.querySelectorAll(".copy-token").forEach(b => b.onclick = () =>
+    copyFlash(b, b.dataset.token));
+  document.querySelectorAll(".copy-url").forEach(b => b.onclick = () =>
+    copyFlash(b, location.origin + "/me?token=" + encodeURIComponent(b.dataset.token)));
   document.querySelectorAll(".toggle-admin").forEach(b => b.onclick = async () => {
     await apiJson(`/api/users/${b.dataset.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -770,6 +777,12 @@ async function copyText(text, btnId, label) {
   await navigator.clipboard.writeText(text);
   $(btnId).textContent = "コピーしました";
   setTimeout(() => $(btnId).textContent = label, 1500);
+}
+async function copyFlash(btn, text) {
+  await navigator.clipboard.writeText(text);
+  const orig = btn.textContent;
+  btn.textContent = "コピー済";
+  setTimeout(() => { btn.textContent = orig; }, 1500);
 }
 $("token-copy").onclick = () =>
   copyText($("token-value").textContent, "token-copy", "トークンをコピー");

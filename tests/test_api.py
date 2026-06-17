@@ -286,7 +286,8 @@ def test_user_management(client, users):
     # 一覧は管理者のみ。トークンは含まれない
     assert client.get("/api/users", headers=auth(worker)).status_code == 403
     lst = client.get("/api/users", headers=auth(admin)).json()
-    assert all("token" not in u for u in lst)
+    # 管理画面でトークンを常時表示するため、一覧にもトークンを含める
+    assert all("token" in u for u in lst)
 
     # 追加 (トークンは作成時のみ返る)。重複名は409
     r = client.post("/api/users", headers=auth(admin),
@@ -1198,6 +1199,13 @@ def test_member_email_invalid_rejected(client, users):
     worker, admin = users
     assert client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
                         json={"email": "not-an-email"}).status_code == 400
+
+
+def test_list_users_includes_token(client, users):
+    worker, admin = users
+    by = {u["name"]: u for u in
+          client.get("/api/users", headers=auth(admin)).json()}
+    assert by["tanaka"]["token"] == worker["token"]
 
 
 def test_send_email_builds_mime(monkeypatch):

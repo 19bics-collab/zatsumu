@@ -638,7 +638,7 @@ def list_users(_admin=Depends(require_admin), conn=Depends(get_conn)):
     return [
         dict(r)
         for r in conn.execute(
-            "SELECT u.id, u.name, u.is_admin, u.active, u.capture_enabled, "
+            "SELECT u.id, u.name, u.token, u.is_admin, u.active, u.capture_enabled, "
             "u.notify_enabled, u.email, u.team_id, t.name AS team_name "
             "FROM users u LEFT JOIN teams t ON t.id = u.team_id ORDER BY u.name"
         )
