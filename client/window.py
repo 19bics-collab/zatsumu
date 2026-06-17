@@ -11,6 +11,7 @@ tray.Agent を再利用する。tkinter は Python 標準ライブラリ (追加
 """
 import argparse
 import time
+import webbrowser
 import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import messagebox
@@ -91,6 +92,15 @@ class Window:
             b.pack(side="left", padx=(0, 6), pady=4)
             self.cat_btns[cat] = b
 
+        # 自分の勤務実績・休暇申請などをスタッフ専用Webページ(/me)で開く
+        self.web_btn = tk.Button(
+            root, text="🌐 自分のページをWebで開く（実績・休暇申請）",
+            command=self.open_web, font=("", 11), bd=0, relief="flat",
+            bg="#e2e8f0", fg="#334155", activebackground="#cbd5e1",
+            cursor="hand2", pady=8,
+        )
+        self.web_btn.pack(fill="x", padx=20, pady=(6, 0))
+
         self.footer = tk.Label(root, bg=BG, fg=SUB, font=("", 9))
         self.footer.pack(side="bottom", pady=8)
 
@@ -122,6 +132,11 @@ class Window:
         except httpx.HTTPError:
             messagebox.showerror("勤怠管理", "区分の切り替えに失敗しました。")
         self.draw()
+
+    def open_web(self):
+        """スタッフ専用Webページ(/me)を既定ブラウザで開く(トークンで自動ログイン)."""
+        base = self.agent.server.rstrip("/")
+        webbrowser.open(f"{base}/me?token={self.agent.token}")
 
     def sync(self):
         """表示用の情報 (本日の在席時間・現在の区分・着席時刻) をサーバと同期."""

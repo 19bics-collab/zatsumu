@@ -21,6 +21,7 @@ from . import capture, config, settings
 
 class Agent:
     def __init__(self, server: str, token: str, min_iv: int, max_iv: int, blur: int):
+        self.server, self.token = server, token  # Webページを開く際に使う
         self.client = httpx.Client(
             base_url=server,
             headers={"Authorization": f"Bearer {token}"},

@@ -160,6 +160,14 @@ let month = `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, "0")}`;
 
 const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
 
+// ?token=... での自動ログイン(アプリの「Webで開く」用): 保存してURLから即削除
+const _url = new URL(location);
+if (_url.searchParams.get("token")) {
+  localStorage.setItem(KEY, _url.searchParams.get("token"));
+  _url.searchParams.delete("token");
+  history.replaceState(null, "", _url);
+}
+
 // 会社名・勤務時間帯などの公開設定
 let config = { company_name: "zatsumu", work_start: "09:00", work_end: "18:00" };
 async function loadConfig() {
