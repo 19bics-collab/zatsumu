@@ -1051,6 +1051,102 @@ def test_to_jpeg_widens_cap_for_multimonitor():
     assert out2.width == 1280
 
 
+# ---------- 勤務時間の修正申請 ----------
+def _add_session(client, admin, worker, ci, co):
+    r = client.post(f"/api/users/{worker['id']}/sessions", headers=auth(admin),
+                    json={"clock_in": ci, "clock_out": co})
+    assert r.status_code == 200
+    return r.json()["session_id"]
+
+
+def _session_times(tmp_path, sid):
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        r = conn.execute(
+            "SELECT clock_in, clock_out FROM sessions WHERE id=?", (sid,)
+        ).fetchone()
+    return r["clock_in"], r["clock_out"]
+
+
+def test_correction_request_list_and_cancel(client, users):
+    worker, admin = users
+    r = client.post("/api/me/corrections", headers=auth(worker),
+                    json={"date": "2026-05-10", "requested_in": "09:00",
+                          "requested_out": "18:00", "reason": "打刻忘れ"})
+    assert r.status_code == 200
+    cid = r.json()["id"]
+    lst = client.get("/api/me/corrections", headers=auth(worker)).json()
+    assert len(lst) == 1 and lst[0]["status"] == "pending"
+    adm = client.get("/api/corrections?status=pending", headers=auth(admin)).json()
+    assert any(c["id"] == cid and c["name"] == "tanaka" for c in adm)
+    assert client.delete(f"/api/me/corrections/{cid}",
+                         headers=auth(worker)).status_code == 200
+    assert client.get("/api/me/corrections", headers=auth(worker)).json() == []
+
+
+def test_correction_validation(client, users):
+    worker, _ = users
+    assert client.post("/api/me/corrections", headers=auth(worker),
+                       json={"date": "2026-05-10"}).status_code == 400
+    assert client.post("/api/me/corrections", headers=auth(worker),
+                       json={"date": "2026-05-10", "requested_in": "25:99"}
+                       ).status_code == 400
+    assert client.post("/api/me/corrections", headers=auth(worker),
+                       json={"date": "2026-05-10", "requested_in": "18:00",
+                             "requested_out": "09:00"}).status_code == 400
+
+
+def test_correction_approve_updates_session(client, users, tmp_path):
+    from server import tz
+    worker, admin = users
+    sid = _add_session(client, admin, worker, "2026-05-10T09:00", "2026-05-10T12:00")
+    cid = client.post("/api/me/corrections", headers=auth(worker),
+                      json={"date": "2026-05-10", "requested_out": "18:00"}).json()["id"]
+    r = client.post(f"/api/corrections/{cid}/decision", headers=auth(admin),
+                    json={"approve": True})
+    assert r.status_code == 200 and r.json()["status"] == "approved"
+    ci, co = _session_times(tmp_path, sid)
+    assert tz.local(co).strftime("%H:%M") == "18:00"   # 退席が反映
+    assert tz.local(ci).strftime("%H:%M") == "09:00"   # 着席は不変
+
+
+def test_correction_approve_creates_session_when_none(client, users, tmp_path):
+    from server import db, tz
+    worker, admin = users
+    cid = client.post("/api/me/corrections", headers=auth(worker),
+                      json={"date": "2026-05-12", "requested_in": "10:00",
+                            "requested_out": "15:00"}).json()["id"]
+    assert client.post(f"/api/corrections/{cid}/decision", headers=auth(admin),
+                       json={"approve": True}).json()["status"] == "approved"
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        rows = conn.execute(
+            "SELECT clock_in, clock_out FROM sessions WHERE user_id=?",
+            (worker["id"],)).fetchall()
+    assert len(rows) == 1
+    assert tz.local(rows[0]["clock_in"]).strftime("%H:%M") == "10:00"
+    assert tz.local(rows[0]["clock_out"]).strftime("%H:%M") == "15:00"
+
+
+def test_correction_reject_keeps_session(client, users, tmp_path):
+    worker, admin = users
+    sid = _add_session(client, admin, worker, "2026-05-10T09:00", "2026-05-10T12:00")
+    before = _session_times(tmp_path, sid)
+    cid = client.post("/api/me/corrections", headers=auth(worker),
+                      json={"date": "2026-05-10", "requested_out": "18:00"}).json()["id"]
+    assert client.post(f"/api/corrections/{cid}/decision", headers=auth(admin),
+                       json={"approve": False}).json()["status"] == "rejected"
+    assert _session_times(tmp_path, sid) == before
+
+
+def test_correction_requires_admin(client, users):
+    worker, _ = users
+    cid = client.post("/api/me/corrections", headers=auth(worker),
+                      json={"date": "2026-05-10", "requested_out": "18:00"}).json()["id"]
+    assert client.get("/api/corrections", headers=auth(worker)).status_code == 403
+    assert client.post(f"/api/corrections/{cid}/decision", headers=auth(worker),
+                       json={"approve": True}).status_code == 403
+
+
 def test_send_email_builds_mime(monkeypatch):
     from server import notify
 

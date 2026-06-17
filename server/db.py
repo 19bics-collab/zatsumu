@@ -69,12 +69,25 @@ CREATE TABLE IF NOT EXISTS leave_requests (
     decided_by INTEGER,
     UNIQUE(user_id, date)
 );
+CREATE TABLE IF NOT EXISTS corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    date TEXT NOT NULL,            -- 修正対象の日 (YYYY-MM-DD ローカル)
+    requested_in TEXT,            -- 希望の着席時刻 "HH:MM" (任意)
+    requested_out TEXT,           -- 希望の退席時刻 "HH:MM" (任意)
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',   -- pending/approved/rejected
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by INTEGER
+);
 -- 集計・参照でよく使う列のインデックス(IF NOT EXISTS で冪等)
 CREATE INDEX IF NOT EXISTS idx_sessions_user_open ON sessions(user_id, clock_out);
 CREATE INDEX IF NOT EXISTS idx_sessions_clock_in ON sessions(clock_in);
 CREATE INDEX IF NOT EXISTS idx_screenshots_user_taken ON screenshots(user_id, taken_at);
 CREATE INDEX IF NOT EXISTS idx_screenshots_taken ON screenshots(taken_at);
 CREATE INDEX IF NOT EXISTS idx_leave_date ON leave_requests(date);
+CREATE INDEX IF NOT EXISTS idx_corrections_status ON corrections(status);
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
 """
 

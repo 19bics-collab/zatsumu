@@ -166,6 +166,13 @@ class LeaveBody(BaseModel):
     reason: str = ""
 
 
+class CorrectionBody(BaseModel):
+    date: str                       # YYYY-MM-DD
+    requested_in: str | None = None   # "HH:MM" (任意)
+    requested_out: str | None = None  # "HH:MM" (任意)
+    reason: str = ""
+
+
 class DecisionBody(BaseModel):
     approve: bool
 
@@ -213,6 +220,17 @@ def _valid_date(d: str | None) -> str:
     except ValueError:
         raise HTTPException(400, "date must be 'YYYY-MM-DD'")
     return d
+
+
+def _valid_hhmm(t: str | None) -> str | None:
+    """'HH:MM' を検証する (空/None は None を返す)."""
+    if not t:
+        return None
+    try:
+        datetime.strptime(t, "%H:%M")
+    except ValueError:
+        raise HTTPException(400, f"時刻は HH:MM 形式で入力してください: {t}")
+    return t
 
 
 class ClockInBody(BaseModel):
@@ -1029,6 +1047,161 @@ def decide_leave(
     _audit(conn, admin, "leave_" + status, row["user_id"],
            detail=f"{row['leave_type']} {row['date']}")
     return {"id": leave_id, "status": status}
+
+
+# ---------- 勤務時間の修正申請 (スタッフ申請 → 管理者承認で反映) ----------
+@app.get("/api/me/corrections")
+def my_corrections(user=Depends(auth_user), conn=Depends(get_conn)):
+    rows = conn.execute(
+        "SELECT id, date, requested_in, requested_out, reason, status, created_at "
+        "FROM corrections WHERE user_id = ? ORDER BY date DESC, id DESC LIMIT 60",
+        (user["id"],),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/me/corrections")
+def request_correction(
+    body: CorrectionBody, user=Depends(auth_user), conn=Depends(get_conn)
+):
+    """勤務時間の修正を申請する (着席/退席の少なくとも一方の希望時刻)."""
+    date = _valid_date(body.date)
+    rin = _valid_hhmm(body.requested_in)
+    rout = _valid_hhmm(body.requested_out)
+    if not rin and not rout:
+        raise HTTPException(400, "着席・退席の少なくとも一方の時刻を入力してください")
+    if rin and rout and rout <= rin:
+        raise HTTPException(400, "退席は着席より後の時刻にしてください")
+    cur = conn.execute(
+        "INSERT INTO corrections (user_id, date, requested_in, requested_out, "
+        "reason, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+        (user["id"], date, rin, rout, body.reason.strip(), now_iso()),
+    )
+    _notify(conn, f"📝 {user['name']} さんが勤務時間の修正を申請しました（{date}）")
+    return {"id": cur.lastrowid, "status": "pending"}
+
+
+@app.delete("/api/me/corrections/{cid}")
+def cancel_correction(cid: int, user=Depends(auth_user), conn=Depends(get_conn)):
+    row = conn.execute(
+        "SELECT * FROM corrections WHERE id = ? AND user_id = ?", (cid, user["id"])
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    if row["status"] == "approved":
+        raise HTTPException(409, "承認済みの申請は取り消せません（管理者に連絡）")
+    conn.execute("DELETE FROM corrections WHERE id = ?", (cid,))
+    return {"deleted": cid}
+
+
+@app.get("/api/corrections")
+def list_corrections(
+    status: str | None = None,
+    _admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """修正申請の一覧 (status で絞り込み: pending/approved/rejected)."""
+    q = (
+        "SELECT c.id, c.user_id, u.name, c.date, c.requested_in, c.requested_out, "
+        "c.reason, c.status, c.created_at FROM corrections c "
+        "JOIN users u ON u.id = c.user_id"
+    )
+    args: list = []
+    if status:
+        q += " WHERE c.status = ?"
+        args.append(status)
+    q += " ORDER BY c.date DESC, u.name"
+    return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+
+def _apply_correction(conn, admin, row) -> None:
+    """承認された修正をその日のセッションに反映する (失敗時は 400 で中断→ロールバック)."""
+    start = datetime.strptime(row["date"], "%Y-%m-%d").replace(tzinfo=tz.TZ)
+    end = start + timedelta(days=1)
+
+    def to_iso(hhmm: str) -> str:
+        h, m = map(int, hhmm.split(":"))
+        return start.replace(hour=h, minute=m).astimezone(timezone.utc).isoformat()
+
+    rin = to_iso(row["requested_in"]) if row["requested_in"] else None
+    rout = to_iso(row["requested_out"]) if row["requested_out"] else None
+    sessions = conn.execute(
+        "SELECT * FROM sessions WHERE user_id = ? AND clock_in < ? "
+        "AND (clock_out IS NULL OR clock_out > ?) ORDER BY clock_in",
+        (row["user_id"], tz.utc_iso(end), tz.utc_iso(start)),
+    ).fetchall()
+    if not sessions:
+        if not (rin and rout):
+            raise HTTPException(
+                400, "その日の打刻が無いため、着席と退席の両方がある申請のみ承認できます"
+            )
+        cur = conn.execute(
+            "INSERT INTO sessions (user_id, clock_in, clock_out) VALUES (?, ?, ?)",
+            (row["user_id"], rin, rout),
+        )
+        _audit(conn, admin, "correction_add", row["user_id"], cur.lastrowid,
+               f"{rin} - {rout}")
+        return
+    if len(sessions) == 1:
+        s = sessions[0]
+        ci = rin or s["clock_in"]
+        co = rout if rout else s["clock_out"]
+        if co is not None and co <= ci:
+            raise HTTPException(400, "退席が着席より後になりません。管理画面で手動修正してください")
+        conn.execute(
+            "UPDATE sessions SET clock_in = ?, clock_out = ? WHERE id = ?",
+            (ci, co, s["id"]),
+        )
+        _audit(conn, admin, "correction_apply", row["user_id"], s["id"],
+               f"{s['clock_in']}/{s['clock_out']} -> {ci}/{co}")
+        return
+    if rin:
+        first = sessions[0]
+        if first["clock_out"] and rin >= first["clock_out"]:
+            raise HTTPException(400, "着席時刻が最初の区間の退席より後です。管理画面で手動修正してください")
+        conn.execute(
+            "UPDATE sessions SET clock_in = ? WHERE id = ?", (rin, first["id"])
+        )
+        _audit(conn, admin, "correction_apply_in", row["user_id"], first["id"],
+               f"{first['clock_in']} -> {rin}")
+    if rout:
+        last = sessions[-1]
+        if rout <= last["clock_in"]:
+            raise HTTPException(400, "退席時刻が最後の区間の着席より前です。管理画面で手動修正してください")
+        conn.execute(
+            "UPDATE sessions SET clock_out = ? WHERE id = ?", (rout, last["id"])
+        )
+        _audit(conn, admin, "correction_apply_out", row["user_id"], last["id"],
+               f"{last['clock_out']} -> {rout}")
+
+
+@app.post("/api/corrections/{cid}/decision")
+def decide_correction(
+    cid: int,
+    body: DecisionBody,
+    admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    row = conn.execute(
+        "SELECT c.*, u.name FROM corrections c JOIN users u ON u.id = c.user_id "
+        "WHERE c.id = ?", (cid,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    if row["status"] != "pending":
+        raise HTTPException(409, "既に処理済みの申請です")
+    if body.approve:
+        _apply_correction(conn, admin, row)   # 反映に失敗したら例外でロールバック
+        status = "approved"
+    else:
+        status = "rejected"
+    conn.execute(
+        "UPDATE corrections SET status = ?, decided_at = ?, decided_by = ? "
+        "WHERE id = ?", (status, now_iso(), admin["id"], cid),
+    )
+    _audit(conn, admin, "correction_" + status, row["user_id"],
+           detail=f"{row['date']} {row['requested_in'] or '—'}〜{row['requested_out'] or '—'}")
+    return {"id": cid, "status": status}
 
 
 @app.get("/api/screenshots")

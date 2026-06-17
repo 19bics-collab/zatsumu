@@ -212,6 +212,12 @@
     <thead><tr><th>メンバー</th><th>日付</th><th>種別</th><th>理由</th><th>状態</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
+
+  <h2 style="margin-top:1.6rem">勤務時間の修正申請</h2>
+  <table id="correction-table">
+    <thead><tr><th>メンバー</th><th>日付</th><th>希望(着席/退席)</th><th>理由</th><th>状態</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table>
 </section>
 
 <section id="report" hidden>
@@ -485,10 +491,14 @@ async function showApp() {
 
 async function refreshLeaveBadge() {
   try {
-    const pend = await apiJson("/api/leave?status=pending");
+    const [lv, cr] = await Promise.all([
+      apiJson("/api/leave?status=pending"),
+      apiJson("/api/corrections?status=pending"),
+    ]);
+    const n = lv.length + cr.length;
     const b = $("leave-badge");
-    b.hidden = pend.length === 0;
-    b.textContent = pend.length;
+    b.hidden = n === 0;
+    b.textContent = n;
   } catch {}
 }
 
@@ -680,8 +690,10 @@ $("add-team").onclick = async () => {
 async function showLeave() {
   switchView("leave");
   const status = $("leave-filter").value;
-  const list = await apiJson("/api/leave" + (status ? `?status=${status}` : ""));
+  const qs = status ? `?status=${status}` : "";
   const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
+  // 休暇・欠勤の申請
+  const list = await apiJson("/api/leave" + qs);
   document.querySelector("#leave-table tbody").innerHTML = list.map(l => `
     <tr>
       <td><strong>${esc(l.name)}</strong></td><td>${esc(l.date)}</td><td>${esc(l.leave_type)}</td>
@@ -691,11 +703,34 @@ async function showLeave() {
         <button class="mini approve" data-id="${l.id}">承認</button>
         <button class="mini danger reject" data-id="${l.id}">却下</button>` : "—"}</td>
     </tr>`).join("") || `<tr><td colspan="6"><small>申請はありません</small></td></tr>`;
+  // 勤務時間の修正申請
+  const corr = await apiJson("/api/corrections" + qs);
+  const tm = t => t ? esc(t) : "—";
+  document.querySelector("#correction-table tbody").innerHTML = corr.map(c => `
+    <tr>
+      <td><strong>${esc(c.name)}</strong></td><td>${esc(c.date)}</td>
+      <td>${tm(c.requested_in)} / ${tm(c.requested_out)}</td>
+      <td>${esc(c.reason) || "—"}</td>
+      <td class="lv-${c.status}">${label[c.status] || c.status}</td>
+      <td>${c.status === "pending" ? `
+        <button class="mini approve-cr" data-id="${c.id}">承認</button>
+        <button class="mini danger reject-cr" data-id="${c.id}">却下</button>` : "—"}</td>
+    </tr>`).join("") || `<tr><td colspan="6"><small>申請はありません</small></td></tr>`;
   document.querySelectorAll(".approve, .reject").forEach(b => b.onclick = async () => {
     await apiJson(`/api/leave/${b.dataset.id}/decision`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ approve: b.classList.contains("approve") }),
     });
+    refreshLeaveBadge();
+    showLeave();
+  });
+  document.querySelectorAll(".approve-cr, .reject-cr").forEach(b => b.onclick = async () => {
+    try {
+      await apiJson(`/api/corrections/${b.dataset.id}/decision`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approve: b.classList.contains("approve-cr") }),
+      });
+    } catch { /* apiJson が原因をアラート表示済み。一覧は再描画する */ }
     refreshLeaveBadge();
     showLeave();
   });

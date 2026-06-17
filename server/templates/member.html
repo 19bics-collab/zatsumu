@@ -123,6 +123,20 @@
   <div id="lv-list"></div>
 </div>
 
+<div class="card" id="correction-card" hidden>
+  <h2>勤務時間の修正申請</h2>
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+    <input type="date" id="cr-date">
+    <label style="font-size:.85rem">着席<input type="time" id="cr-in" style="margin-left:.2rem"></label>
+    <label style="font-size:.85rem">退席<input type="time" id="cr-out" style="margin-left:.2rem"></label>
+    <input type="text" id="cr-reason" placeholder="理由（任意）" style="flex:1;min-width:120px">
+    <button class="small" id="cr-submit">申請</button>
+  </div>
+  <p style="font-size:.8rem;color:#777;margin:.3rem 0">打刻し忘れ等の修正を申請できます。着席・退席は一方だけでもOK（承認されると反映されます）</p>
+  <p id="cr-msg" style="font-size:.85rem;margin:.4rem 0"></p>
+  <div id="cr-list"></div>
+</div>
+
 <div class="card" id="history" hidden>
   <h2>勤務実績</h2>
   <div class="month-nav">
@@ -199,6 +213,7 @@ function showLogin(withError) {
   $("panel").hidden = true;
   $("journal-card").hidden = true;
   $("leave-card").hidden = true;
+  $("correction-card").hidden = true;
   $("history").hidden = true;
   $("login").hidden = false;
   $("login-error").hidden = !withError;
@@ -212,10 +227,12 @@ async function load() {
   $("panel").hidden = false;
   $("journal-card").hidden = false;
   $("leave-card").hidden = false;
+  $("correction-card").hidden = false;
   $("history").hidden = false;
   $("hello").textContent = state.name + " さん";
   loadJournal();
   loadLeave();
+  loadCorrections();
   draw();
   clearInterval(timer);
   timer = setInterval(draw, 1000);
@@ -423,6 +440,47 @@ $("lv-submit").onclick = async () => {
     $("lv-msg").textContent = e.detail || "申請に失敗しました";
   }
   setTimeout(() => $("lv-msg").textContent = "", 3000);
+};
+
+/* ---------- 勤務時間の修正申請 ---------- */
+async function loadCorrections() {
+  const list = await (await fetch("/api/me/corrections", { headers: headers() })).json();
+  const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
+  const tm = t => t ? esc2(t) : "—";
+  $("cr-list").innerHTML = list.length ? list.map(c => `
+    <div style="display:flex;gap:.6rem;align-items:center;border-bottom:1px solid #eee;padding:.35rem 0;font-size:.9rem">
+      <span style="width:6.5rem">${esc2(c.date)}</span>
+      <span style="flex:1">着席 ${tm(c.requested_in)} / 退席 ${tm(c.requested_out)}${c.reason ? " ・ " + esc2(c.reason) : ""}</span>
+      <span class="lv-${c.status}">${label[c.status]}</span>
+      ${c.status !== "approved"
+        ? `<button class="small ghost cr-cancel" data-id="${c.id}">取消</button>` : ""}
+    </div>`).join("") : `<small style="color:#777">申請はありません</small>`;
+  document.querySelectorAll(".cr-cancel").forEach(b => b.onclick = async () => {
+    await fetch(`/api/me/corrections/${b.dataset.id}`, { method: "DELETE", headers: headers() });
+    loadCorrections();
+  });
+}
+$("cr-submit").onclick = async () => {
+  if (!$("cr-date").value) { $("cr-msg").textContent = "日付を選んでください"; return; }
+  if (!$("cr-in").value && !$("cr-out").value) {
+    $("cr-msg").textContent = "着席か退席の時刻を入力してください"; return;
+  }
+  const r = await fetch("/api/me/corrections", {
+    method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+    body: JSON.stringify({ date: $("cr-date").value, requested_in: $("cr-in").value || null,
+                           requested_out: $("cr-out").value || null, reason: $("cr-reason").value }),
+  });
+  if (r.ok) {
+    $("cr-reason").value = ""; $("cr-in").value = ""; $("cr-out").value = "";
+    $("cr-msg").style.color = "#0a7d32";
+    $("cr-msg").textContent = "申請しました（承認待ち）";
+    loadCorrections();
+  } else {
+    const e = await r.json().catch(() => ({}));
+    $("cr-msg").style.color = "#c62828";
+    $("cr-msg").textContent = e.detail || "申請に失敗しました";
+  }
+  setTimeout(() => $("cr-msg").textContent = "", 3000);
 };
 
 $("punch").onclick = () =>
