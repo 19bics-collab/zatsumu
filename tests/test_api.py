@@ -1147,6 +1147,32 @@ def test_correction_requires_admin(client, users):
                        json={"approve": True}).status_code == 403
 
 
+# ---------- スタッフ個別の通知ON/OFF ----------
+def test_per_user_notify_toggle_and_gate(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    calls = []
+    monkeypatch.setattr(app_module, "_notify", lambda conn, text: calls.append(text))
+    # 全社の着席/退席通知を有効化
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"notify_clock": True}).status_code == 200
+    # 一覧・PATCH に notify_enabled が含まれる
+    lst = client.get("/api/users", headers=auth(admin)).json()
+    assert all("notify_enabled" in u for u in lst)
+    # 既定(通知ON)では着席・退席で通知される
+    client.post("/api/clock-in", headers=auth(worker))
+    client.post("/api/clock-out", headers=auth(worker))
+    assert len(calls) == 2
+    # このスタッフの通知をOFFにすると通知されない
+    r = client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                     json={"notify_enabled": False})
+    assert r.status_code == 200 and r.json()["notify_enabled"] == 0
+    calls.clear()
+    client.post("/api/clock-in", headers=auth(worker))
+    client.post("/api/clock-out", headers=auth(worker))
+    assert calls == []
+
+
 def test_send_email_builds_mime(monkeypatch):
     from server import notify
 

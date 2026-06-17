@@ -34,6 +34,7 @@ def check_long_seated(conn) -> int:
         SELECT se.id, se.clock_in, u.name FROM sessions se
         JOIN users u ON u.id = se.user_id
         WHERE se.clock_out IS NULL AND se.alert_notified = 0 AND se.clock_in <= ?
+              AND u.notify_enabled = 1
         """,
         (tz.utc_iso(cutoff),),
     ).fetchall()
@@ -152,6 +153,7 @@ class UserPatch(BaseModel):
     active: bool | None = None
     is_admin: bool | None = None
     capture_enabled: bool | None = None
+    notify_enabled: bool | None = None
     team_id: int | None = None
     clear_team: bool = False  # team_id を未所属(NULL)に戻す
 
@@ -288,7 +290,7 @@ def clock_in(
         "INSERT INTO sessions (user_id, clock_in, category) VALUES (?, ?, ?)",
         (user["id"], now_iso(), category),
     )
-    if db.get_settings(conn)["notify_clock"]:
+    if db.get_settings(conn)["notify_clock"] and user["notify_enabled"]:
         _notify(conn, f"🟢 {user['name']} さんが着席しました（{category}）")
     return {"session_id": cur.lastrowid, "clock_in": now_iso(), "category": category}
 
@@ -323,7 +325,7 @@ def clock_out(user=Depends(auth_user), conn=Depends(get_conn)):
     conn.execute(
         "UPDATE sessions SET clock_out = ? WHERE id = ?", (now_iso(), session["id"])
     )
-    if db.get_settings(conn)["notify_clock"]:
+    if db.get_settings(conn)["notify_clock"] and user["notify_enabled"]:
         now = datetime.now(timezone.utc)
         day_start, _ = tz.today_window(now)
         rows = conn.execute(
@@ -616,7 +618,7 @@ def list_users(_admin=Depends(require_admin), conn=Depends(get_conn)):
         dict(r)
         for r in conn.execute(
             "SELECT u.id, u.name, u.is_admin, u.active, u.capture_enabled, "
-            "u.team_id, t.name AS team_name "
+            "u.notify_enabled, u.team_id, t.name AS team_name "
             "FROM users u LEFT JOIN teams t ON t.id = u.team_id ORDER BY u.name"
         )
     ]
@@ -721,6 +723,13 @@ def patch_user(
         )
         _audit(conn, admin, "user_capture", user_id,
                detail=str(body.capture_enabled))
+    if body.notify_enabled is not None:
+        conn.execute(
+            "UPDATE users SET notify_enabled = ? WHERE id = ?",
+            (int(body.notify_enabled), user_id),
+        )
+        _audit(conn, admin, "user_notify", user_id,
+               detail=str(body.notify_enabled))
     if body.clear_team:
         conn.execute("UPDATE users SET team_id = NULL WHERE id = ?", (user_id,))
         _audit(conn, admin, "user_team", user_id, detail="(未所属)")
@@ -732,8 +741,8 @@ def patch_user(
                      (body.team_id, user_id))
         _audit(conn, admin, "user_team", user_id, detail=str(body.team_id))
     row = conn.execute(
-        "SELECT id, name, is_admin, active, capture_enabled, team_id FROM users "
-        "WHERE id = ?", (user_id,)
+        "SELECT id, name, is_admin, active, capture_enabled, notify_enabled, "
+        "team_id FROM users WHERE id = ?", (user_id,)
     ).fetchone()
     return dict(row)
 

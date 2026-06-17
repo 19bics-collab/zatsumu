@@ -174,7 +174,7 @@
     <small>追加するとトークンが一度だけ表示されます。本人に安全な方法で渡してください</small>
   </div>
   <table id="users-table">
-    <thead><tr><th>メンバー</th><th>チーム</th><th>権限</th><th>状態</th><th>撮影</th><th>操作</th></tr></thead>
+    <thead><tr><th>メンバー</th><th>チーム</th><th>権限</th><th>状態</th><th>撮影</th><th>通知</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
 
@@ -595,6 +595,9 @@ async function showUsers() {
       <td>${u.capture_enabled ? "ON" : '<span class="badge gray">停止中</span>'}
         <button class="mini ghost toggle-capture" data-id="${u.id}" data-cap="${u.capture_enabled}">
           ${u.capture_enabled ? "停止" : "再開"}</button></td>
+      <td>${u.notify_enabled ? "ON" : '<span class="badge gray">OFF</span>'}
+        <button class="mini ghost toggle-notify" data-id="${u.id}" data-ntf="${u.notify_enabled}">
+          ${u.notify_enabled ? "停止" : "再開"}</button></td>
       <td>
         <button class="mini ghost regen" data-id="${u.id}" data-name="${esc(u.name)}">トークン再発行</button>
         <button class="mini ghost toggle-admin" data-id="${u.id}" data-admin="${u.is_admin}">
@@ -634,6 +637,13 @@ async function showUsers() {
     await apiJson(`/api/users/${b.dataset.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ capture_enabled: b.dataset.cap !== "1" }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".toggle-notify").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/users/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notify_enabled: b.dataset.ntf !== "1" }),
     });
     showUsers();
   });
