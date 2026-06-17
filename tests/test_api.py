@@ -1152,7 +1152,8 @@ def test_per_user_notify_toggle_and_gate(client, users, monkeypatch):
     from server import app as app_module
     worker, admin = users
     calls = []
-    monkeypatch.setattr(app_module, "_notify", lambda conn, text: calls.append(text))
+    monkeypatch.setattr(app_module, "_notify",
+                        lambda conn, text, member_email=None: calls.append(text))
     # 全社の着席/退席通知を有効化
     assert client.patch("/api/settings", headers=auth(admin),
                         json={"notify_clock": True}).status_code == 200
@@ -1171,6 +1172,32 @@ def test_per_user_notify_toggle_and_gate(client, users, monkeypatch):
     client.post("/api/clock-in", headers=auth(worker))
     client.post("/api/clock-out", headers=auth(worker))
     assert calls == []
+
+
+def test_member_email_register_and_used_as_recipient(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    captured = []
+    monkeypatch.setattr(app_module.notify, "deliver_async",
+                        lambda settings, text: captured.append(dict(settings)))
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"notify_clock": True}).status_code == 200
+    # メールアドレスを登録
+    r = client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                     json={"email": "tanaka@example.com"})
+    assert r.status_code == 200 and r.json()["email"] == "tanaka@example.com"
+    # 一覧にも反映
+    lst = client.get("/api/users", headers=auth(admin)).json()
+    assert any(u["email"] == "tanaka@example.com" for u in lst)
+    # 着席通知の宛先に本人メールが含まれる
+    client.post("/api/clock-in", headers=auth(worker))
+    assert captured and "tanaka@example.com" in captured[-1]["mail_to"]
+
+
+def test_member_email_invalid_rejected(client, users):
+    worker, admin = users
+    assert client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                        json={"email": "not-an-email"}).status_code == 400
 
 
 def test_send_email_builds_mime(monkeypatch):

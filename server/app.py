@@ -31,7 +31,7 @@ def check_long_seated(conn) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=s["alert_hours"])
     rows = conn.execute(
         """
-        SELECT se.id, se.clock_in, u.name FROM sessions se
+        SELECT se.id, se.clock_in, u.name, u.email FROM sessions se
         JOIN users u ON u.id = se.user_id
         WHERE se.clock_out IS NULL AND se.alert_notified = 0 AND se.clock_in <= ?
               AND u.notify_enabled = 1
@@ -40,7 +40,8 @@ def check_long_seated(conn) -> int:
     ).fetchall()
     for r in rows:
         notify.deliver_async(
-            s, f"⚠ {r['name']} さんが {s['alert_hours']} 時間以上連続で在席中です"
+            _with_member_email(s, r["email"]),
+            f"⚠ {r['name']} さんが {s['alert_hours']} 時間以上連続で在席中です",
         )
         conn.execute(
             "UPDATE sessions SET alert_notified = 1 WHERE id = ?", (r["id"],)
@@ -116,9 +117,26 @@ def require_admin(user=Depends(auth_user)):
     return user
 
 
-def _notify(conn, text: str) -> None:
-    """設定が有効なら通知を非同期送信する (失敗してもリクエストは止めない)."""
-    notify.deliver_async(db.get_settings(conn), text)
+def _with_member_email(settings: dict, email: str | None) -> dict:
+    """通知先(mail_to)にメンバー個別のメールアドレスを足した設定を返す."""
+    if not email:
+        return settings
+    s = dict(settings)
+    recips = [a.strip() for a in str(s.get("mail_to") or "").split(",") if a.strip()]
+    if email not in recips:
+        recips.append(email)
+    s["mail_to"] = ",".join(recips)
+    return s
+
+
+def _notify(conn, text: str, member_email: str | None = None) -> None:
+    """設定が有効なら通知を非同期送信する (失敗してもリクエストは止めない).
+
+    member_email を渡すと、全社の通知先に加えて本人宛にも送る。
+    """
+    notify.deliver_async(
+        _with_member_email(db.get_settings(conn), member_email), text
+    )
 
 
 def _audit(conn, admin, action, target_user_id=None, session_id=None, detail=""):
@@ -154,6 +172,7 @@ class UserPatch(BaseModel):
     is_admin: bool | None = None
     capture_enabled: bool | None = None
     notify_enabled: bool | None = None
+    email: str | None = None
     team_id: int | None = None
     clear_team: bool = False  # team_id を未所属(NULL)に戻す
 
@@ -291,7 +310,8 @@ def clock_in(
         (user["id"], now_iso(), category),
     )
     if db.get_settings(conn)["notify_clock"] and user["notify_enabled"]:
-        _notify(conn, f"🟢 {user['name']} さんが着席しました（{category}）")
+        _notify(conn, f"🟢 {user['name']} さんが着席しました（{category}）",
+                member_email=user["email"])
     return {"session_id": cur.lastrowid, "clock_in": now_iso(), "category": category}
 
 
@@ -335,7 +355,8 @@ def clock_out(user=Depends(auth_user), conn=Depends(get_conn)):
         ).fetchall()
         h = sum(tz.overlap_hours(r["clock_in"], r["clock_out"], day_start, now, now)
                 for r in rows)
-        _notify(conn, f"🔴 {user['name']} さんが退席しました（本日 {round(h, 1)}h）")
+        _notify(conn, f"🔴 {user['name']} さんが退席しました（本日 {round(h, 1)}h）",
+                member_email=user["email"])
     return {"session_id": session["id"], "clock_out": now_iso()}
 
 
@@ -618,7 +639,7 @@ def list_users(_admin=Depends(require_admin), conn=Depends(get_conn)):
         dict(r)
         for r in conn.execute(
             "SELECT u.id, u.name, u.is_admin, u.active, u.capture_enabled, "
-            "u.notify_enabled, u.team_id, t.name AS team_name "
+            "u.notify_enabled, u.email, u.team_id, t.name AS team_name "
             "FROM users u LEFT JOIN teams t ON t.id = u.team_id ORDER BY u.name"
         )
     ]
@@ -730,6 +751,14 @@ def patch_user(
         )
         _audit(conn, admin, "user_notify", user_id,
                detail=str(body.notify_enabled))
+    if body.email is not None:
+        email = body.email.strip()
+        if email and "@" not in email:
+            raise HTTPException(400, "メールアドレスの形式が正しくありません")
+        conn.execute(
+            "UPDATE users SET email = ? WHERE id = ?", (email, user_id)
+        )
+        _audit(conn, admin, "user_email", user_id, detail=email or "(削除)")
     if body.clear_team:
         conn.execute("UPDATE users SET team_id = NULL WHERE id = ?", (user_id,))
         _audit(conn, admin, "user_team", user_id, detail="(未所属)")
@@ -742,7 +771,7 @@ def patch_user(
         _audit(conn, admin, "user_team", user_id, detail=str(body.team_id))
     row = conn.execute(
         "SELECT id, name, is_admin, active, capture_enabled, notify_enabled, "
-        "team_id FROM users WHERE id = ?", (user_id,)
+        "email, team_id FROM users WHERE id = ?", (user_id,)
     ).fetchone()
     return dict(row)
 

@@ -165,6 +165,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE users ADD COLUMN notify_enabled INTEGER NOT NULL DEFAULT 1"
         )
+    if "email" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
     if "team_id" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN team_id INTEGER")
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
