@@ -600,7 +600,9 @@ async function showUsers() {
   document.querySelector("#users-table tbody").innerHTML = users.map(u => `
     <tr>
       <td><strong>${esc(u.name)}</strong><br>
-        <code style="font-size:.66rem;color:#6b7280;word-break:break-all">${esc(u.token)}</code></td>
+        <code class="tok-val" data-token="${esc(u.token)}"
+          style="font-size:.66rem;color:#6b7280;word-break:break-all">••••••••</code>
+        <button type="button" class="mini ghost tok-show">表示</button></td>
       <td><select class="set-team" data-id="${u.id}"
         style="padding:.3rem;border:1px solid #ccc;border-radius:5px">${teamOpts(u)}</select></td>
       <td>${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
@@ -635,6 +637,12 @@ async function showUsers() {
     if (!confirm(`${b.dataset.name} さんのトークンを再発行しますか？\n(今のトークンは使えなくなります)`)) return;
     const r = await apiJson(`/api/users/${b.dataset.id}/token`, { method: "POST" });
     showToken(r.name, r.token);
+  });
+  document.querySelectorAll(".tok-show").forEach(b => b.onclick = () => {
+    const code = b.previousElementSibling;   // 直前の <code class="tok-val">
+    const shown = b.textContent === "隠す";
+    code.textContent = shown ? "••••••••" : code.dataset.token;
+    b.textContent = shown ? "表示" : "隠す";
   });
   document.querySelectorAll(".copy-token").forEach(b => b.onclick = () =>
     copyFlash(b, b.dataset.token));
