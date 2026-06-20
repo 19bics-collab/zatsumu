@@ -107,6 +107,9 @@ INT_SETTINGS = {
     "daily_target_minutes": 480,   # 1日の予定勤務時間(分) 既定8時間
     "notify_clock": 0,             # 着席/退席を通知するか
     "notify_alert": 1,             # 長時間在席を通知するか
+    "notify_stall": 1,             # 画面が変化しない(停滞)場合に通知するか
+    "stall_threshold": 95,         # 直前のキャプチャとの一致率がこの%以上で「同じ画面」
+    "stall_alert_count": 3,        # 同じ画面が連続でこの回数続いたら通知
 }
 
 # 全社設定の既定値 (文字列)
@@ -169,6 +172,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
     if "team_id" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN team_id INTEGER")
+    shcols = [r["name"] for r in conn.execute("PRAGMA table_info(screenshots)")]
+    if "sig" not in shcols:
+        conn.execute("ALTER TABLE screenshots ADD COLUMN sig TEXT")
+    if "similarity" not in shcols:  # 直前のキャプチャとの一致率(%)
+        conn.execute("ALTER TABLE screenshots ADD COLUMN similarity INTEGER")
+    if "stall" not in shcols:       # 同じ画面が連続した回数
+        conn.execute(
+            "ALTER TABLE screenshots ADD COLUMN stall INTEGER NOT NULL DEFAULT 0"
+        )
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
     if "category" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN category TEXT")

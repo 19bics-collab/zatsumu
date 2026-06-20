@@ -284,6 +284,16 @@
         <input type="number" id="set-alert" min="1" max="24"></label>
       <p><small>予定勤務時間を基準に、月次レポートと個人ページで残業/不足を集計します。
       保存日数を超えたキャプチャは自動削除、連続在席がアラート時間を超えると⚠表示・通知されます。</small></p>
+      <h3>画面停滞アラート（離席検知）</h3>
+      <label class="set-row"><span>画面が変化しない時に通知</span>
+        <input type="checkbox" id="set-notify-stall"></label>
+      <label class="set-row"><span>同じ画面とみなす一致率（%）</span>
+        <input type="number" id="set-stall-threshold" min="50" max="100"></label>
+      <label class="set-row"><span>連続で一致したら通知（回数）</span>
+        <input type="number" id="set-stall-count" min="1" max="100"></label>
+      <p><small>各キャプチャを直前の画像と見比べ、一致率がしきい値以上の状態が
+      指定回数つづくと「画面が変化していない（離席の可能性）」として通知します。
+      一致率を上げる（例 98%）ほど厳しく、下げるほど小さな変化でも停滞とみなします。</small></p>
     </div>
     <div class="set-card">
       <h3>通知（Slack / メール）</h3>
@@ -551,6 +561,8 @@ async function renderHome(status) {
       if (h >= appSettings.alert_hours)
         warn = ` <span class="badge warn" title="連続在席が${appSettings.alert_hours}時間を超えています">⚠ ${Math.floor(h)}h連続</span>`;
     }
+    if (u.stalled)
+      warn += ` <span class="badge warn" title="画面がしばらく変化していません（離席の可能性）">⚠ 画面停滞</span>`;
     return `
     <tr class="user-row" data-id="${u.user_id}" data-name="${esc(u.name)}">
       <td class="click"><strong>${esc(u.name)}</strong></td>
@@ -899,6 +911,9 @@ async function showSettings() {
   $("set-target").value = (s.daily_target_minutes / 60);
   $("set-notify-clock").checked = !!s.notify_clock;
   $("set-notify-alert").checked = !!s.notify_alert;
+  $("set-notify-stall").checked = !!s.notify_stall;
+  $("set-stall-threshold").value = s.stall_threshold;
+  $("set-stall-count").value = s.stall_alert_count;
   $("set-slack").value = s.slack_webhook_url;
   $("set-mail-to").value = s.mail_to;
   $("set-smtp-host").value = s.smtp_host;
@@ -930,6 +945,9 @@ $("set-save").onclick = async () => {
     daily_target_minutes: Math.round(+$("set-target").value * 60),
     notify_clock: $("set-notify-clock").checked,
     notify_alert: $("set-notify-alert").checked,
+    notify_stall: $("set-notify-stall").checked,
+    stall_threshold: +$("set-stall-threshold").value,
+    stall_alert_count: +$("set-stall-count").value,
     slack_webhook_url: $("set-slack").value,
     mail_to: $("set-mail-to").value,
     smtp_host: $("set-smtp-host").value,

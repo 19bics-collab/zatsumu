@@ -1284,7 +1284,118 @@ def test_migrate_idempotent(tmp_path):
     conn = db.connect(p)
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)")]
     assert cols.count("team_id") == 1 and cols.count("active") == 1
+    shcols = [r["name"] for r in conn.execute("PRAGMA table_info(screenshots)")]
+    assert {"sig", "similarity", "stall"} <= set(shcols)
     conn.close()
+
+
+def _jpeg(color=(123, 200, 50), size=(160, 120)):
+    """テスト用のデコード可能な JPEG バイト列を作る."""
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "JPEG", quality=80)
+    return buf.getvalue()
+
+
+def test_imaging_signature_and_similarity():
+    from server import imaging
+    a, b, c = _jpeg((255, 255, 255)), _jpeg((255, 255, 255)), _jpeg((0, 0, 0))
+    sa, sb, sc = imaging.signature(a), imaging.signature(b), imaging.signature(c)
+    assert sa and sb and sc
+    assert imaging.similarity(sa, sb) >= 99      # 同じ画像はほぼ一致
+    assert imaging.similarity(sa, sc) < 10       # 白と黒は大きく異なる
+    # 壊れた画像・比較不能は None
+    assert imaging.signature(b"\xff\xd8not-a-jpeg") is None
+    assert imaging.similarity("zz", sa) is None   # 不正な hex
+    assert imaging.similarity(sa, None) is None
+
+
+def test_screen_stall_alert_flow(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    alerts = []
+    monkeypatch.setattr(app_module, "_notify",
+                        lambda conn, text, member_email=None: alerts.append(text))
+    # 2回連続で一致したら通知する設定にする
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"notify_stall": True, "stall_threshold": 90,
+                              "stall_alert_count": 2}).status_code == 200
+    client.post("/api/clock-in", headers=auth(worker))
+
+    same = _jpeg((30, 60, 120))
+    up = lambda b: client.post("/api/screenshots", headers=auth(worker),
+                               files={"image": ("s.jpg", b, "image/jpeg")})
+    assert up(same).status_code == 200      # 1枚目: 比較対象なし stall=0
+    assert up(same).status_code == 200      # 2枚目: 一致 stall=1 (通知なし)
+    assert len(alerts) == 0
+    assert up(same).status_code == 200      # 3枚目: stall=2 → しきい値到達で通知
+    assert len(alerts) == 1
+    assert "変化していません" in alerts[0]
+
+    # 同じ画面が続いても連投しない(到達した瞬間のみ)
+    assert up(same).status_code == 200
+    assert len(alerts) == 1
+
+    # 停滞中はステータス一覧に stalled フラグが立つ
+    st = {u["name"]: u for u in
+          client.get("/api/status", headers=auth(admin)).json()}
+    assert st["tanaka"]["stalled"] is True
+
+    # 画面が変われば stall はリセットされる(明度が大きく異なる画像)
+    assert up(_jpeg((255, 255, 255))).status_code == 200
+    assert len(alerts) == 1
+    st = {u["name"]: u for u in
+          client.get("/api/status", headers=auth(admin)).json()}
+    assert st["tanaka"]["stalled"] is False
+
+    # 一覧APIに similarity/stall が載り、sig は除外される
+    shots = client.get(f"/api/screenshots?user_id={worker['id']}",
+                       headers=auth(admin)).json()
+    latest = shots[0]
+    assert "sig" not in latest
+    assert latest["stall"] == 0 and latest["similarity"] is not None
+
+
+def test_stall_disabled_or_low_match_no_alert(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    alerts = []
+    monkeypatch.setattr(app_module, "_notify",
+                        lambda conn, text, member_email=None: alerts.append(text))
+    client.post("/api/clock-in", headers=auth(worker))
+    up = lambda b: client.post("/api/screenshots", headers=auth(worker),
+                               files={"image": ("s.jpg", b, "image/jpeg")})
+    # 停滞通知OFFなら、同じ画面が続いても通知しない
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"notify_stall": False, "stall_alert_count": 1})
+    for _ in range(4):
+        up(_jpeg((10, 20, 30)))
+    assert alerts == []
+    # ONでも毎回画面が変われば一致せず通知されない
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"notify_stall": True, "stall_threshold": 95,
+                       "stall_alert_count": 1})
+    up(_jpeg((0, 0, 0)))
+    up(_jpeg((255, 255, 255)))
+    up(_jpeg((0, 0, 0)))
+    assert alerts == []
+
+
+def test_stall_settings_validation(client, users):
+    worker, admin = users
+    # 範囲外は 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"stall_threshold": 40}).status_code == 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"stall_alert_count": 0}).status_code == 400
+    # 正常値は反映される
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"stall_threshold": 98, "stall_alert_count": 5,
+                              "notify_stall": False}).status_code == 200
+    s = client.get("/api/settings", headers=auth(admin)).json()
+    assert s["stall_threshold"] == 98 and s["stall_alert_count"] == 5
+    assert s["notify_stall"] == 0
 
 
 def test_demo_seed_idempotent(tmp_path):

@@ -15,7 +15,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import db, notify, reports, retention, tz
+from . import db, imaging, notify, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
@@ -209,6 +209,9 @@ class SettingsPatch(BaseModel):
     daily_target_minutes: int | None = None
     notify_clock: bool | None = None
     notify_alert: bool | None = None
+    notify_stall: bool | None = None
+    stall_threshold: int | None = None
+    stall_alert_count: int | None = None
     company_name: str | None = None
     timezone: str | None = None
     work_start: str | None = None
@@ -377,10 +380,44 @@ async def upload_screenshot(
     dest = SCREENSHOT_DIR / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(data)
+
+    # --- 画面停滞(無変化)検知 ---
+    # 直前のキャプチャと指紋を比べ、一致率がしきい値以上の状態が続いた回数(stall)を
+    # 記録する。回数がしきい値に達した瞬間に1回だけ通知する。
+    s = db.get_settings(conn)
+    sig = await asyncio.to_thread(imaging.signature, data)  # JPEGデコードはスレッドへ
+    prev = conn.execute(
+        "SELECT taken_at, sig, stall FROM screenshots WHERE user_id = ? "
+        "ORDER BY taken_at DESC LIMIT 1",
+        (user["id"],),
+    ).fetchone()
+    sim: float | None = None
+    stall = 0
+    if sig and prev and prev["sig"]:
+        try:
+            gap = (taken_at - datetime.fromisoformat(prev["taken_at"])).total_seconds()
+        except ValueError:
+            gap = None
+        # 撮影が長く空いた場合(休憩・再ログイン)は連続扱いにしない
+        if gap is not None and gap <= s["capture_max_interval"] * 3:
+            sim = imaging.similarity(sig, prev["sig"])
+            if sim is not None and sim >= s["stall_threshold"]:
+                stall = (prev["stall"] or 0) + 1
     cur = conn.execute(
-        "INSERT INTO screenshots (user_id, taken_at, path) VALUES (?, ?, ?)",
-        (user["id"], taken_at.isoformat(), rel),
+        "INSERT INTO screenshots (user_id, taken_at, path, sig, similarity, stall) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (user["id"], taken_at.isoformat(), rel, sig,
+         round(sim) if sim is not None else None, stall),
     )
+    if (s["notify_stall"] and user["notify_enabled"]
+            and stall == s["stall_alert_count"]):
+        n = stall + 1  # ほぼ同一だった連続キャプチャ枚数
+        _notify(
+            conn,
+            f"⚠ {user['name']} さんの画面が直近 {n} 枚連続でほとんど変化していません"
+            f"（一致率 {round(sim)}% 以上）。離席の可能性があります。",
+            member_email=user["email"],
+        )
     return {"screenshot_id": cur.lastrowid}
 
 
@@ -390,12 +427,15 @@ def status(
 ):
     now = datetime.now(timezone.utc)
     day_start, _ = tz.today_window(now)
+    settings = db.get_settings(conn)
     q = """
         SELECT u.id, u.name, u.team_id, t.name AS team_name,
                s.clock_in AS open_since,
                s.category AS open_category,
                (SELECT taken_at FROM screenshots WHERE user_id = u.id
-                ORDER BY taken_at DESC LIMIT 1) AS last_screenshot
+                ORDER BY taken_at DESC LIMIT 1) AS last_screenshot,
+               (SELECT stall FROM screenshots WHERE user_id = u.id
+                ORDER BY taken_at DESC LIMIT 1) AS last_stall
         FROM users u
         LEFT JOIN teams t ON t.id = u.team_id
         LEFT JOIN sessions s ON s.user_id = u.id AND s.clock_out IS NULL
@@ -441,6 +481,9 @@ def status(
             "category": r["open_category"],
             "hours_today": round(hours.get(r["id"], 0.0), 2),
             "last_screenshot": r["last_screenshot"],
+            # 直近キャプチャが連続して無変化(離席の可能性)か。機能OFFなら出さない
+            "stalled": bool(settings["notify_stall"]) and r["open_since"] is not None
+            and (r["last_stall"] or 0) >= settings["stall_alert_count"],
             "today_sessions": segs.get(r["id"], []),
         }
         for r in rows
@@ -560,6 +603,9 @@ def patch_settings(
         "daily_target_minutes": (0, 1440),
         "notify_clock": (0, 1),
         "notify_alert": (0, 1),
+        "notify_stall": (0, 1),
+        "stall_threshold": (50, 100),
+        "stall_alert_count": (1, 100),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -1264,7 +1310,12 @@ def list_screenshots(
         args.append(user_id)
     q += " ORDER BY s.taken_at DESC LIMIT ?"
     args.append(limit)
-    return [dict(r) for r in conn.execute(q, args).fetchall()]
+    out = []
+    for r in conn.execute(q, args).fetchall():
+        d = dict(r)
+        d.pop("sig", None)  # 指紋は内部用途のみ。レスポンスには含めない
+        out.append(d)
+    return out
 
 
 @app.get("/api/screenshots/{screenshot_id}/image")
