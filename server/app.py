@@ -366,11 +366,17 @@ async def upload_screenshot(
 ):
     if not db.open_session(conn, user["id"]):
         raise HTTPException(409, "Not clocked in")
+    # JPEG のみ・サイズ上限を設けてディスク枯渇(DoS)を防ぐ
+    if (image.content_type or "").lower() not in ("image/jpeg", "image/jpg"):
+        raise HTTPException(415, "JPEG画像のみ受け付けます")
+    data = await image.read()
+    if len(data) > 6_000_000:
+        raise HTTPException(413, "画像が大きすぎます")
     taken_at = datetime.now(timezone.utc)
     rel = f"{user['id']}/{taken_at.strftime('%Y%m%d_%H%M%S')}.jpg"
     dest = SCREENSHOT_DIR / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(await image.read())
+    dest.write_bytes(data)
     cur = conn.execute(
         "INSERT INTO screenshots (user_id, taken_at, path) VALUES (?, ?, ?)",
         (user["id"], taken_at.isoformat(), rel),
@@ -1077,6 +1083,8 @@ def decide_leave(
     ).fetchone()
     if not row:
         raise HTTPException(404, "Not found")
+    if row["status"] != "pending":
+        raise HTTPException(409, "既に処理済みの申請です")
     status = "approved" if body.approve else "rejected"
     conn.execute(
         "UPDATE leave_requests SET status = ?, decided_at = ?, decided_by = ? "
@@ -1407,12 +1415,26 @@ def audit_csv(
         "user_active": "有効/無効切替",
         "user_admin": "管理者権限変更",
         "user_capture": "撮影ON/OFF",
+        "user_notify": "通知ON/OFF",
+        "user_email": "通知メール変更",
+        "user_team": "チーム割当変更",
         "token_regen": "トークン再発行",
         "force_clock_out": "強制退席",
         "session_add": "打刻追加",
         "session_edit": "打刻修正",
         "session_delete": "打刻削除",
         "settings_update": "設定変更",
+        "team_create": "チーム作成",
+        "team_rename": "チーム改名",
+        "team_delete": "チーム削除",
+        "leave_approved": "休暇申請を承認",
+        "leave_rejected": "休暇申請を却下",
+        "correction_add": "修正申請で打刻追加",
+        "correction_apply": "修正申請を反映",
+        "correction_apply_in": "修正申請(着席)を反映",
+        "correction_apply_out": "修正申請(退席)を反映",
+        "correction_approved": "修正申請を承認",
+        "correction_rejected": "修正申請を却下",
     }
     buf = io.StringIO()
     writer = csv.writer(buf)

@@ -19,7 +19,11 @@ def grab_screen() -> Image.Image:
         for m in mons:
             shot = sct.grab(m)
             imgs.append(Image.frombytes("RGB", shot.size, shot.rgb))
-    return imgs[0] if len(imgs) == 1 else tile_horizontally(imgs)
+    if len(imgs) == 1:
+        return imgs[0]
+    composite = tile_horizontally(imgs)
+    composite.n_tiles = len(imgs)   # to_jpeg がモニター枚数に応じて上限幅を決める
+    return composite
 
 
 def tile_horizontally(imgs: list[Image.Image], gap: int = 8,
@@ -45,10 +49,12 @@ def tile_horizontally(imgs: list[Image.Image], gap: int = 8,
 
 
 def to_jpeg(img: Image.Image, max_width: int = 1280, blur: int = 0,
-            quality: int = 60) -> bytes:
-    # 横長 (マルチモニターを並べた画像) は 1 モニターあたりの解像度を確保する
-    # ため上限幅を広げる。単一の 16:9 モニターは従来どおり max_width に縮小。
-    cap = max_width * 3 if img.width > img.height * 2 else max_width
+            quality: int = 60, tiles: int | None = None) -> bytes:
+    # マルチモニター合成は 1 モニターあたり max_width を確保するため、実際の
+    # モニター枚数(tiles)に応じて上限幅を広げる。縦横比での推測はしない。
+    if tiles is None:
+        tiles = getattr(img, "n_tiles", 1)
+    cap = max_width * max(1, tiles)
     if img.width > cap:
         img = img.resize((cap, max(1, round(img.height * cap / img.width))))
     if blur > 0:

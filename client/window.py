@@ -136,7 +136,8 @@ class Window:
     def open_web(self):
         """スタッフ専用Webページ(/me)を既定ブラウザで開く(トークンで自動ログイン)."""
         base = self.agent.server.rstrip("/")
-        webbrowser.open(f"{base}/me?token={self.agent.token}")
+        # トークンは # 以降(フラグメント)に置く: サーバへ送られずアクセスログに残らない
+        webbrowser.open(f"{base}/me#token={self.agent.token}")
 
     def sync(self):
         """表示用の情報 (本日の在席時間・現在の区分・着席時刻) をサーバと同期."""

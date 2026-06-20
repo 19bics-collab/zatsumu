@@ -395,12 +395,17 @@ const $ = id => document.getElementById(id);
 let timer = null;
 let view = { name: "home", userId: null, userName: "", month: null };
 let repMonth = null;
+let homeShotUrls = [];   // 稼働状況サムネのblob URL(再描画時に解放してリーク防止)
+let modalUrl = null;     // 拡大モーダル画像のblob URL
 
-// 旧形式 (?token=...) からの移行: 保存して URL から即座に消す
+// ?token= / #token= からの移行: 保存して URL から即座に消す(#はアクセスログに残らない)
 const url = new URL(location);
-if (url.searchParams.get("token")) {
-  localStorage.setItem(KEY, url.searchParams.get("token"));
+const _tok = (url.hash && new URLSearchParams(url.hash.slice(1)).get("token"))
+  || url.searchParams.get("token");
+if (_tok) {
+  localStorage.setItem(KEY, _tok);
   url.searchParams.delete("token");
+  url.hash = "";
   history.replaceState(null, "", url);
 }
 
@@ -576,8 +581,11 @@ async function renderHome(status) {
     return { id: s.id, info: `${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}`,
              url: URL.createObjectURL(blob) };
   }));
+  const prevUrls = homeShotUrls;
+  homeShotUrls = items.map(it => it.url);
   $("shots").innerHTML = items.map((it, i) =>
     `<img src="${it.url}" data-i="${i}" title="${esc(it.info)}">`).join("");
+  prevUrls.forEach(u => URL.revokeObjectURL(u));   // 前回サムネのblob URLを解放
   document.querySelectorAll("#shots img").forEach(img =>
     img.onclick = () => openModal(items.map(({ id, info }) => ({ id, info })), +img.dataset.i));
 }
@@ -631,7 +639,7 @@ async function showUsers() {
   document.querySelectorAll(".copy-token").forEach(b => b.onclick = () =>
     copyFlash(b, b.dataset.token));
   document.querySelectorAll(".copy-url").forEach(b => b.onclick = () =>
-    copyFlash(b, location.origin + "/me?token=" + encodeURIComponent(b.dataset.token)));
+    copyFlash(b, location.origin + "/me#token=" + encodeURIComponent(b.dataset.token)));
   document.querySelectorAll(".toggle-admin").forEach(b => b.onclick = async () => {
     await apiJson(`/api/users/${b.dataset.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -746,10 +754,12 @@ async function showLeave() {
         <button class="mini danger reject-cr" data-id="${c.id}">却下</button>` : "—"}</td>
     </tr>`).join("") || `<tr><td colspan="6"><small>申請はありません</small></td></tr>`;
   document.querySelectorAll(".approve, .reject").forEach(b => b.onclick = async () => {
-    await apiJson(`/api/leave/${b.dataset.id}/decision`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approve: b.classList.contains("approve") }),
-    });
+    try {
+      await apiJson(`/api/leave/${b.dataset.id}/decision`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approve: b.classList.contains("approve") }),
+      });
+    } catch { /* apiJson が原因をアラート済み。一覧は再描画して最新化する */ }
     refreshLeaveBadge();
     showLeave();
   });
@@ -770,19 +780,27 @@ function showToken(name, token) {
   $("token-title").textContent = `${name} さんのトークン`;
   $("token-value").textContent = token;
   $("token-url").textContent =
-    location.origin + "/me?token=" + encodeURIComponent(token);
+    location.origin + "/me#token=" + encodeURIComponent(token);
   $("token-modal").hidden = false;
 }
 async function copyText(text, btnId, label) {
-  await navigator.clipboard.writeText(text);
-  $(btnId).textContent = "コピーしました";
-  setTimeout(() => $(btnId).textContent = label, 1500);
+  try {
+    await navigator.clipboard.writeText(text);
+    $(btnId).textContent = "コピーしました";
+  } catch {
+    $(btnId).textContent = "コピー失敗(手動で選択を)";
+  }
+  setTimeout(() => $(btnId).textContent = label, 1800);
 }
 async function copyFlash(btn, text) {
-  await navigator.clipboard.writeText(text);
   const orig = btn.textContent;
-  btn.textContent = "コピー済";
-  setTimeout(() => { btn.textContent = orig; }, 1500);
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "コピー済";
+  } catch {
+    btn.textContent = "コピー失敗";
+  }
+  setTimeout(() => { btn.textContent = orig; }, 1800);
 }
 $("token-copy").onclick = () =>
   copyText($("token-value").textContent, "token-copy", "トークンをコピー");
@@ -1061,7 +1079,9 @@ async function renderModalImage() {
   const img = $("modal-img");
   img.classList.remove("zoomed");      // 新しい画像は全体表示から開く
   img.parentElement.scrollTo(0, 0);    // スクロール位置もリセット
-  img.src = URL.createObjectURL(blob);
+  if (modalUrl) URL.revokeObjectURL(modalUrl);   // 前の画像のblob URLを解放
+  modalUrl = URL.createObjectURL(blob);
+  img.src = modalUrl;
   $("modal-info").textContent =
     `${cur.info}（${gallery.i + 1}/${gallery.list.length}）　画像クリックで拡大/縮小`;
   $("modal-prev").disabled = gallery.i === 0;

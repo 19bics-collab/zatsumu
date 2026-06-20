@@ -1038,15 +1038,19 @@ def test_tile_horizontally_lays_out_side_by_side():
     assert out.width == wa + wb + 8  # 横に並べた幅 + すき間
 
 
-def test_to_jpeg_widens_cap_for_multimonitor():
+def test_to_jpeg_widens_cap_by_monitor_count():
     import io
     from PIL import Image
     from client import capture
-    # マルチモニターを並べた横長画像(aspect>2)は上限幅が広がり縮みすぎない
+    # マルチモニター合成(tiles指定)は1モニターあたりの解像度を確保し縮みすぎない
     wide = Image.new("RGB", (3840, 1080), "white")
-    out = Image.open(io.BytesIO(capture.to_jpeg(wide, max_width=1280)))
-    assert out.width == 3840
-    # 単一モニター相当(16:9)は従来どおり max_width に縮小
+    out = Image.open(io.BytesIO(capture.to_jpeg(wide, max_width=1280, tiles=3)))
+    assert out.width == 3840   # 1280*3 まで許容
+    # 縦長2画面を横に並べた合成(width<height*2)も tiles で広い上限になり潰れない
+    portrait = Image.new("RGB", (2168, 1920), "white")
+    out_p = Image.open(io.BytesIO(capture.to_jpeg(portrait, max_width=1280, tiles=2)))
+    assert out_p.width == 2168
+    # 単一モニター(tiles=1)は従来どおり max_width に縮小
     normal = Image.new("RGB", (1920, 1080), "white")
     out2 = Image.open(io.BytesIO(capture.to_jpeg(normal, max_width=1280)))
     assert out2.width == 1280
@@ -1206,6 +1210,36 @@ def test_list_users_includes_token(client, users):
     by = {u["name"]: u for u in
           client.get("/api/users", headers=auth(admin)).json()}
     assert by["tanaka"]["token"] == worker["token"]
+
+
+def test_decide_leave_guards_double_decision(client, users):
+    worker, admin = users
+    client.post("/api/me/leave", headers=auth(worker),
+                json={"date": "2026-05-10", "leave_type": "有給休暇"})
+    lid = client.get("/api/me/leave", headers=auth(worker)).json()[0]["id"]
+    assert client.post(f"/api/leave/{lid}/decision", headers=auth(admin),
+                       json={"approve": True}).status_code == 200
+    # 既に処理済みの再決定は 409 で拒否(承認済みを却下に翻せない)
+    assert client.post(f"/api/leave/{lid}/decision", headers=auth(admin),
+                       json={"approve": False}).status_code == 409
+
+
+def test_screenshot_upload_rejects_non_jpeg_and_oversize(client, users):
+    worker, _ = users
+    client.post("/api/clock-in", headers=auth(worker))
+    # 非JPEG → 415
+    assert client.post("/api/screenshots", headers=auth(worker),
+                       files={"image": ("x.png", b"\x89PNG\r\n", "image/png")}
+                       ).status_code == 415
+    # サイズ超過 → 413
+    big = b"\xff\xd8" + b"0" * 6_000_001
+    assert client.post("/api/screenshots", headers=auth(worker),
+                       files={"image": ("x.jpg", big, "image/jpeg")}
+                       ).status_code == 413
+    # 正常な(小さい)JPEG → 200
+    assert client.post("/api/screenshots", headers=auth(worker),
+                       files={"image": ("x.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")}
+                       ).status_code == 200
 
 
 def test_send_email_builds_mime(monkeypatch):

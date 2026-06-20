@@ -34,7 +34,11 @@ class Agent:
         self._thread: threading.Thread | None = None
 
     def toggle(self, icon=None, item=None):
-        self.clock_out() if self.seated else self.clock_in()
+        try:
+            self.clock_out() if self.seated else self.clock_in()
+        except httpx.HTTPError as e:
+            print(f"打刻に失敗しました: {e}")
+            return
         if icon:
             icon.icon = _make_icon(self.seated)
             icon.title = "zatsumu — " + ("着席中" if self.seated else "退席")
@@ -50,10 +54,14 @@ class Agent:
         self._thread.start()
 
     def clock_out(self):
+        # サーバへ先に通知し、成功(またはそもそも未着席=409)を確認してから
+        # ローカル状態を落とす。失敗時は seated を保ったまま例外を呼び出し元へ。
+        r = self.client.post("/api/clock-out")
+        if r.status_code not in (200, 409):
+            r.raise_for_status()
         self.seated = False
         self.since = None
         self._stop.set()
-        self.client.post("/api/clock-out")
 
     def switch_category(self, category: str):
         """在席中に作業区分を切り替える."""
@@ -153,8 +161,11 @@ def main() -> None:
         return
 
     def on_quit(icon, item):
-        if agent.seated:
-            agent.clock_out()
+        try:
+            if agent.seated:
+                agent.clock_out()
+        except httpx.HTTPError:
+            pass
         icon.stop()
 
     menu = pystray.Menu(

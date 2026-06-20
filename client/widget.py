@@ -11,6 +11,8 @@ import argparse
 import time
 import tkinter as tk
 
+import httpx
+
 from . import config
 from .tray import Agent
 
@@ -59,12 +61,18 @@ def main() -> None:
         root.after(1000, tick)
 
     def toggle(_event=None):
-        agent.clock_out() if agent.seated else agent.clock_in()
+        try:
+            agent.clock_out() if agent.seated else agent.clock_in()
+        except httpx.HTTPError as e:
+            print(f"打刻に失敗しました: {e}")
         draw()
 
     def quit_app(_event=None):
-        if agent.seated:
-            agent.clock_out()
+        try:
+            if agent.seated:
+                agent.clock_out()
+        except httpx.HTTPError:
+            pass
         root.destroy()
 
     label.bind("<Button-1>", toggle)

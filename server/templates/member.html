@@ -183,11 +183,14 @@ let month = `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, "0")}`;
 
 const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
 
-// ?token=... での自動ログイン(アプリの「Webで開く」用): 保存してURLから即削除
+// ?token= / #token= での自動ログイン。#はサーバのアクセスログに残らないので推奨。保存後URLから即削除
 const _url = new URL(location);
-if (_url.searchParams.get("token")) {
-  localStorage.setItem(KEY, _url.searchParams.get("token"));
+const _tok = (_url.hash && new URLSearchParams(_url.hash.slice(1)).get("token"))
+  || _url.searchParams.get("token");
+if (_tok) {
+  localStorage.setItem(KEY, _tok);
   _url.searchParams.delete("token");
+  _url.hash = "";
   history.replaceState(null, "", _url);
 }
 
@@ -303,7 +306,7 @@ async function punch(path, body) {
 }
 
 /* ---------- Web画面共有での撮影 (アプリ不要・複数モニター対応) ---------- */
-let webcapStreams = [], webcapTimer = null;
+let webcapStreams = [], webcapTimer = null, webcapGen = 0;
 
 async function webcapAdd() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
@@ -325,7 +328,10 @@ async function webcapAdd() {
   webcapStreams.push(entry);
   // ブラウザのバナーから共有停止された場合はその画面だけ外す
   stream.getVideoTracks()[0].addEventListener("ended", () => webcapRemove(entry));
-  if (webcapStreams.length === 1) webcapTimer = setTimeout(webcapTick, 3000);  // 数秒後に1枚目
+  if (webcapStreams.length === 1) {
+    const gen = ++webcapGen;                           // 新しい撮影ループ世代
+    webcapTimer = setTimeout(() => webcapTick(gen), 3000);  // 数秒後に1枚目
+  }
   webcapUpdateUi();
 }
 
@@ -336,6 +342,7 @@ function webcapRemove(entry) {
 }
 
 function webcapStop() {
+  webcapGen++;   // 走行中のtickを無効化(await明けに再スケジュールさせない)
   if (webcapTimer) { clearTimeout(webcapTimer); webcapTimer = null; }
   webcapStreams.forEach(e => e.stream.getTracks().forEach(t => t.stop()));
   webcapStreams = [];
@@ -349,14 +356,16 @@ function webcapUpdateUi() {
   $("webcap-status").textContent = n ? `画面共有で撮影中（${n}画面）` : "";
 }
 
-async function webcapTick() {
-  if (!webcapStreams.length) return;
+async function webcapTick(gen) {
+  if (gen !== webcapGen || !webcapStreams.length) return;
   let conf = { min_interval: 300, max_interval: 900, quality: 60, blur: 0, capture_enabled: true };
   try { conf = await (await fetch("/api/me/settings", { headers: headers() })).json(); } catch {}
+  if (gen !== webcapGen) return;   // await中に停止/再開されたら終了(再スケジュールしない)
   if (state && state.seated && conf.capture_enabled) await webcapShot(conf);
+  if (gen !== webcapGen) return;
   const lo = Math.max(5, conf.min_interval || 300);
   const hi = Math.max(lo, conf.max_interval || 900);
-  webcapTimer = setTimeout(webcapTick, (lo + Math.floor(Math.random() * (hi - lo + 1))) * 1000);
+  webcapTimer = setTimeout(() => webcapTick(gen), (lo + Math.floor(Math.random() * (hi - lo + 1))) * 1000);
 }
 
 async function webcapShot(conf) {
@@ -400,6 +409,7 @@ function shiftMonth(m, delta) {
 }
 
 let allShots = [];
+let memberModalUrl = null;   // 拡大モーダル画像のblob URL(差し替え時に解放)
 async function loadHistory() {
   const data = await (await fetch(`/api/me/monthly?month=${month}`, { headers: headers() })).json();
   $("month-title").textContent = month;
@@ -461,7 +471,9 @@ async function openModal(i) {
 async function renderModalImage() {
   const cur = allShots[shotIdx];
   const blob = await (await fetch(`/api/screenshots/${cur.id}/image`, { headers: headers() })).blob();
-  $("modal-img").src = URL.createObjectURL(blob);
+  if (memberModalUrl) URL.revokeObjectURL(memberModalUrl);   // 前の画像のblob URLを解放
+  memberModalUrl = URL.createObjectURL(blob);
+  $("modal-img").src = memberModalUrl;
   $("modal-info").textContent = `${cur.info}（${shotIdx + 1}/${allShots.length}）`;
   $("modal-prev").disabled = shotIdx === 0;
   $("modal-next").disabled = shotIdx === allShots.length - 1;
