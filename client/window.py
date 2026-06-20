@@ -101,6 +101,13 @@ class Window:
         )
         self.web_btn.pack(fill="x", padx=20, pady=(6, 0))
 
+        self.tok_btn = tk.Button(
+            root, text="トークンを変更", command=self.change_token,
+            font=("", 9), bd=0, relief="flat", bg=BG, fg=SUB,
+            activebackground=BG, cursor="hand2",
+        )
+        self.tok_btn.pack(pady=(4, 0))
+
         self.footer = tk.Label(root, bg=BG, fg=SUB, font=("", 9))
         self.footer.pack(side="bottom", pady=8)
 
@@ -138,6 +145,14 @@ class Window:
         base = self.agent.server.rstrip("/")
         # トークンは # 以降(フラグメント)に置く: サーバへ送られずアクセスログに残らない
         webbrowser.open(f"{base}/me#token={self.agent.token}")
+
+    def change_token(self):
+        """トークンを入力し直して保存する(次回起動から反映)."""
+        new = config.prompt_token("新しいトークンを入力してください。")
+        if new:
+            messagebox.showinfo(
+                "勤怠管理", "トークンを保存しました。アプリを再起動すると反映されます。"
+            )
 
     def sync(self):
         """表示用の情報 (本日の在席時間・現在の区分・着席時刻) をサーバと同期."""
@@ -204,21 +219,31 @@ def main() -> None:
     args = p.parse_args()
 
     server, token = config.resolve(args.server, args.token)
-    agent = Agent(server, token, args.min_interval, args.max_interval, args.blur)
 
-    # 接続確認 + 自分の情報を取得
-    try:
-        r = agent.client.get("/api/me")
-        if r.status_code == 401:
-            _popup_error("トークンが正しくありません。設定を確認してください。")
+    # 接続確認 + 自分の情報を取得。トークンが拒否されたら入力し直してもらう
+    me = None
+    agent = None
+    while me is None:
+        agent = Agent(server, token, args.min_interval, args.max_interval, args.blur)
+        try:
+            r = agent.client.get("/api/me")
+        except httpx.HTTPError:
+            _popup_error(
+                f"サーバに接続できません。ネットワークを確認してください。\n接続先: {server}"
+            )
             return
-        r.raise_for_status()
+        if r.status_code == 401:
+            token = config.prompt_token(
+                "トークンが正しくありません。\n正しいトークンを入力してください。\n"
+                f"(接続先: {server})"
+            )
+            if not token:   # キャンセル
+                return
+            continue        # 新しいトークンで再試行
+        if r.status_code != 200:
+            _popup_error(f"サーバでエラーが発生しました ({r.status_code})。")
+            return
         me = r.json()
-    except httpx.HTTPError:
-        _popup_error(
-            f"サーバに接続できません。ネットワークを確認してください。\n接続先: {server}"
-        )
-        return
 
     company = "勤怠管理"
     try:

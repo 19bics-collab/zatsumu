@@ -71,7 +71,7 @@ def save_token(token: str) -> None:
     )
 
 
-def prompt_token() -> str | None:
+def prompt_token(message: str | None = None) -> str | None:
     """GUI でトークンを尋ねる。入力されたら保存して返す (GUI 不可なら None)."""
     try:
         import tkinter as tk
@@ -82,8 +82,8 @@ def prompt_token() -> str | None:
     root.withdraw()
     try:
         token = simpledialog.askstring(
-            "zatsumu 初期設定",
-            "あなたのトークンを入力してください\n(管理者から配布されたもの)",
+            "勤怠管理 トークン設定",
+            message or "あなたのトークンを入力してください\n(管理者から配布されたもの)",
             show="*",
         )
     finally:
