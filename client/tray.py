@@ -96,11 +96,14 @@ class Agent:
             if self._stop.wait(wait):
                 break
             try:
-                jpeg = capture.to_jpeg(capture.grab_screen(),
-                                       blur=conf["blur"], quality=conf["quality"])
+                shot = capture.grab_screen()
+                tiles = getattr(shot, "n_tiles", 1)   # 停滞検知をモニター別に行うため
+                jpeg = capture.to_jpeg(shot, blur=conf["blur"],
+                                       quality=conf["quality"])
                 self.client.post(
                     "/api/screenshots",
                     files={"image": ("shot.jpg", jpeg, "image/jpeg")},
+                    data={"tiles": str(tiles)},
                 )
             except Exception as e:  # 撮影失敗で常駐は止めない
                 print(f"スクリーンショット失敗: {e}")

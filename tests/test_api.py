@@ -1298,6 +1298,68 @@ def _jpeg(color=(123, 200, 50), size=(160, 120)):
     return buf.getvalue()
 
 
+def _composite_jpeg(colors, size=(120, 90), gap=8):
+    """複数モニターを横連結した 1 枚の JPEG (colors: モニターごとの色)."""
+    import io
+    from PIL import Image
+    parts = [Image.new("RGB", size, c) for c in colors]
+    w = sum(p.width for p in parts) + gap * (len(parts) - 1)
+    canvas = Image.new("RGB", (w, size[1]), (17, 17, 27))
+    x = 0
+    for p in parts:
+        canvas.paste(p, (x, 0))
+        x += p.width + gap
+    buf = io.BytesIO()
+    canvas.save(buf, "JPEG", quality=80)
+    return buf.getvalue()
+
+
+def test_imaging_per_monitor_min_not_diluted():
+    from server import imaging
+    g, g2 = (200, 200, 200), (120, 120, 120)
+    A = _composite_jpeg([g, g, g, g])
+    B = _composite_jpeg([g, g, g, g2])   # 4台中1台だけ変化
+    # 全体一括(従来 tiles=1)だと変化が薄まり高い一致率に見える
+    whole = imaging.similarity(imaging.signature(A, 1), imaging.signature(B, 1))
+    # モニター別(tiles=4)は最も動いたモニターで判定 → 低い一致率
+    per = imaging.similarity(imaging.signature(A, 4), imaging.signature(B, 4))
+    assert per < whole          # 希釈されない
+    assert whole > 90           # 一括だと「ほぼ同じ」=停滞に誤判定しやすい
+    assert per < 85             # モニター別なら 1 台の変化をちゃんと検知
+    # 全モニター同一なら ~100
+    assert imaging.similarity(imaging.signature(A, 4),
+                              imaging.signature(A, 4)) >= 99
+    # 指紋長はモニター枚数に比例 (256バイト/台)
+    assert len(bytes.fromhex(imaging.signature(A, 4))) == 256 * 4
+    # 枚数(指紋長)が違えば比較不能 → None (レイアウト変更扱い)
+    assert imaging.similarity(imaging.signature(A, 4),
+                              imaging.signature(A, 2)) is None
+
+
+def test_stall_per_monitor_via_upload(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    alerts = []
+    monkeypatch.setattr(app_module, "_notify",
+                        lambda conn, text, member_email=None: alerts.append(text))
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"notify_stall": True, "stall_threshold": 90,
+                       "stall_alert_count": 1})
+    client.post("/api/clock-in", headers=auth(worker))
+    g, g2 = (200, 200, 200), (120, 120, 120)
+    A = _composite_jpeg([g, g, g])
+    B = _composite_jpeg([g, g, g2])   # 3台中1台だけ変化
+    up = lambda data, t: client.post(
+        "/api/screenshots", headers=auth(worker),
+        files={"image": ("s.jpg", data, "image/jpeg")}, data={"tiles": str(t)})
+    assert up(A, 3).status_code == 200
+    assert up(B, 3).status_code == 200   # 1台動いた → 停滞ではない(通知なし)
+    assert alerts == []
+    # 全モニター静止が続けば停滞として通知される
+    assert up(B, 3).status_code == 200   # 直前と完全一致
+    assert len(alerts) == 1
+
+
 def test_imaging_signature_and_similarity():
     from server import imaging
     a, b, c = _jpeg((255, 255, 255)), _jpeg((255, 255, 255)), _jpeg((0, 0, 0))

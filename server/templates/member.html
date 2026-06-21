@@ -395,6 +395,7 @@ async function webcapShot(conf) {
   if (!blob) return;
   const fd = new FormData();
   fd.append("image", blob, "shot.jpg");
+  fd.append("tiles", String(vids.length));   // 停滞検知をモニター別に行うため
   try { await fetch("/api/screenshots", { method: "POST", headers: headers(), body: fd }); } catch {}
 }
 

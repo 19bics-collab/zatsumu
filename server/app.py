@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -365,7 +365,10 @@ def clock_out(user=Depends(auth_user), conn=Depends(get_conn)):
 
 @app.post("/api/screenshots")
 async def upload_screenshot(
-    image: UploadFile = File(...), user=Depends(auth_user), conn=Depends(get_conn)
+    image: UploadFile = File(...),
+    tiles: int = Form(1),   # 連結されているモニター枚数(停滞検知をモニター別に行う)
+    user=Depends(auth_user),
+    conn=Depends(get_conn),
 ):
     if not db.open_session(conn, user["id"]):
         raise HTTPException(409, "Not clocked in")
@@ -385,7 +388,8 @@ async def upload_screenshot(
     # 直前のキャプチャと指紋を比べ、一致率がしきい値以上の状態が続いた回数(stall)を
     # 記録する。回数がしきい値に達した瞬間に1回だけ通知する。
     s = db.get_settings(conn)
-    sig = await asyncio.to_thread(imaging.signature, data)  # JPEGデコードはスレッドへ
+    # モニター枚数に応じた指紋を作る(モニター別に比較するため)。JPEGデコードはスレッドへ
+    sig = await asyncio.to_thread(imaging.signature, data, tiles)
     prev = conn.execute(
         "SELECT taken_at, sig, stall FROM screenshots WHERE user_id = ? "
         "ORDER BY taken_at DESC LIMIT 1",
