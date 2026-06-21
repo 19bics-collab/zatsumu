@@ -47,6 +47,11 @@
   .tl .dot { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px;
              border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
              cursor: pointer; z-index: 2; }
+  .tl-row.cr { cursor: pointer; }
+  .tl-row.cr:hover { background: #eef4ff; }
+  .card.flash { animation: cardflash 1.2s ease; }
+  @keyframes cardflash { from { box-shadow: 0 0 0 3px #f59e0baa; }
+                         to { box-shadow: 0 0 0 0 transparent; } }
   /* PC では大きく表示する */
   @media (min-width: 720px) {
     body { font-size: 17px; }
@@ -158,7 +163,8 @@
   </div>
   <div id="cat-legend" style="margin:.4rem 0"></div>
   <div id="timeline"></div>
-  <p><small style="color:#777">色=作業区分（斜線は勤務中）、●=画面キャプチャ（タップで自分のキャプチャを確認できます）</small></p>
+  <p><small style="color:#777">色=作業区分（斜線は勤務中）、●=画面キャプチャ（タップで確認）。
+  <strong>日付の行をタップ</strong>すると、その日の勤務時間の修正申請ができます。</small></p>
   <button class="small ghost" id="logout">ログアウト</button>
 </div>
 
@@ -413,11 +419,13 @@ function shiftMonth(m, delta) {
 }
 
 let allShots = [];
+let dayTimes = {};           // 日付ごとの着席/退席(HH:MM)。行クリックの修正申請に使う
 let memberModalUrl = null;   // 拡大モーダル画像のblob URL(差し替え時に解放)
 async function loadHistory() {
   const data = await (await fetch(`/api/me/monthly?month=${month}`, { headers: headers() })).json();
   $("month-title").textContent = month;
   allShots = [];
+  dayTimes = {};
   const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
@@ -425,6 +433,10 @@ async function loadHistory() {
   const pct = t => {
     const dt = new Date(t);
     return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
+  };
+  const hhmm = ms => {
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
   const work = workBandHtml();
   let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
@@ -447,8 +459,13 @@ async function loadHistory() {
       return `<div class="dot" data-i="${i}" style="left:${pct(sh.taken_at)}%"
             title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`;
     }).join("");
+    const ss = d?.sessions || [];
+    if (ss.length) {   // その日の着席/退席(全区間の最早〜最遅)を修正申請の初期値に
+      dayTimes[date] = { in: hhmm(Math.min(...ss.map(s => +new Date(s.start)))),
+                         out: hhmm(Math.max(...ss.map(s => +new Date(s.end)))) };
+    }
     const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
-    html += `<div class="tl-row">
+    html += `<div class="tl-row cr" data-date="${date}" title="クリックでこの日の修正申請">
       <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
       <div>${d ? d.hours + "h" : ""}</div>
       <div class="tl">${work}${segs}${dots}</div>
@@ -463,7 +480,23 @@ async function loadHistory() {
        background:${catColor(c)};vertical-align:middle"></span>
        ${esc2(c)} ${bc[c] ? bc[c] + "h" : ""}</span>`).join("");
   document.querySelectorAll("#timeline .dot").forEach(dot =>
-    dot.onclick = () => openModal(+dot.dataset.i));
+    dot.onclick = (e) => { e.stopPropagation(); openModal(+dot.dataset.i); });
+  document.querySelectorAll("#timeline .tl-row.cr").forEach(row =>
+    row.onclick = () => fillCorrection(row.dataset.date));
+}
+
+// 勤務実績の行クリック → その日の修正申請フォームを事前入力して表示する
+function fillCorrection(date) {
+  $("cr-date").value = date;
+  const t = dayTimes[date] || {};
+  $("cr-in").value = t.in || "";
+  $("cr-out").value = t.out || "";
+  $("cr-reason").value = "";
+  $("cr-msg").textContent = "";
+  const card = $("correction-card");
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+  card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+  setTimeout(() => $("cr-reason").focus({ preventScroll: true }), 350);
 }
 
 let shotIdx = 0;
