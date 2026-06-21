@@ -78,8 +78,11 @@
            align-items: center; justify-content: center; z-index: 10; }
   #modal[hidden] { display: none; }
   #modal .box { background: #fff; padding: 1rem; border-radius: 8px;
-                max-width: 92vw; max-height: 90vh; }
-  #modal img { max-width: 86vw; max-height: 70vh; display: block; margin-bottom: .8rem; }
+                max-width: 92vw; max-height: 90vh; display: flex; flex-direction: column; }
+  #modal .imgwrap { overflow: auto; max-width: 88vw; max-height: 74vh; margin-bottom: .8rem; }
+  #modal img { max-width: 86vw; max-height: 70vh; display: block; cursor: zoom-in; }
+  /* クリックで実寸ズーム: マルチモニターの横長画像も各画面を細かく見られる */
+  #modal img.zoomed { max-width: none; max-height: none; cursor: zoom-out; }
 </style>
 </head>
 <body>
@@ -161,7 +164,7 @@
 
 <div id="modal" hidden>
   <div class="box">
-    <img id="modal-img" alt="screenshot">
+    <div class="imgwrap"><img id="modal-img" alt="screenshot"></div>
     <div style="display:flex;gap:.5rem;align-items:center">
       <button class="small ghost" id="modal-prev">←</button>
       <button class="small ghost" id="modal-next">→</button>
@@ -474,11 +477,27 @@ async function renderModalImage() {
   const blob = await (await fetch(`/api/screenshots/${cur.id}/image`, { headers: headers() })).blob();
   if (memberModalUrl) URL.revokeObjectURL(memberModalUrl);   // 前の画像のblob URLを解放
   memberModalUrl = URL.createObjectURL(blob);
-  $("modal-img").src = memberModalUrl;
-  $("modal-info").textContent = `${cur.info}（${shotIdx + 1}/${allShots.length}）`;
+  const img = $("modal-img");
+  img.classList.remove("zoomed");        // 新しい画像は全体表示から開く
+  img.parentElement.scrollTo(0, 0);      // スクロール位置もリセット
+  img.src = memberModalUrl;
+  $("modal-info").textContent =
+    `${cur.info}（${shotIdx + 1}/${allShots.length}）　画像をタップでその位置を拡大`;
   $("modal-prev").disabled = shotIdx === 0;
   $("modal-next").disabled = shotIdx === allShots.length - 1;
 }
+// 画像クリック/タップで実寸ズーム⇔全体表示。ズーム時はその位置を中心に表示
+$("modal-img").onclick = (e) => {
+  const img = $("modal-img");
+  const wrap = img.parentElement;
+  if (img.classList.contains("zoomed")) { img.classList.remove("zoomed"); return; }
+  const rect = img.getBoundingClientRect();
+  const fx = (e.clientX - rect.left) / rect.width;
+  const fy = (e.clientY - rect.top) / rect.height;
+  img.classList.add("zoomed");
+  wrap.scrollLeft = fx * img.naturalWidth - wrap.clientWidth / 2;
+  wrap.scrollTop = fy * img.naturalHeight - wrap.clientHeight / 2;
+};
 function modalMove(delta) {
   const next = shotIdx + delta;
   if (next < 0 || next >= allShots.length) return;

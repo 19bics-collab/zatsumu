@@ -1156,7 +1156,7 @@ async function renderModalImage() {
   modalUrl = URL.createObjectURL(blob);
   img.src = modalUrl;
   $("modal-info").textContent =
-    `${cur.info}（${gallery.i + 1}/${gallery.list.length}）　画像クリックで拡大/縮小`;
+    `${cur.info}（${gallery.i + 1}/${gallery.list.length}）　画像をクリックでその位置を拡大（複数モニターは見たい画面をクリック）`;
   $("modal-prev").disabled = gallery.i === 0;
   $("modal-next").disabled = gallery.i === gallery.list.length - 1;
 }
@@ -1168,8 +1168,23 @@ function modalMove(delta) {
 }
 $("modal-prev").onclick = () => modalMove(-1);
 $("modal-next").onclick = () => modalMove(1);
-// 画像クリックで実寸ズーム⇔全体表示を切り替え(横長は横スクロールで確認)
-$("modal-img").onclick = () => $("modal-img").classList.toggle("zoomed");
+// 画像クリックで実寸ズーム⇔全体表示を切り替え。
+// ズーム時はクリックした位置を中心に表示する(マルチモニターの横長画像でも、
+// 見たい画面をクリックすればそこが拡大される)。
+$("modal-img").onclick = (e) => {
+  const img = $("modal-img");
+  const wrap = img.parentElement;            // .imgwrap (スクロール枠)
+  if (img.classList.contains("zoomed")) {
+    img.classList.remove("zoomed");          // 全体表示に戻す
+    return;
+  }
+  const rect = img.getBoundingClientRect();  // クリック位置を画像内の割合で求める
+  const fx = (e.clientX - rect.left) / rect.width;
+  const fy = (e.clientY - rect.top) / rect.height;
+  img.classList.add("zoomed");               // 実寸表示にして…
+  wrap.scrollLeft = fx * img.naturalWidth - wrap.clientWidth / 2;   // …その点を中央へ
+  wrap.scrollTop = fy * img.naturalHeight - wrap.clientHeight / 2;
+};
 document.addEventListener("keydown", e => {
   if ($("modal").hidden) return;
   if (e.key === "ArrowLeft") modalMove(-1);
