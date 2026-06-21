@@ -27,8 +27,18 @@
   .badge.gray { background: #9ca3af; }
   tr.user-row td.click { cursor: pointer; }
   tr.user-row:hover { background: #f0f6ff; }
-  #shots img { height: 150px; margin: 5px; border: 1px solid #ddd;
+  .shots img { height: 150px; margin: 5px; border: 1px solid #ddd;
                border-radius: 4px; cursor: pointer; }
+  .cap-group { border: 1px solid #e2e8f0; border-radius: 8px; margin: .5rem 0;
+               background: #fff; }
+  .cap-group summary { cursor: pointer; padding: .7rem 1rem; font-weight: 600;
+               list-style: none; display: flex; align-items: center; gap: .6rem; }
+  .cap-group summary::-webkit-details-marker { display: none; }
+  .cap-group summary::before { content: "▸"; color: #64748b; transition: transform .15s; }
+  .cap-group[open] summary::before { transform: rotate(90deg); }
+  .cap-group .shots { padding: 0 .6rem .6rem; }
+  .cap-meta { font-weight: 400; color: #64748b; font-size: .82rem; margin-left: auto; }
+  .cap-hint { color: #94a3b8; font-size: .85rem; padding: .3rem .5rem; display: inline-block; }
   small { color: #777; }
   button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
            background: #2563eb; color: #fff; cursor: pointer; font-size: .9rem; }
@@ -122,7 +132,7 @@
     html { font-size: 15px; }
     main { padding: .8rem; }
     th, td { padding: .55rem .7rem; }
-    #shots img { height: 100px; }
+    .shots img { height: 100px; }
     .tl-row, .tl-scale { grid-template-columns: 6.5rem 3.5rem 1fr; padding: .3rem .6rem; }
     .tl-row { font-size: .8rem; }
     .tl.mini { min-width: 100px; }
@@ -161,8 +171,8 @@
       <th>本日のタイムライン (0〜24時)</th><th>最終キャプチャ</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
-  <h2>最近のキャプチャ <small>（クリックで拡大。←→で前後に移動できます）</small></h2>
-  <div id="shots"></div>
+  <h2>メンバー別キャプチャ <small>（名前をクリックで開閉。画像クリックで拡大、←→で前後に移動）</small></h2>
+  <div id="cap-groups"></div>
 </section>
 
 <section id="users-view" hidden>
@@ -547,13 +557,20 @@ async function showHome(prefetched) {
   await renderHome(prefetched || await apiJson("/api/status"));
   clearInterval(timer);
   timer = setInterval(async () => {
-    if (view.name === "home") renderHome(await apiJson("/api/status" + homeTeamQuery()));
+    // 30秒ごとは状態テーブルのみ更新(開いているキャプチャは閉じない)
+    if (view.name === "home")
+      renderStatusTable(await apiJson("/api/status" + homeTeamQuery()));
   }, 30000);
 }
 $("home-team").onchange = async () =>
   renderHome(await apiJson("/api/status" + homeTeamQuery()));
 
-async function renderHome(status) {
+function renderHome(status) {
+  renderStatusTable(status);
+  renderCaptureGroups(status);
+}
+
+function renderStatusTable(status) {
   document.querySelector("#status tbody").innerHTML = status.map(u => {
     let warn = "";
     if (u.seated && u.open_since) {
@@ -586,19 +603,49 @@ async function renderHome(status) {
       renderHome(await apiJson("/api/status" + homeTeamQuery()));  // 絞り込みを維持
     } catch { /* apiJson が通知・再ログイン処理済み */ }
   });
+}
 
-  const shots = await apiJson("/api/screenshots?limit=12");
+// メンバーごとのキャプチャを折りたたみ(プルダウン)でまとめる。
+// 画像は開いたときに初めて読み込む(遅延ロード)。
+function renderCaptureGroups(status) {
+  // 開いていたメンバーを覚えておき、再描画後も開いたままにする
+  const open = new Set([...document.querySelectorAll("#cap-groups details[open]")]
+    .map(d => +d.dataset.uid));
+  homeShotUrls.forEach(u => URL.revokeObjectURL(u));   // 既存サムネのblobを解放
+  homeShotUrls = [];
+  $("cap-groups").innerHTML = status.map(u => `
+    <details class="cap-group" data-uid="${u.user_id}" ${open.has(u.user_id) ? "open" : ""}>
+      <summary>${esc(u.name)}
+        <span class="cap-meta">最終キャプチャ ${u.last_screenshot ? new Date(u.last_screenshot).toLocaleString("ja-JP") : "—"}</span>
+      </summary>
+      <div class="shots" data-uid="${u.user_id}"><span class="cap-hint">読み込み中…</span></div>
+    </details>`).join("");
+  document.querySelectorAll("#cap-groups details").forEach(d => {
+    d.addEventListener("toggle", () => { if (d.open) loadGroupShots(+d.dataset.uid); });
+    if (d.open) loadGroupShots(+d.dataset.uid);   // 復元したぶんは即読み込み
+  });
+}
+
+async function loadGroupShots(uid) {
+  const box = document.querySelector(`#cap-groups .shots[data-uid="${uid}"]`);
+  if (!box) return;
+  const shots = await apiJson(`/api/screenshots?user_id=${uid}&limit=12`);
+  if (!box.isConnected) return;                  // 読み込み中に再描画されたら破棄
+  if (!shots.length) {
+    box.innerHTML = `<span class="cap-hint">キャプチャはまだありません</span>`;
+    return;
+  }
   const items = await Promise.all(shots.map(async s => {
     const blob = await (await api(`/api/screenshots/${s.id}/image`)).blob();
-    return { id: s.id, info: `${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}`,
-             url: URL.createObjectURL(blob) };
+    const url = URL.createObjectURL(blob);
+    homeShotUrls.push(url);
+    return { id: s.id,
+             info: `${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}`, url };
   }));
-  const prevUrls = homeShotUrls;
-  homeShotUrls = items.map(it => it.url);
-  $("shots").innerHTML = items.map((it, i) =>
+  if (!box.isConnected) { items.forEach(it => URL.revokeObjectURL(it.url)); return; }
+  box.innerHTML = items.map((it, i) =>
     `<img src="${it.url}" data-i="${i}" title="${esc(it.info)}">`).join("");
-  prevUrls.forEach(u => URL.revokeObjectURL(u));   // 前回サムネのblob URLを解放
-  document.querySelectorAll("#shots img").forEach(img =>
+  box.querySelectorAll("img").forEach(img =>
     img.onclick = () => openModal(items.map(({ id, info }) => ({ id, info })), +img.dataset.i));
 }
 
