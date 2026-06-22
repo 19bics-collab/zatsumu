@@ -48,6 +48,28 @@ def tile_horizontally(imgs: list[Image.Image], gap: int = 8,
     return canvas
 
 
+def idle_seconds() -> int | None:
+    """直近のキーボード/マウス操作からの経過秒。取得不可なら None.
+
+    Windows の GetLastInputInfo を使う(追加依存なし)。他OSや失敗時は None を返し、
+    サーバ側は稼働率の計算からそのキャプチャを除外する。
+    """
+    try:
+        import ctypes
+
+        class _LII(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        info = _LII()
+        info.cbSize = ctypes.sizeof(info)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return None
+        millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime
+        return max(0, int(millis) // 1000)
+    except Exception:  # noqa: BLE001  非Windows/取得失敗時は計測なし
+        return None
+
+
 def to_jpeg(img: Image.Image, max_width: int = 1280, blur: int = 0,
             quality: int = 60, tiles: int | None = None) -> bytes:
     # マルチモニター合成は 1 モニターあたり max_width を確保するため、実際の

@@ -76,9 +76,13 @@ def main() -> None:
             shot = capture.grab_screen()
             tiles = getattr(shot, "n_tiles", 1)   # 停滞検知をモニター別に行うため
             jpeg = capture.to_jpeg(shot, blur=conf["blur"], quality=conf["quality"])
+            data = {"tiles": str(tiles)}
+            idle = capture.idle_seconds()         # 稼働率算出用の無操作秒数
+            if idle is not None:
+                data["idle"] = str(idle)
             client.post("/api/screenshots",
                         files={"image": ("shot.jpg", jpeg, "image/jpeg")},
-                        data={"tiles": str(tiles)})
+                        data=data)
             print("スクリーンショットを送信しました")
         except Exception as e:  # 撮影失敗してもエージェントは止めない
             print(f"スクリーンショット失敗: {e}", file=sys.stderr)

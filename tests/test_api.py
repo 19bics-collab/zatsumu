@@ -1529,3 +1529,71 @@ def test_background_loop_survives_errors_and_cancels(client, users, monkeypatch)
         assert task.cancelled() or task.done()
 
     asyncio.run(run())
+
+
+def test_idle_and_activity_rate(client, users):
+    worker, admin = users
+    client.patch("/api/settings", headers=auth(admin), json={"idle_threshold": 120})
+    client.post("/api/clock-in", headers=auth(worker))
+    j = _jpeg()
+    up = lambda idle: client.post(
+        "/api/screenshots", headers=auth(worker),
+        files={"image": ("s.jpg", j, "image/jpeg")}, data={"idle": str(idle)})
+    assert up(10).status_code == 200    # 稼働 (idle<120)
+    assert up(20).status_code == 200    # 稼働
+    assert up(300).status_code == 200   # 非稼働 (idle>=120)
+    st = {u["name"]: u for u in
+          client.get("/api/status", headers=auth(admin)).json()}
+    assert st["tanaka"]["activity"] == 67   # 3枚中2枚が稼働 → round(2/3*100)
+    # idle未送信(Web等)の人は計測対象外 → activity は null
+    assert st["boss"]["activity"] is None
+
+
+def test_clockout_and_idle_settings_validation(client, users):
+    worker, admin = users
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"clockout_reminder_time": "25:99"}).status_code == 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"idle_threshold": 5}).status_code == 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"clockout_reminder": False,
+                              "clockout_reminder_time": "19:30",
+                              "idle_threshold": 180}).status_code == 200
+    s = client.get("/api/settings", headers=auth(admin)).json()
+    assert s["clockout_reminder"] == 0
+    assert s["clockout_reminder_time"] == "19:30"
+    assert s["idle_threshold"] == 180
+
+
+def test_clockout_reminder_flow(client, users, monkeypatch, tmp_path):
+    from server import app as app_module, db
+    worker, admin = users
+    sent = []
+    monkeypatch.setattr(app_module.notify, "deliver_async",
+                        lambda settings, text: sent.append(text))
+    client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                 json={"email": "w@e.com"})
+    # 時刻00:00 = 常に過ぎている。ON にする
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"clockout_reminder": True, "clockout_reminder_time": "00:00"})
+    client.post("/api/clock-in", headers=auth(worker))   # 未退勤セッション
+
+    def check():
+        conn = db.connect(tmp_path / "zatsumu.db")
+        try:
+            return app_module.check_clockout_reminders(conn)
+        finally:
+            conn.close()
+
+    assert check() == 1
+    assert any("退勤" in t and "tanaka" in t for t in sent)
+    sent.clear()
+    assert check() == 0           # 2回目は重複通知しない
+    assert sent == []
+    # OFF なら対象でも通知しない
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"clockout_reminder": False})
+    client.post("/api/clock-out", headers=auth(worker))
+    client.post("/api/clock-in", headers=auth(worker))   # 新しい未退勤セッション
+    assert check() == 0
+    assert sent == []

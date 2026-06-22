@@ -50,6 +50,38 @@ def check_long_seated(conn) -> int:
     return len(rows)
 
 
+def check_clockout_reminders(conn) -> int:
+    """終業時刻(clockout_reminder_time)を過ぎても未退勤の本人へ1回だけリマインド."""
+    s = db.get_settings(conn)
+    if not s["clockout_reminder"]:
+        return 0
+    now = datetime.now(timezone.utc)
+    # ローカル時刻が設定時刻を過ぎているか ("HH:MM" のゼロ埋め文字列比較でOK)
+    if now.astimezone(tz.TZ).strftime("%H:%M") < s["clockout_reminder_time"]:
+        return 0
+    day_start, _ = tz.today_window(now)
+    rows = conn.execute(
+        """
+        SELECT se.id, u.name, u.email FROM sessions se
+        JOIN users u ON u.id = se.user_id
+        WHERE se.clock_out IS NULL AND se.clockout_reminded = 0
+              AND se.clock_in >= ? AND u.notify_enabled = 1
+        """,
+        (tz.utc_iso(day_start),),
+    ).fetchall()
+    for r in rows:
+        notify.deliver_async(
+            _with_member_email(s, r["email"]),
+            f"⏰ {r['name']} さん、退勤打刻がまだのようです。"
+            f"終業の際は退勤ボタンを押してください。",
+        )
+        conn.execute(
+            "UPDATE sessions SET clockout_reminded = 1 WHERE id = ?", (r["id"],)
+        )
+    conn.commit()
+    return len(rows)
+
+
 async def _background_loop() -> None:
     while True:
         await asyncio.sleep(ALERT_CHECK_INTERVAL_MIN * 60)
@@ -62,6 +94,7 @@ async def _background_loop() -> None:
                 if days > 0:
                     retention.purge_old_screenshots(conn, SCREENSHOT_DIR, days)
                 check_long_seated(conn)
+                check_clockout_reminders(conn)
             finally:
                 conn.close()
         except Exception as e:  # noqa: BLE001
@@ -212,6 +245,9 @@ class SettingsPatch(BaseModel):
     notify_stall: bool | None = None
     stall_threshold: int | None = None
     stall_alert_count: int | None = None
+    clockout_reminder: bool | None = None
+    clockout_reminder_time: str | None = None
+    idle_threshold: int | None = None
     company_name: str | None = None
     timezone: str | None = None
     work_start: str | None = None
@@ -367,6 +403,7 @@ def clock_out(user=Depends(auth_user), conn=Depends(get_conn)):
 async def upload_screenshot(
     image: UploadFile = File(...),
     tiles: int = Form(1),   # 連結されているモニター枚数(停滞検知をモニター別に行う)
+    idle: int | None = Form(None),   # 撮影時点の無操作秒数(稼働率の算出に使用、任意)
     user=Depends(auth_user),
     conn=Depends(get_conn),
 ):
@@ -407,11 +444,12 @@ async def upload_screenshot(
             sim = imaging.similarity(sig, prev["sig"])
             if sim is not None and sim >= s["stall_threshold"]:
                 stall = (prev["stall"] or 0) + 1
+    idle_sec = max(0, int(idle)) if idle is not None else None
     cur = conn.execute(
-        "INSERT INTO screenshots (user_id, taken_at, path, sig, similarity, stall) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO screenshots (user_id, taken_at, path, sig, similarity, stall, idle) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (user["id"], taken_at.isoformat(), rel, sig,
-         round(sim) if sim is not None else None, stall),
+         round(sim) if sim is not None else None, stall, idle_sec),
     )
     if (s["notify_stall"] and user["notify_enabled"]
             and stall == s["stall_alert_count"]):
@@ -475,6 +513,18 @@ def status(
                     "category": s["category"],
                 }
             )
+    # 本日の稼働率: 無操作秒数が閾値未満のキャプチャ割合 (idleが取れた撮影のみ対象)
+    activity: dict[int, int | None] = {}
+    for a in conn.execute(
+        "SELECT user_id, "
+        "SUM(CASE WHEN idle IS NOT NULL THEN 1 ELSE 0 END) AS measured, "
+        "SUM(CASE WHEN idle IS NOT NULL AND idle < ? THEN 1 ELSE 0 END) AS active "
+        "FROM screenshots WHERE taken_at >= ? GROUP BY user_id",
+        (settings["idle_threshold"], tz.utc_iso(day_start)),
+    ).fetchall():
+        activity[a["user_id"]] = (
+            round(a["active"] / a["measured"] * 100) if a["measured"] else None
+        )
     return [
         {
             "user_id": r["id"],
@@ -488,6 +538,7 @@ def status(
             # 直近キャプチャが連続して無変化(離席の可能性)か。機能OFFなら出さない
             "stalled": bool(settings["notify_stall"]) and r["open_since"] is not None
             and (r["last_stall"] or 0) >= settings["stall_alert_count"],
+            "activity": activity.get(r["id"]),   # 本日の稼働率(%) 取得不可は null
             "today_sessions": segs.get(r["id"], []),
         }
         for r in rows
@@ -610,6 +661,8 @@ def patch_settings(
         "notify_stall": (0, 1),
         "stall_threshold": (50, 100),
         "stall_alert_count": (1, 100),
+        "clockout_reminder": (0, 1),
+        "idle_threshold": (10, 86400),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -625,7 +678,7 @@ def patch_settings(
     # 文字列設定のバリデーション
     if "company_name" in changes and not str(changes["company_name"]).strip():
         raise HTTPException(400, "会社名を入力してください")
-    for key in ("work_start", "work_end"):
+    for key in ("work_start", "work_end", "clockout_reminder_time"):
         if key in changes:
             try:
                 datetime.strptime(changes[key], "%H:%M")

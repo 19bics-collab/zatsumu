@@ -110,6 +110,8 @@ INT_SETTINGS = {
     "notify_stall": 1,             # 画面が変化しない(停滞)場合に通知するか
     "stall_threshold": 95,         # 直前のキャプチャとの一致率がこの%以上で「同じ画面」
     "stall_alert_count": 3,        # 同じ画面が連続でこの回数続いたら通知
+    "clockout_reminder": 1,        # 終業時刻を過ぎても未退勤の本人へリマインドするか
+    "idle_threshold": 120,         # 無操作がこの秒数以上なら「離席/非稼働」とみなす(稼働率計算用)
 }
 
 # 全社設定の既定値 (文字列)
@@ -118,6 +120,7 @@ STR_SETTINGS = {
     "timezone": os.environ.get("ZATSUMU_TZ", "Asia/Tokyo"),  # 集計の基準TZ
     "work_start": "09:00",         # 勤務時間帯の目安(開始) タイムライン表示用
     "work_end": "18:00",           # 勤務時間帯の目安(終了)
+    "clockout_reminder_time": "20:00",  # この時刻以降、未退勤の本人へ退勤リマインド
     "work_categories": "事務作業,現場",  # 作業区分(カンマ区切り、先頭が既定)
     "slack_webhook_url": "",       # Slack Incoming Webhook URL
     "mail_to": "",                 # 通知メール宛先(カンマ区切り)
@@ -181,12 +184,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE screenshots ADD COLUMN stall INTEGER NOT NULL DEFAULT 0"
         )
+    if "idle" not in shcols:        # 撮影時点の無操作秒数 (null=未取得/Web撮影)
+        conn.execute("ALTER TABLE screenshots ADD COLUMN idle INTEGER")
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
     if "category" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN category TEXT")
     if "alert_notified" not in scols:
         conn.execute(
             "ALTER TABLE sessions ADD COLUMN alert_notified INTEGER NOT NULL DEFAULT 0"
+        )
+    if "clockout_reminded" not in scols:  # 退勤リマインド済みフラグ(重複通知防止)
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN clockout_reminded INTEGER NOT NULL DEFAULT 0"
         )
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")

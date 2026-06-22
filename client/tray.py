@@ -100,10 +100,14 @@ class Agent:
                 tiles = getattr(shot, "n_tiles", 1)   # 停滞検知をモニター別に行うため
                 jpeg = capture.to_jpeg(shot, blur=conf["blur"],
                                        quality=conf["quality"])
+                data = {"tiles": str(tiles)}
+                idle = capture.idle_seconds()         # 稼働率算出用の無操作秒数
+                if idle is not None:
+                    data["idle"] = str(idle)
                 self.client.post(
                     "/api/screenshots",
                     files={"image": ("shot.jpg", jpeg, "image/jpeg")},
-                    data={"tiles": str(tiles)},
+                    data=data,
                 )
             except Exception as e:  # 撮影失敗で常駐は止めない
                 print(f"スクリーンショット失敗: {e}")
