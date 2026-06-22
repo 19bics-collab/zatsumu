@@ -72,6 +72,65 @@ def monthly_report(
     return out
 
 
+def summary(conn: sqlite3.Connection, month: str) -> dict:
+    """集計グラフ用: 日別の総労働時間・作業区分別・チーム別 (全社, ローカル日付)."""
+    start, end = tz.month_window(month)
+    now = datetime.now(timezone.utc)
+    team_of = {r["id"]: r["team_id"] for r in conn.execute("SELECT id, team_id FROM users")}
+    team_name = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM teams")}
+    daily: dict[str, float] = {}
+    by_cat: dict[str, float] = {}
+    by_team: dict[str, float] = {}
+    for s in _month_sessions(conn, month):
+        cat = s["category"] or "未分類"
+        tname = team_name.get(team_of.get(s["user_id"]), "未所属")
+        for seg_start, seg_end, _open in tz.day_segments(
+            s["clock_in"], s["clock_out"], start, end, now
+        ):
+            h = (seg_end - seg_start).total_seconds() / 3600
+            key = seg_start.date().isoformat()
+            daily[key] = daily.get(key, 0.0) + h
+            by_cat[cat] = by_cat.get(cat, 0.0) + h
+            by_team[tname] = by_team.get(tname, 0.0) + h
+    days = []
+    day = start
+    while day < end:
+        key = day.date().isoformat()
+        days.append({"date": key, "hours": round(daily.get(key, 0.0), 2)})
+        day += timedelta(days=1)
+    return {
+        "daily": days,
+        "by_category": {k: round(v, 2) for k, v in by_cat.items()},
+        "by_team": sorted(
+            [{"team": k, "hours": round(v, 2)} for k, v in by_team.items()],
+            key=lambda x: -x["hours"],
+        ),
+    }
+
+
+def _hhmm(hours: float) -> str:
+    """小数の時間を 時:分 表記にする (給与ソフト取込用)."""
+    m = round(hours * 60)
+    return f"{m // 60}:{m % 60:02d}"
+
+
+def payroll_csv(conn: sqlite3.Connection, month: str, target_hours: float = 8.0) -> str:
+    """給与ソフト取込用CSV: 社員ごとの当月実績 (時:分 併記)."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["年月", "社員名", "勤務日数", "総労働時間(h)", "総労働時間(時:分)",
+                     "所定時間(h)", "残業(h)", "残業(時:分)"])
+    for r in monthly_report(conn, month, target_hours):
+        if r["work_days"] == 0:
+            continue
+        writer.writerow([
+            month, r["name"], r["work_days"],
+            r["total_hours"], _hhmm(r["total_hours"]),
+            r["target_hours"], r["overtime"], _hhmm(r["overtime"]),
+        ])
+    return buf.getvalue()
+
+
 def report_to_csv(report: list[dict], month: str) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)

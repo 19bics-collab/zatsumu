@@ -1612,3 +1612,26 @@ def test_monthly_report_includes_activity(client, users):
     by = {r["name"]: r for r in rep["rows"]}
     assert by["tanaka"]["activity"] == 67
     assert by["boss"]["activity"] is None   # idle計測なしは null
+
+
+def test_reports_summary_and_payroll(client, users):
+    worker, admin = users
+    # 当月にセッションを作る(着席→退席)
+    import datetime as _dt
+    today = _dt.datetime.now().strftime("%Y-%m-%d")
+    month = _dt.datetime.now().strftime("%Y-%m")
+    client.post(f"/api/users/{worker['id']}/sessions", headers=auth(admin),
+                json={"clock_in": f"{today}T09:00", "clock_out": f"{today}T19:30",
+                      "category": "事務作業"})
+    # 集計サマリ: 日別/区分別/チーム別
+    s = client.get(f"/api/reports/summary?month={month}", headers=auth(admin)).json()
+    assert any(d["hours"] > 0 for d in s["daily"])
+    assert s["by_category"].get("事務作業", 0) > 0
+    assert any(t["team"] == "未所属" and t["hours"] > 0 for t in s["by_team"])
+    # 給与用CSV: 時:分 併記 (10.5h → 10:30)
+    csv = client.get(f"/api/reports/payroll.csv?month={month}", headers=auth(admin))
+    assert csv.status_code == 200
+    assert "tanaka" in csv.text and "10:30" in csv.text
+    # 権限: 一般ユーザーは不可
+    assert client.get(f"/api/reports/summary?month={month}",
+                      headers=auth(worker)).status_code == 403

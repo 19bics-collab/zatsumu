@@ -47,6 +47,15 @@
                    border-radius: 4px 0 0 4px; }
   .rep-bar .fill.over { background: #f59e0b; border-radius: 0 4px 4px 0; }
   .rep-bar .tmark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #0f172a; }
+  .rep-sub { margin: 1rem 0 .3rem; font-size: .9rem; font-weight: 600; color: #334155; }
+  .daily-chart { display: flex; align-items: flex-end; gap: 2px; height: 96px;
+                 padding: .3rem 0; border-bottom: 1px solid #e2e8f0; }
+  .daily-chart .d { flex: 1 1 0; background: #93c5fd; border-radius: 2px 2px 0 0; min-height: 1px; }
+  .daily-chart .d.we { background: #fca5a5; }
+  .hbar-row { display: grid; grid-template-columns: 9rem 1fr 4.5rem; gap: .5rem;
+              align-items: center; margin: .2rem 0; font-size: .85rem; }
+  .hbar { height: 16px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+  .hbar > div { height: 100%; border-radius: 4px; }
   small { color: #777; }
   button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
            background: #2563eb; color: #fff; cursor: pointer; font-size: .9rem; }
@@ -244,6 +253,7 @@
     <strong id="rep-title"></strong>
     <button id="rep-next" class="ghost">翌月 ▶</button>
     <button id="rep-csv-monthly" class="ghost">月次集計CSV</button>
+    <button id="rep-csv-payroll" class="ghost">給与用CSV</button>
     <button id="rep-csv-daily" class="ghost">日別集計CSV</button>
     <button id="rep-csv-sessions" class="ghost">在席データCSV</button>
     <button id="rep-csv-audit" class="ghost">修正履歴CSV</button>
@@ -251,6 +261,13 @@
   <div class="rep-legend">棒＝合計勤務時間（<span style="color:#16a34a">緑</span>＝予定内 /
     <span style="color:#f59e0b">橙</span>＝残業分）、縦線＝予定時間、右端＝合計h・稼働率（PC版のみ）</div>
   <div id="rep-chart"></div>
+  <div class="rep-sub">日別の労働時間（全社・赤=土日）</div>
+  <div id="rep-daily"></div>
+  <div class="rep-sub">作業区分別</div>
+  <div id="rep-cat"></div>
+  <div class="rep-sub">チーム別</div>
+  <div id="rep-team"></div>
+  <div class="rep-sub">メンバー別 明細</div>
   <table id="report-table">
     <thead><tr><th>メンバー</th><th>勤務日数</th><th>合計勤務時間</th><th>予定時間</th><th>残業</th><th>不足</th><th>稼働率</th></tr></thead>
     <tbody></tbody>
@@ -963,10 +980,31 @@ async function showReport(month) {
         <td style="color:#c2410c">${r.overtime ? "+" + r.overtime + " h" : "—"}</td>
         <td style="color:#1565c0">${r.shortfall ? "−" + r.shortfall + " h" : "—"}</td>
         <td>${r.activity != null ? r.activity + "%" : "—"}</td></tr>`).join("");
+  // 集計グラフ: 日別推移・作業区分別・チーム別 (全社)
+  const sum = await apiJson(`/api/reports/summary?month=${repMonth}`);
+  const maxD = Math.max(1, ...sum.daily.map(d => d.hours));
+  $("rep-daily").innerHTML = `<div class="daily-chart">` + sum.daily.map(d => {
+    const dow = new Date(d.date + "T00:00").getDay();
+    const we = dow === 0 || dow === 6 ? " we" : "";
+    return `<div class="d${we}" style="height:${Math.round(d.hours / maxD * 100)}%"
+            title="${d.date}: ${d.hours}h"></div>`;
+  }).join("") + `</div>`;
+  const cats = Object.entries(sum.by_category).sort((a, b) => b[1] - a[1]);
+  const maxC = Math.max(1, ...cats.map(c => c[1]));
+  $("rep-cat").innerHTML = cats.map(([c, h]) =>
+    `<div class="hbar-row"><div>${esc(c)}</div>
+      <div class="hbar"><div style="width:${h / maxC * 100}%;background:${catColor(c)}"></div></div>
+      <div>${h} h</div></div>`).join("") || `<small>データなし</small>`;
+  const maxT = Math.max(1, ...sum.by_team.map(t => t.hours));
+  $("rep-team").innerHTML = sum.by_team.map(t =>
+    `<div class="hbar-row"><div>${esc(t.team)}</div>
+      <div class="hbar"><div style="width:${t.hours / maxT * 100}%;background:#6366f1"></div></div>
+      <div>${t.hours} h</div></div>`).join("") || `<small>データなし</small>`;
 }
 $("rep-prev").onclick = () => showReport(shiftMonth(repMonth, -1));
 $("rep-next").onclick = () => showReport(shiftMonth(repMonth, 1));
 $("rep-csv-monthly").onclick = () => downloadCsv(`/api/reports/monthly.csv?month=${repMonth}`, `zatsumu_${repMonth}.csv`);
+$("rep-csv-payroll").onclick = () => downloadCsv(`/api/reports/payroll.csv?month=${repMonth}`, `zatsumu_payroll_${repMonth}.csv`);
 $("rep-csv-daily").onclick = () => downloadCsv(`/api/reports/daily.csv?month=${repMonth}`, `zatsumu_daily_${repMonth}.csv`);
 $("rep-csv-sessions").onclick = () => downloadCsv(`/api/reports/sessions.csv?month=${repMonth}`, `zatsumu_sessions_${repMonth}.csv`);
 $("rep-csv-audit").onclick = () => downloadCsv(`/api/reports/audit.csv?month=${repMonth}`, `zatsumu_audit_${repMonth}.csv`);

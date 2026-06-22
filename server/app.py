@@ -1472,6 +1472,15 @@ def monthly_report(
     return {"month": month, "target_hours": round(target, 2), "rows": rows}
 
 
+@app.get("/api/reports/summary")
+def reports_summary(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """集計グラフ用: 日別推移・作業区分別・チーム別の総労働時間 (全社)."""
+    month = _validate_month(month)
+    return {"month": month, **reports.summary(conn, month)}
+
+
 @app.get("/api/reports/monthly.csv", response_class=PlainTextResponse)
 def monthly_report_csv(
     month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
@@ -1484,6 +1493,22 @@ def monthly_report_csv(
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="zatsumu_{month}.csv"'
+        },
+    )
+
+
+@app.get("/api/reports/payroll.csv", response_class=PlainTextResponse)
+def payroll_csv_api(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """給与ソフト取込用: 社員ごとの当月実績 (時:分 併記)."""
+    month = _validate_month(month)
+    target = db.get_settings(conn)["daily_target_minutes"] / 60
+    return Response(
+        content="﻿" + reports.payroll_csv(conn, month, target),  # Excel 用 BOM
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="zatsumu_payroll_{month}.csv"'
         },
     )
 
