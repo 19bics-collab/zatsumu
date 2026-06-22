@@ -1597,3 +1597,18 @@ def test_clockout_reminder_flow(client, users, monkeypatch, tmp_path):
     client.post("/api/clock-in", headers=auth(worker))   # 新しい未退勤セッション
     assert check() == 0
     assert sent == []
+
+
+def test_monthly_report_includes_activity(client, users):
+    worker, admin = users
+    client.patch("/api/settings", headers=auth(admin), json={"idle_threshold": 120})
+    client.post("/api/clock-in", headers=auth(worker))
+    j = _jpeg()
+    up = lambda idle: client.post(
+        "/api/screenshots", headers=auth(worker),
+        files={"image": ("s.jpg", j, "image/jpeg")}, data={"idle": str(idle)})
+    up(10); up(10); up(500)   # 3枚中2枚が稼働 → 67%
+    rep = client.get("/api/reports/monthly", headers=auth(admin)).json()
+    by = {r["name"]: r for r in rep["rows"]}
+    assert by["tanaka"]["activity"] == 67
+    assert by["boss"]["activity"] is None   # idle計測なしは null

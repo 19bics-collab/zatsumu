@@ -39,6 +39,14 @@
   .cap-group .shots { padding: 0 .6rem .6rem; }
   .cap-meta { font-weight: 400; color: #64748b; font-size: .82rem; margin-left: auto; }
   .cap-hint { color: #94a3b8; font-size: .85rem; padding: .3rem .5rem; display: inline-block; }
+  .rep-legend { font-size: .8rem; color: #64748b; margin: .2rem 0 .6rem; }
+  .rep-bar-row { display: grid; grid-template-columns: 9rem 1fr 8.5rem; gap: .5rem;
+                 align-items: center; margin: .28rem 0; font-size: .85rem; }
+  .rep-bar { position: relative; height: 18px; background: #f1f5f9; border-radius: 4px; }
+  .rep-bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #16a34a;
+                   border-radius: 4px 0 0 4px; }
+  .rep-bar .fill.over { background: #f59e0b; border-radius: 0 4px 4px 0; }
+  .rep-bar .tmark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #0f172a; }
   small { color: #777; }
   button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
            background: #2563eb; color: #fff; cursor: pointer; font-size: .9rem; }
@@ -240,8 +248,11 @@
     <button id="rep-csv-sessions" class="ghost">在席データCSV</button>
     <button id="rep-csv-audit" class="ghost">修正履歴CSV</button>
   </div>
+  <div class="rep-legend">棒＝合計勤務時間（<span style="color:#16a34a">緑</span>＝予定内 /
+    <span style="color:#f59e0b">橙</span>＝残業分）、縦線＝予定時間、右端＝合計h・稼働率（PC版のみ）</div>
+  <div id="rep-chart"></div>
   <table id="report-table">
-    <thead><tr><th>メンバー</th><th>勤務日数</th><th>合計勤務時間</th><th>予定時間</th><th>残業</th><th>不足</th></tr></thead>
+    <thead><tr><th>メンバー</th><th>勤務日数</th><th>合計勤務時間</th><th>予定時間</th><th>残業</th><th>不足</th><th>稼働率</th></tr></thead>
     <tbody></tbody>
   </table>
 </section>
@@ -929,11 +940,29 @@ async function showReport(month) {
   repMonth = month || repMonth || currentMonth();
   const data = await apiJson(`/api/reports/monthly?month=${repMonth}`);
   $("rep-title").textContent = `${repMonth}（予定 ${data.target_hours}h/日）`;
+  // 合計勤務時間の横棒グラフ (予定内=緑/残業=橙、縦線=予定時間)
+  const maxH = Math.max(1, ...data.rows.map(r => Math.max(r.total_hours, r.target_hours)));
+  $("rep-chart").innerHTML = data.rows.filter(r => r.total_hours > 0 || r.work_days > 0)
+    .map(r => {
+      const base = Math.min(r.total_hours, r.target_hours) / maxH * 100;
+      const over = Math.max(0, r.total_hours - r.target_hours) / maxH * 100;
+      const tgt = r.target_hours / maxH * 100;
+      return `<div class="rep-bar-row">
+        <div>${esc(r.name)}</div>
+        <div class="rep-bar">
+          <div class="fill" style="width:${base}%"></div>
+          <div class="fill over" style="left:${base}%;width:${over}%"></div>
+          <div class="tmark" style="left:${tgt}%" title="予定 ${r.target_hours}h"></div>
+        </div>
+        <div>${r.total_hours}h${r.activity != null ? ` ・稼働${r.activity}%` : ""}</div>
+      </div>`;
+    }).join("") || `<p><small>この月の勤務記録はありません。</small></p>`;
   document.querySelector("#report-table tbody").innerHTML = data.rows.map(r => `
     <tr><td><strong>${esc(r.name)}</strong></td><td>${r.work_days} 日</td>
         <td>${r.total_hours} h</td><td>${r.target_hours} h</td>
         <td style="color:#c2410c">${r.overtime ? "+" + r.overtime + " h" : "—"}</td>
-        <td style="color:#1565c0">${r.shortfall ? "−" + r.shortfall + " h" : "—"}</td></tr>`).join("");
+        <td style="color:#1565c0">${r.shortfall ? "−" + r.shortfall + " h" : "—"}</td>
+        <td>${r.activity != null ? r.activity + "%" : "—"}</td></tr>`).join("");
 }
 $("rep-prev").onclick = () => showReport(shiftMonth(repMonth, -1));
 $("rep-next").onclick = () => showReport(shiftMonth(repMonth, 1));

@@ -1441,14 +1441,35 @@ def _validate_month(month: str | None) -> str:
     return month
 
 
+def _monthly_activity(conn, month: str) -> dict:
+    """{user_id: 当月の稼働率(%)}。idleが取れたキャプチャのみ対象、無ければ None."""
+    start, end = tz.month_window(month)
+    thr = db.get_settings(conn)["idle_threshold"]
+    out: dict[int, int | None] = {}
+    for a in conn.execute(
+        "SELECT user_id, "
+        "SUM(CASE WHEN idle IS NOT NULL THEN 1 ELSE 0 END) AS measured, "
+        "SUM(CASE WHEN idle IS NOT NULL AND idle < ? THEN 1 ELSE 0 END) AS active "
+        "FROM screenshots WHERE taken_at >= ? AND taken_at < ? GROUP BY user_id",
+        (thr, tz.utc_iso(start), tz.utc_iso(end)),
+    ).fetchall():
+        out[a["user_id"]] = (
+            round(a["active"] / a["measured"] * 100) if a["measured"] else None
+        )
+    return out
+
+
 @app.get("/api/reports/monthly")
 def monthly_report(
     month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
 ):
     month = _validate_month(month)
     target = db.get_settings(conn)["daily_target_minutes"] / 60
-    return {"month": month, "target_hours": round(target, 2),
-            "rows": reports.monthly_report(conn, month, target)}
+    rows = reports.monthly_report(conn, month, target)
+    act = _monthly_activity(conn, month)
+    for r in rows:
+        r["activity"] = act.get(r["user_id"])   # 当月の稼働率(%) 取得不可は null
+    return {"month": month, "target_hours": round(target, 2), "rows": rows}
 
 
 @app.get("/api/reports/monthly.csv", response_class=PlainTextResponse)
