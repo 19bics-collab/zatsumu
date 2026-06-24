@@ -18,7 +18,7 @@ python -m pip install -r client/requirements.txt pyinstaller
 Write-Host "== ビルド ==" -ForegroundColor Cyan
 # --windowed: コンソール窓を出さない / --onefile: 単一 exe
 # pystray は OS バックエンドを動的 import するため submodule をまとめて収集する
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name zatsumu `
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name 勤怠管理 `
   --collect-submodules pystray `
   --hidden-import PIL._tkinter_finder `
   run_client.py
@@ -30,5 +30,6 @@ if (-not (Test-Path $cfg)) {
 }
 
 Write-Host ""
-Write-Host "完成: dist\zatsumu.exe" -ForegroundColor Green
-Write-Host "配布するもの: dist\zatsumu.exe と dist\zatsumu_config.json (server URL を実際の値に)" -ForegroundColor Green
+Write-Host "完成: dist\勤怠管理.exe" -ForegroundColor Green
+Write-Host "接続先(既定 https://kintai.yadotsugi.jp)は client/config.py の DEFAULT_SERVER に埋め込み済み。" -ForegroundColor Green
+Write-Host "従業員には dist\勤怠管理.exe を1つ渡すだけ(初回にトークン入力)。別サーバにする場合のみ zatsumu_config.json を同梱。" -ForegroundColor Green

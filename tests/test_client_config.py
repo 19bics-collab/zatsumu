@@ -81,15 +81,17 @@ def test_resolve_missing_token_raises_without_prompt():
         config.resolve(allow_prompt=False)
 
 
-def test_resolve_missing_server_raises():
+def test_default_server_used_when_no_config():
+    # 同梱config等が無くても、埋め込みの既定接続先で解決できる(exe単体配布用)
     config.save_token("user-token")
-    with pytest.raises(SystemExit):
-        config.resolve(allow_prompt=False)
+    server, token = config.resolve(allow_prompt=False)
+    assert server == config.DEFAULT_SERVER
+    assert token == "user-token"
 
 
 def test_corrupt_config_files_are_ignored():
     (config.Path.cwd() / "zatsumu_config.json").write_text("{ not json", "utf-8")
     config.user_config_path().parent.mkdir(parents=True, exist_ok=True)
     config.user_config_path().write_text("also broken", "utf-8")
-    # 壊れたファイルは無視され、空 dict として扱われる (例外を投げない)
-    assert config.load() == {}
+    # 壊れたファイルは無視され、既定接続先のみが残る (例外を投げない)
+    assert config.load() == {"server": config.DEFAULT_SERVER}

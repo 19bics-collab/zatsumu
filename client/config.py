@@ -17,6 +17,10 @@ from pathlib import Path
 ENV_SERVER = "ZATSUMU_SERVER"
 ENV_TOKEN = "ZATSUMU_TOKEN"
 
+# 単体exeを設定ファイル無しで配っても繋がるよう、既定の接続先を埋め込む。
+# 最低優先度(同梱config/ユーザ設定/環境変数/CLIで上書き可)。
+DEFAULT_SERVER = "https://kintai.yadotsugi.jp"
+
 
 def user_config_path() -> Path:
     """ユーザーごとのトークン保存先 (Windows は %APPDATA%、他は ~/.config)."""
@@ -45,7 +49,7 @@ def _read_json(path: Path) -> dict:
 
 def load(server: str | None = None, token: str | None = None) -> dict:
     """全ソースをマージした設定 dict を返す (後勝ち=優先度高)."""
-    cfg: dict = {}
+    cfg: dict = {"server": DEFAULT_SERVER}   # 最低優先度の既定接続先
     for p in _bundled_config_paths():
         cfg.update(_read_json(p))
     cfg.update(_read_json(user_config_path()))
