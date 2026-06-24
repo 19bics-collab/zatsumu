@@ -1665,3 +1665,44 @@ def test_test_email_endpoint(client, users, monkeypatch):
     # 一般ユーザーは不可
     assert client.post("/api/settings/test-email", headers=auth(worker),
                        json={"to": "taro@e.com"}).status_code == 403
+
+
+def test_staff_cannot_see_other_staff(client, tmp_path):
+    """スタッフ(非管理者)は他人のデータを一切見れない・管理APIも叩けない."""
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        a = db.create_user(conn, "alice")          # 非管理者
+        b = db.create_user(conn, "bob")            # 非管理者
+        admin = db.create_user(conn, "boss", is_admin=True)
+    # alice が着席→スクショ→日報
+    client.post("/api/clock-in", headers=auth(a))
+    sid = client.post("/api/screenshots", headers=auth(a),
+                      files={"image": ("s.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")}
+                      ).json()["screenshot_id"]
+    client.put("/api/me/journal", headers=auth(a), json={"body": "aliceの日報"})
+
+    H = auth(b)   # bob のトークン
+    # 他人のスクショ画像は 403
+    assert client.get(f"/api/screenshots/{sid}/image", headers=H).status_code == 403
+    # 全員分・他人分を返す/操作する管理APIは全部 403
+    for path in ["/api/status", "/api/users", "/api/teams", "/api/journals",
+                 "/api/leave", "/api/corrections", "/api/screenshots",
+                 "/api/reports/monthly", "/api/reports/summary", "/api/settings",
+                 f"/api/users/{a['id']}/monthly", f"/api/users/{a['id']}/journal"]:
+        assert client.get(path, headers=H).status_code == 403, path
+    # 他人を操作する系も 403
+    assert client.post(f"/api/users/{a['id']}/clock-out", headers=H).status_code == 403
+    assert client.post("/api/users", headers=H, json={"name": "x"}).status_code == 403
+    # bob 自身のページは自分のデータだけ (alice の日報は出ない)
+    assert client.get("/api/me/journal", headers=H).json()["body"] == ""
+    assert client.get("/api/me/monthly", headers=H).status_code == 200
+    # bob は自分のスクショは見れる / 管理者は alice のスクショを見れる
+    client.post("/api/clock-in", headers=H)
+    bsid = client.post("/api/screenshots", headers=H,
+                       files={"image": ("s.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")}
+                       ).json()["screenshot_id"]
+    assert client.get(f"/api/screenshots/{bsid}/image", headers=H).status_code == 200
+    assert client.get(f"/api/screenshots/{sid}/image",
+                      headers=auth(admin)).status_code == 200
+    # 無効トークンは 401
+    assert client.get("/api/me", headers={"Authorization": "Bearer nope"}).status_code == 401
