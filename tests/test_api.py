@@ -1706,3 +1706,27 @@ def test_staff_cannot_see_other_staff(client, tmp_path):
                       headers=auth(admin)).status_code == 200
     # 無効トークンは 401
     assert client.get("/api/me", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+def test_stall_alert_suppressed_when_user_active(client, users, monkeypatch):
+    """操作中(idleが閾値未満=在席)なら、画面が静止していても停滞アラートを出さない."""
+    from server import app as app_module
+    worker, admin = users
+    alerts = []
+    monkeypatch.setattr(app_module, "_notify",
+                        lambda conn, text, member_email=None: alerts.append(text))
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"notify_stall": True, "stall_threshold": 90,
+                       "stall_alert_count": 1, "idle_threshold": 120})
+    client.post("/api/clock-in", headers=auth(worker))
+    img1, img2 = _jpeg((20, 40, 80)), _jpeg((210, 60, 60))
+    up = lambda img, idle: client.post(
+        "/api/screenshots", headers=auth(worker),
+        files={"image": ("s.jpg", img, "image/jpeg")}, data={"idle": str(idle)})
+    up(img1, 5)            # 1枚目
+    up(img1, 5)            # 画面同一→stall=1 だが idle=5(操作中) → 通知しない
+    assert alerts == []
+    up(img2, 300)          # 別画面でstallリセット
+    up(img2, 300)          # 画面同一→stall=1 かつ idle=300(離席) → 通知する
+    assert len(alerts) == 1
+    assert "変化していません" in alerts[0]

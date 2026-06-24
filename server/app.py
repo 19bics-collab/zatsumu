@@ -451,8 +451,11 @@ async def upload_screenshot(
         (user["id"], taken_at.isoformat(), rel, sig,
          round(sim) if sim is not None else None, stall, idle_sec),
     )
+    # 直前に操作があった(idle計測あり&閾値未満)なら在席中なので停滞アラートは出さない。
+    # 「離席の可能性」の通知が、画面が変わらないだけの作業中に誤発火するのを防ぐ。
+    active = idle_sec is not None and idle_sec < s["idle_threshold"]
     if (s["notify_stall"] and user["notify_enabled"]
-            and stall == s["stall_alert_count"]):
+            and stall == s["stall_alert_count"] and not active):
         n = stall + 1  # ほぼ同一だった連続キャプチャ枚数
         _notify(
             conn,
