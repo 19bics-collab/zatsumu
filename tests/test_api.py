@@ -1635,3 +1635,33 @@ def test_reports_summary_and_payroll(client, users):
     # 権限: 一般ユーザーは不可
     assert client.get(f"/api/reports/summary?month={month}",
                       headers=auth(worker)).status_code == 403
+
+
+def test_test_email_endpoint(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    # SMTP未設定 → 400
+    assert client.post("/api/settings/test-email", headers=auth(admin),
+                       json={"to": "x@e.com"}).status_code == 400
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"smtp_host": "smtp.e", "smtp_user": "u@e", "mail_from": "from@e"})
+    # 不正アドレス → 400
+    assert client.post("/api/settings/test-email", headers=auth(admin),
+                       json={"to": "not-email"}).status_code == 400
+    sent = {}
+    monkeypatch.setattr(app_module.notify, "send_email",
+                        lambda settings, subject, text: sent.update(
+                            to=settings["mail_to"]))
+    r = client.post("/api/settings/test-email", headers=auth(admin),
+                    json={"to": "  taro@e.com  "})
+    assert r.status_code == 200 and r.json()["sent"] == "taro@e.com"
+    assert sent["to"] == "taro@e.com"   # 宛先がこのアドレスに差し替わっている
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(app_module.notify, "send_email", boom)
+    assert client.post("/api/settings/test-email", headers=auth(admin),
+                       json={"to": "taro@e.com"}).status_code == 502
+    # 一般ユーザーは不可
+    assert client.post("/api/settings/test-email", headers=auth(worker),
+                       json={"to": "taro@e.com"}).status_code == 403

@@ -366,6 +366,14 @@
       保存後に「テスト送信」で疎通確認できます。</small></p>
       <button class="ghost" id="set-test-notify">テスト送信</button>
       <span id="test-notify-msg" style="margin-left:.6rem;font-size:.85rem"></span>
+      <div style="margin-top:.7rem;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <input type="email" id="set-test-email-to" placeholder="送信先メール（例 you@example.com）"
+          style="flex:1;min-width:180px;padding:.4rem;border:1px solid #ccc;border-radius:6px">
+        <button class="ghost" id="set-test-email">このアドレスにテスト送信</button>
+      </div>
+      <span id="test-email-msg" style="font-size:.85rem"></span>
+      <p><small>「テスト送信」は設定済みの全チャネル（Slack/メール）へ。下のフォームは
+      入力した1つのメールアドレス宛にだけ送って、SMTPと宛先の疎通を確認できます（保存後に実施）。</small></p>
     </div>
   </div>
   <p style="margin-top:1rem">
@@ -710,7 +718,8 @@ async function showUsers() {
         <button class="mini ghost toggle-notify" data-id="${u.id}" data-ntf="${u.notify_enabled}">
           ${u.notify_enabled ? "停止" : "再開"}</button></td>
       <td><input type="email" class="set-email" data-id="${u.id}" value="${esc(u.email || "")}"
-        placeholder="メール(任意)" style="padding:.3rem;border:1px solid #ccc;border-radius:5px;width:11rem"></td>
+        placeholder="メール(任意)" style="padding:.3rem;border:1px solid #ccc;border-radius:5px;width:11rem">
+        <button class="mini ghost test-email" data-id="${u.id}">テスト</button></td>
       <td>
         <button class="mini ghost copy-token" data-token="${esc(u.token)}">トークンコピー</button>
         <button class="mini ghost copy-url" data-token="${esc(u.token)}">URLコピー</button>
@@ -777,6 +786,24 @@ async function showUsers() {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: inp.value.trim() }),
     });
+  });
+  // 各メンバーの「テスト」: 入力中のメールアドレスへテスト送信して疎通確認
+  document.querySelectorAll(".test-email").forEach(b => b.onclick = async () => {
+    const inp = document.querySelector(`.set-email[data-id="${b.dataset.id}"]`);
+    const to = (inp && inp.value || "").trim();
+    const old = b.textContent;
+    if (!to) { b.textContent = "未入力"; setTimeout(() => b.textContent = old, 1500); return; }
+    b.disabled = true; b.textContent = "送信中…";
+    try {
+      await apiJson("/api/settings/test-email", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to }),
+      });
+      b.textContent = "送信✓";
+    } catch {
+      b.textContent = "失敗";
+    }
+    setTimeout(() => { b.textContent = old; b.disabled = false; }, 2500);
   });
 }
 
@@ -1102,6 +1129,27 @@ $("set-test-notify").onclick = async () => {
   } catch {
     $("test-notify-msg").style.color = "#c62828";
     $("test-notify-msg").textContent = "送信できませんでした（保存後にお試しください）";
+  }
+};
+$("set-test-email").onclick = async () => {
+  const to = $("set-test-email-to").value.trim();
+  if (!to) {
+    $("test-email-msg").style.color = "#c62828";
+    $("test-email-msg").textContent = "送信先メールを入力してください";
+    return;
+  }
+  $("test-email-msg").style.color = "#475569";
+  $("test-email-msg").textContent = "送信中...";
+  try {
+    await apiJson("/api/settings/test-email", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to }),
+    });
+    $("test-email-msg").style.color = "#0a7d32";
+    $("test-email-msg").textContent = to + " に送信しました ✓";
+  } catch {
+    $("test-email-msg").style.color = "#c62828";
+    $("test-email-msg").textContent = "送信できませんでした（SMTP設定を保存後にお試しください）";
   }
 };
 

@@ -717,6 +717,33 @@ def test_notify(admin=Depends(require_admin), conn=Depends(get_conn)):
     return {"sent": sent}
 
 
+class TestEmailBody(BaseModel):
+    to: str
+
+
+@app.post("/api/settings/test-email")
+def test_email(
+    body: TestEmailBody, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """指定したメールアドレスへテスト送信する (SMTP設定の疎通・宛先確認用)."""
+    to = (body.to or "").strip()
+    if "@" not in to:
+        raise HTTPException(400, "メールアドレスの形式が正しくありません")
+    s = db.get_settings(conn)
+    if not s.get("smtp_host"):
+        raise HTTPException(400, "SMTPが未設定です。SMTPサーバ等を保存してください")
+    try:
+        notify.send_email(
+            {**s, "mail_to": to},   # 宛先だけこのアドレスに差し替えて送る
+            "[テスト] zatsumu メール送信テスト",
+            f"このメールは {admin['name']} がテスト送信しました。"
+            f"届いていればメール通知の設定は正常です。",
+        )
+    except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+        raise HTTPException(502, f"送信に失敗しました: {e}")
+    return {"sent": to}
+
+
 @app.get("/api/config")
 def public_config(conn=Depends(get_conn)):
     """ログイン前でも使う表示用の公開設定 (会社名・勤務時間帯)."""
