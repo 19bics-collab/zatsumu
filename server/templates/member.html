@@ -211,9 +211,30 @@ async function loadConfig() {
   document.querySelectorAll(".brand").forEach(el =>
     el.textContent = config.company_name || "zatsumu");
 }
+// 表示窓(時): 深夜/早朝の空き時間をカットし勤務時間帯を横いっぱいに広げる
+let winStart = 0, winEnd = 24;
+const hOf = iso => {
+  const d = new Date(iso);
+  return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+};
+const hhmmToH = s => {
+  const [h, m] = String(s || "").split(":").map(Number);
+  return isNaN(h) ? null : h + (m || 0) / 60;
+};
+function setWindow(hours) {
+  const ws = hhmmToH(config.work_start) ?? 9, we = hhmmToH(config.work_end) ?? 18;
+  const all = (hours || []).filter(h => h != null && !isNaN(h));
+  let lo = Math.min(ws, ...(all.length ? all : [ws]));
+  let hi = Math.max(we, ...(all.length ? all : [we]));
+  lo = Math.max(0, Math.floor(lo)); hi = Math.min(24, Math.ceil(hi));
+  if (hi - lo < 8) { hi = Math.min(24, lo + 8); lo = Math.max(0, hi - 8); }
+  winStart = lo; winEnd = hi;
+}
 const hhmmPct = hhmm => {
-  const [h, mn] = (hhmm || "").split(":").map(Number);
-  return isNaN(h) ? null : (h + (mn || 0) / 60) / 24 * 100;
+  const h = hhmmToH(hhmm);
+  if (h == null) return null;
+  const span = (winEnd - winStart) || 24;
+  return Math.max(0, Math.min(100, (h - winStart) / span * 100));
 };
 const workBandHtml = () => {
   const a = hhmmPct(config.work_start), b = hhmmPct(config.work_end);
@@ -430,28 +451,36 @@ async function loadHistory() {
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
   const youbi = ["日", "月", "火", "水", "木", "金", "土"];
+  // 表示窓を当月の在席・キャプチャ実データから決める(深夜/早朝の空き時間をカット)
+  const dhrs = [];
+  data.days.forEach(d => {
+    (d.sessions || []).forEach(s => dhrs.push(hOf(s.start), hOf(s.end)));
+    (d.screenshots || []).forEach(sh => dhrs.push(hOf(sh.taken_at)));
+  });
+  setWindow(dhrs);
   const pct = t => {
-    const dt = new Date(t);
-    return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
+    const span = (winEnd - winStart) || 24;
+    return Math.max(0, Math.min(100, (hOf(t) - winStart) / span * 100));
   };
   const hhmm = ms => {
     const d = new Date(ms);
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
   const work = workBandHtml();
-  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
+  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>${winStart}時〜${winEnd}時</div></div>`;
   for (let day = 1; day <= lastDay; day++) {
     const date = `${month}-${String(day).padStart(2, "0")}`;
     const dow = new Date(y, m - 1, day).getDay();
     const d = byDate[date];
     const segs = (d?.sessions || []).map(s => {
-      const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
+      const x0 = pct(s.start), x1 = pct(s.end);
+      const width = Math.max(x1 - x0, 0.2);   // 表示窓内に収まる幅
       const col = catColor(s.category);
       const bg = s.open
         ? `repeating-linear-gradient(45deg,${col},${col} 4px,#ffffffaa 4px,#ffffffaa 8px)`
         : col;
       return `<div class="seg" title="${esc2(s.category || "")}${s.open ? "（勤務中）" : ""}"
-              style="left:${pct(s.start)}%;width:${width}%;background:${bg}"></div>`;
+              style="left:${x0}%;width:${width}%;background:${bg}"></div>`;
     }).join("");
     const dots = (d?.screenshots || []).map(sh => {
       const i = allShots.length;

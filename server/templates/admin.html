@@ -185,7 +185,7 @@
   </h2>
   <table id="status">
     <thead><tr><th>メンバー</th><th>チーム</th><th>状態</th><th>本日の在席</th>
-      <th>本日のタイムライン (0〜24時)</th><th>最終キャプチャ</th><th>操作</th></tr></thead>
+      <th id="tl-head">本日のタイムライン</th><th>最終キャプチャ</th><th>操作</th></tr></thead>
     <tbody></tbody>
   </table>
   <h2>メンバー別キャプチャ <small>（名前をクリックで開閉。画像クリックで拡大、←→で前後に移動）</small></h2>
@@ -499,10 +499,48 @@ function shiftMonth(month, delta) {
   const d = new Date(y, m - 1 + delta, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
-const pct = t => {
-  const dt = new Date(t);
-  return (dt.getHours() + dt.getMinutes() / 60 + dt.getSeconds() / 3600) / 24 * 100;
+// 表示窓(時): 誰も勤務しない深夜/早朝をカットし、勤務時間帯を横いっぱいに広げる。
+// 各画面の描画前に setWindow() で、勤務時間設定＋実データから窓(winStart〜winEnd)を決める。
+let winStart = 0, winEnd = 24;
+const hOf = iso => {
+  const d = new Date(iso);
+  return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
 };
+const hhmmToH = s => {
+  const [h, m] = String(s || "").split(":").map(Number);
+  return isNaN(h) ? null : h + (m || 0) / 60;
+};
+function setWindow(hours) {
+  const ws = hhmmToH(appSettings.work_start) ?? 9;
+  const we = hhmmToH(appSettings.work_end) ?? 18;
+  const all = (hours || []).filter(h => h != null && !isNaN(h));
+  let lo = Math.min(ws, ...(all.length ? all : [ws]));
+  let hi = Math.max(we, ...(all.length ? all : [we]));
+  lo = Math.max(0, Math.floor(lo));
+  hi = Math.min(24, Math.ceil(hi));
+  if (hi - lo < 8) { hi = Math.min(24, lo + 8); lo = Math.max(0, hi - 8); }  // 狭すぎ防止
+  winStart = lo; winEnd = hi;
+}
+const pct = t => {
+  const span = (winEnd - winStart) || 24;
+  return Math.max(0, Math.min(100, (hOf(t) - winStart) / span * 100));
+};
+function scaleHtml() {
+  const span = (winEnd - winStart) || 24;
+  const step = span <= 9 ? 1 : span <= 16 ? 2 : 3;
+  let out = "";
+  for (let h = Math.ceil(winStart); h <= winEnd + 0.001; h += step)
+    out += `<span style="left:${(h - winStart) / span * 100}%">${h}</span>`;
+  return out;
+}
+function gridHtml() {
+  const span = (winEnd - winStart) || 24;
+  const step = span <= 9 ? 1 : span <= 16 ? 2 : 3;
+  let out = "";
+  for (let h = Math.ceil(winStart) + step; h < winEnd - 0.001; h += step)
+    out += `<div class="hour" style="left:${(h - winStart) / span * 100}%"></div>`;
+  return out;
+}
 // HTML(本文・属性)に安全に埋め込むためのエスケープ。innerHTMLへ入れる
 // ユーザー由来の文字列(名前・区分・理由など)は必ずこれを通す。
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
@@ -516,7 +554,8 @@ const catColor = cat => {
   return i < 0 ? "#9ca3af" : CAT_PALETTE[i % CAT_PALETTE.length];
 };
 const segHtml = (s, mini) => {
-  const width = Math.max((new Date(s.end) - new Date(s.start)) / 864000, 0.2);
+  const x0 = pct(s.start), x1 = pct(s.end);
+  const width = Math.max(x1 - x0, 0.2);   // 表示窓内に収まる幅(窓外は端でクリップ)
   const time = `${new Date(s.start).toLocaleTimeString("ja-JP")} - ${s.open ? "勤務中" : new Date(s.end).toLocaleTimeString("ja-JP")}`;
   const title = (s.category ? s.category + " " : "") + time;
   const data = mini ? "" : ` data-id="${s.id}" data-in="${esc(s.clock_in)}" data-out="${esc(s.clock_out ?? "")}" data-cat="${esc(s.category ?? "")}"`;
@@ -524,11 +563,13 @@ const segHtml = (s, mini) => {
   const bg = s.open
     ? `repeating-linear-gradient(45deg,${col},${col} 4px,#ffffffaa 4px,#ffffffaa 8px)`
     : col;
-  return `<div class="seg"${data} style="left:${pct(s.start)}%;width:${width}%;background:${bg}" title="${esc(title)}"></div>`;
+  return `<div class="seg"${data} style="left:${x0}%;width:${width}%;background:${bg}" title="${esc(title)}"></div>`;
 };
 const hhmmPct = hhmm => {
-  const [h, mn] = (hhmm || "").split(":").map(Number);
-  return isNaN(h) ? null : (h + (mn || 0) / 60) / 24 * 100;
+  const h = hhmmToH(hhmm);
+  if (h == null) return null;
+  const span = (winEnd - winStart) || 24;
+  return Math.max(0, Math.min(100, (h - winStart) / span * 100));
 };
 // 勤務時間帯の目安バンド (設定の work_start〜work_end)
 const workBandHtml = () => {
@@ -616,6 +657,13 @@ function renderHome(status) {
 }
 
 function renderStatusTable(status) {
+  // 表示窓を今日の在席データから決める(深夜/早朝の空き時間をカット)
+  const hrs = [];
+  status.forEach(u => (u.today_sessions || []).forEach(s => {
+    hrs.push(hOf(s.start), hOf(s.end));
+  }));
+  setWindow(hrs);
+  $("tl-head").textContent = `本日のタイムライン (${winStart}〜${winEnd}時)`;
   document.querySelector("#status tbody").innerHTML = status.map(u => {
     let warn = "";
     if (u.seated && u.open_since) {
@@ -1171,8 +1219,14 @@ async function showDetail(userId, userName, month) {
   switchView("detail");
   detailCats = data.categories || [];
   $("detail-title").textContent = `${data.user.name} — ${month}`;
-  $("scale").innerHTML = [0, 3, 6, 9, 12, 15, 18, 21, 24]
-    .map(h => `<span style="left:${h / 24 * 100}%">${h}</span>`).join("");
+  // 表示窓を当月の在席・キャプチャ実データから決める(深夜/早朝の空き時間をカット)
+  const dhrs = [];
+  (data.days || []).forEach(d => {
+    (d.sessions || []).forEach(s => dhrs.push(hOf(s.start), hOf(s.end)));
+    (d.screenshots || []).forEach(sh => dhrs.push(hOf(sh.taken_at)));
+  });
+  setWindow(dhrs);
+  $("scale").innerHTML = scaleHtml();
   // 区分の凡例 + 区分別の合計時間
   const bc = data.by_category || {};
   $("cat-legend").innerHTML = (data.categories || []).map(c =>
@@ -1186,7 +1240,8 @@ async function showDetail(userId, userName, month) {
   const lastDay = new Date(y, m, 0).getDate();
   const youbi = ["日", "月", "火", "水", "木", "金", "土"];
   const work = workBandHtml();
-  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>0時〜24時</div></div>`;
+  const grid = gridHtml();
+  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>${winStart}時〜${winEnd}時</div></div>`;
   const dayShots = [];
   for (let day = 1; day <= lastDay; day++) {
     const date = `${month}-${String(day).padStart(2, "0")}`;
@@ -1199,8 +1254,6 @@ async function showDetail(userId, userName, month) {
       return `<div class="dot" data-i="${i}" style="left:${pct(sh.taken_at)}%"
               title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`;
     }).join("");
-    const hours = [...Array(7)].map((_, i) =>
-      `<div class="hour" style="left:${(i + 1) * 3 / 24 * 100}%"></div>`).join("");
     const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
     const jr = d?.has_journal
       ? ` <span class="jr-mark" data-date="${date}" title="日報あり（クリックで表示）">📝</span>` : "";
@@ -1210,7 +1263,7 @@ async function showDetail(userId, userName, month) {
       <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})${jr}${lv}</div>
       <div>${d ? d.hours + " h" : ""}${d && d.over != null && Math.abs(d.over) >= 0.01
         ? `<br><small style="color:${d.over > 0 ? "#c2410c" : "#1565c0"}">${d.over > 0 ? "+" : "−"}${Math.abs(d.over)}</small>` : ""}</div>
-      <div class="tl">${work}${hours}${segs}${dots}</div>
+      <div class="tl">${work}${grid}${segs}${dots}</div>
     </div>`;
   }
   $("timeline").innerHTML = html;
