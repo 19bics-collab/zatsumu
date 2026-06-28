@@ -1730,3 +1730,40 @@ def test_stall_alert_suppressed_when_user_active(client, users, monkeypatch):
     up(img2, 300)          # 画面同一→stall=1 かつ idle=300(離席) → 通知する
     assert len(alerts) == 1
     assert "変化していません" in alerts[0]
+
+
+def test_delete_user_removes_all_data(client, users, tmp_path):
+    from server import db
+    import glob
+    worker, admin = users
+    # worker のデータ(打刻/スクショ/日報/休暇)を作る
+    client.post("/api/clock-in", headers=auth(worker))
+    client.post("/api/screenshots", headers=auth(worker),
+                files={"image": ("s.jpg", b"\xff\xd8\xff\xd9", "image/jpeg")})
+    client.post("/api/clock-out", headers=auth(worker))
+    client.put("/api/me/journal", headers=auth(worker), json={"body": "x"})
+    client.post("/api/me/leave", headers=auth(worker),
+                json={"date": "2026-06-10", "leave_type": "有給休暇"})
+    sdir = str(tmp_path / "screenshots" / str(worker["id"]))
+    assert glob.glob(sdir + "/*.jpg")          # 画像ファイルがある
+    # 権限・自己削除ガード
+    assert client.delete(f"/api/users/{admin['id']}",
+                         headers=auth(worker)).status_code == 403
+    assert client.delete(f"/api/users/{admin['id']}",
+                         headers=auth(admin)).status_code == 400
+    # 削除実行
+    assert client.delete(f"/api/users/{worker['id']}",
+                         headers=auth(admin)).status_code == 200
+    # ユーザーと関連データが全消去
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert conn.execute("SELECT 1 FROM users WHERE id=?",
+                            (worker["id"],)).fetchone() is None
+        for tbl in ("sessions", "screenshots", "journals",
+                    "leave_requests", "corrections"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {tbl} WHERE user_id=?",
+                                (worker["id"],)).fetchone()[0] == 0
+    assert glob.glob(sdir + "/*.jpg") == []    # 画像ファイルも消えた
+    # 旧トークンは無効・存在しないIDは404
+    assert client.get("/api/me", headers=auth(worker)).status_code == 401
+    assert client.delete(f"/api/users/{worker['id']}",
+                         headers=auth(admin)).status_code == 404

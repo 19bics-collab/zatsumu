@@ -776,6 +776,7 @@ async function showUsers() {
           ${u.is_admin ? "管理者を解除" : "管理者にする"}</button>
         <button class="mini ${u.active ? "danger" : ""} toggle-active" data-id="${u.id}" data-active="${u.active}">
           ${u.active ? "無効化" : "有効化"}</button>
+        <button class="mini danger del-user" data-id="${u.id}" data-name="${esc(u.name)}">削除</button>
       </td>
     </tr>`).join("");
   document.querySelectorAll(".set-team").forEach(sel => sel.onchange = async () => {
@@ -813,6 +814,16 @@ async function showUsers() {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ active: b.dataset.active !== "1" }),
     });
+    showUsers();
+  });
+  document.querySelectorAll(".del-user").forEach(b => b.onclick = async () => {
+    const name = b.dataset.name;
+    // 不可逆。打刻・キャプチャ・日報・申請ごと消えることを明示し二段階で確認
+    if (!confirm(`${name} さんを完全に削除します。\n打刻・キャプチャ画像・日報・各種申請も全て消え、元に戻せません。\n続けますか？`)) return;
+    if (!confirm(`本当に「${name}」を削除しますか？この操作は取り消せません。`)) return;
+    try {
+      await apiJson(`/api/users/${b.dataset.id}`, { method: "DELETE" });
+    } catch { return; }   // apiJson がエラー表示・再ログイン処理済み
     showUsers();
   });
   document.querySelectorAll(".toggle-capture").forEach(b => b.onclick = async () => {

@@ -915,6 +915,27 @@ def patch_user(
     return dict(row)
 
 
+@app.delete("/api/users/{user_id}")
+def delete_user(
+    user_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """メンバーを完全削除する (打刻・キャプチャ・日報・申請も全て消す。元に戻せない)."""
+    target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not target:
+        raise HTTPException(404, "User not found")
+    if user_id == admin["id"]:
+        raise HTTPException(400, "自分自身は削除できません")
+    # キャプチャ画像ファイルを先に消す(行を消す前にパスを取得)
+    for r in conn.execute("SELECT path FROM screenshots WHERE user_id = ?", (user_id,)):
+        (SCREENSHOT_DIR / r["path"]).unlink(missing_ok=True)
+    # 関連データ → 本体の順に削除 (FK制約に沿う)
+    for tbl in ("screenshots", "sessions", "journals", "leave_requests", "corrections"):
+        conn.execute(f"DELETE FROM {tbl} WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    _audit(conn, admin, "user_delete", detail=target["name"])
+    return {"deleted": user_id, "name": target["name"]}
+
+
 @app.post("/api/users/{user_id}/token")
 def regenerate_token(
     user_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
@@ -1602,6 +1623,7 @@ def audit_csv(
         "user_notify": "通知ON/OFF",
         "user_email": "通知メール変更",
         "user_team": "チーム割当変更",
+        "user_delete": "メンバー削除",
         "token_regen": "トークン再発行",
         "force_clock_out": "強制退席",
         "session_add": "打刻追加",
