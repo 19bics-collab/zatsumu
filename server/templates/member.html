@@ -17,6 +17,13 @@
   input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
           border: 1px solid #ccc; border-radius: 6px; }
   .error { color: var(--away); font-size: .85rem; }
+  .dl-sep { border: none; border-top: 1px solid var(--line); margin: 1.1rem 0 .8rem; }
+  .dl-note { font-size: .85rem; color: #475569; margin: 0 0 .5rem; }
+  .dl-btn { display: inline-block; padding: .55rem 1.1rem; background: #e2e8f0;
+            color: #334155; border-radius: 8px; text-decoration: none; font-weight: 600;
+            font-size: .92rem; }
+  .dl-btn:hover { background: #cbd5e1; }
+  .dl-help { font-size: .78rem; color: #777; margin: .5rem 0 0; line-height: 1.5; }
   button.small { padding: .5rem 1.2rem; border: 0; border-radius: 6px;
                  background: #2563eb; color: #fff; cursor: pointer; }
   button.ghost { background: #e5e7eb; color: #374151; }
@@ -97,6 +104,11 @@
   <input type="password" id="token-input" placeholder="トークン" autocomplete="current-password">
   <button class="small" id="login-btn">ログイン</button>
   <p id="login-error" class="error" hidden>トークンが正しくありません</p>
+  <hr class="dl-sep">
+  <p class="dl-note">PCで自動撮影しながら打刻する場合は、専用アプリ（Windows）を使います。</p>
+  <a class="dl-btn" href="/download/client" download>🖥 PCアプリをダウンロード</a>
+  <p class="dl-help">ダウンロード→実行。「WindowsによってPCが保護されました」と出たら
+  〔詳細情報〕→〔実行〕。初回に自分のトークンを入力すれば、次回からはダブルクリックで起動します。</p>
 </div>
 
 <div class="card" id="panel" hidden>

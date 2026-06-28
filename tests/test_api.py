@@ -1767,3 +1767,16 @@ def test_delete_user_removes_all_data(client, users, tmp_path):
     assert client.get("/api/me", headers=auth(worker)).status_code == 401
     assert client.delete(f"/api/users/{worker['id']}",
                          headers=auth(admin)).status_code == 404
+
+
+def test_download_client(client, tmp_path):
+    # 未配置 → 404
+    assert client.get("/download/client").status_code == 404
+    # 配置すると認証なしでDLできる(ログイン画面から取得するため)
+    d = tmp_path / "downloads"
+    d.mkdir()
+    (d / "勤怠管理.exe").write_bytes(b"MZ-fake-exe-bytes")
+    r = client.get("/download/client")
+    assert r.status_code == 200
+    assert r.content == b"MZ-fake-exe-bytes"
+    assert "attachment" in r.headers.get("content-disposition", "")

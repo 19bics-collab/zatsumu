@@ -1483,6 +1483,23 @@ def member_page():
     )
 
 
+CLIENT_EXE_NAME = "勤怠管理.exe"
+
+
+@app.get("/download/client")
+def download_client():
+    """PC用クライアント(勤怠管理.exe)を配布する。ログイン画面から取得できるよう認証なし.
+
+    配置先: ZATSUMU_DATA_DIR/downloads/勤怠管理.exe (無ければ404)。
+    """
+    path = DATA_DIR / "downloads" / CLIENT_EXE_NAME
+    if not path.exists():
+        raise HTTPException(404, "PCアプリは未配置です（管理者が downloads に配置してください）")
+    return FileResponse(
+        path, media_type="application/octet-stream", filename=CLIENT_EXE_NAME
+    )
+
+
 def _validate_month(month: str | None) -> str:
     month = month or datetime.now(tz.TZ).strftime("%Y-%m")
     try:
