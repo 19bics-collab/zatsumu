@@ -1484,20 +1484,29 @@ def member_page():
 
 
 CLIENT_EXE_NAME = "勤怠管理.exe"
+CLIENT_ZIP_NAME = "勤怠管理.zip"
 
 
 @app.get("/download/client")
 def download_client():
-    """PC用クライアント(勤怠管理.exe)を配布する。ログイン画面から取得できるよう認証なし.
+    """PC用クライアントを配布する。ログイン画面から取得できるよう認証なし.
 
-    配置先: ZATSUMU_DATA_DIR/downloads/勤怠管理.exe (無ければ404)。
+    配置先: ZATSUMU_DATA_DIR/downloads/。ウイルス対策ソフトの誤検知に強い
+    フォルダ版(勤怠管理.zip)を優先し、無ければ従来の単体exe(勤怠管理.exe)を返す。
+    どちらも無ければ404。
     """
-    path = DATA_DIR / "downloads" / CLIENT_EXE_NAME
-    if not path.exists():
-        raise HTTPException(404, "PCアプリは未配置です（管理者が downloads に配置してください）")
-    return FileResponse(
-        path, media_type="application/octet-stream", filename=CLIENT_EXE_NAME
-    )
+    downloads = DATA_DIR / "downloads"
+    zip_path = downloads / CLIENT_ZIP_NAME
+    if zip_path.exists():
+        return FileResponse(
+            zip_path, media_type="application/zip", filename=CLIENT_ZIP_NAME
+        )
+    exe_path = downloads / CLIENT_EXE_NAME
+    if exe_path.exists():
+        return FileResponse(
+            exe_path, media_type="application/octet-stream", filename=CLIENT_EXE_NAME
+        )
+    raise HTTPException(404, "PCアプリは未配置です（管理者が downloads に配置してください）")
 
 
 def _validate_month(month: str | None) -> str:

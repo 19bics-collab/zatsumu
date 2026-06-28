@@ -16,20 +16,21 @@ python -m pip install --upgrade pip
 python -m pip install -r client/requirements.txt pyinstaller
 
 Write-Host "== ビルド ==" -ForegroundColor Cyan
-# --windowed: コンソール窓を出さない / --onefile: 単一 exe
+# --windowed: コンソール窓を出さない / --onedir: フォルダ版
+# onefile(単体exe)は %TEMP% に自己展開するためウイルス対策に「アクセスできません」で
+# 弾かれやすい。誤検知に強い onedir(フォルダ版)で配布し、ZIP に固めて配る。
 # pystray は OS バックエンドを動的 import するため submodule をまとめて収集する
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name 勤怠管理 `
+python -m PyInstaller --noconfirm --clean --onedir --windowed --name 勤怠管理 `
   --collect-submodules pystray `
   --hidden-import PIL._tkinter_finder `
   run_client.py
 
-# 配布フォルダに設定テンプレートを置く (既存の設定は上書きしない)
-$cfg = "dist\zatsumu_config.json"
-if (-not (Test-Path $cfg)) {
-  Set-Content -Path $cfg -Value '{ "server": "https://kintai.example.com" }' -Encoding UTF8
-}
+# 配布用 ZIP を作成 (展開すると「勤怠管理」フォルダが出る)
+$zip = "dist\勤怠管理.zip"
+if (Test-Path $zip) { Remove-Item $zip }
+Compress-Archive -Path "dist\勤怠管理" -DestinationPath $zip
 
 Write-Host ""
-Write-Host "完成: dist\勤怠管理.exe" -ForegroundColor Green
+Write-Host "完成: dist\勤怠管理.zip (フォルダ版を圧縮)" -ForegroundColor Green
 Write-Host "接続先(既定 https://kintai.yadotsugi.jp)は client/config.py の DEFAULT_SERVER に埋め込み済み。" -ForegroundColor Green
-Write-Host "従業員には dist\勤怠管理.exe を1つ渡すだけ(初回にトークン入力)。別サーバにする場合のみ zatsumu_config.json を同梱。" -ForegroundColor Green
+Write-Host "従業員には ZIP を渡し、右クリック→『すべて展開』→中の 勤怠管理.exe を実行(初回トークン入力)。フォルダごと残す。" -ForegroundColor Green

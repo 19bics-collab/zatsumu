@@ -1780,3 +1780,9 @@ def test_download_client(client, tmp_path):
     assert r.status_code == 200
     assert r.content == b"MZ-fake-exe-bytes"
     assert "attachment" in r.headers.get("content-disposition", "")
+    # zip(フォルダ版)があれば exe より優先して配信する
+    (d / "勤怠管理.zip").write_bytes(b"PK-fake-zip-bytes")
+    r = client.get("/download/client")
+    assert r.status_code == 200
+    assert r.content == b"PK-fake-zip-bytes"
+    assert "application/zip" in r.headers.get("content-type", "")
