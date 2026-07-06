@@ -6,8 +6,9 @@
 <title>zatsumu 打刻</title>
 <style>
   :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
+  html { -webkit-text-size-adjust: 100%; }  /* iPhoneの自動文字拡大による横はみ出しを防ぐ */
   body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7;
-         display: flex; flex-direction: column; min-height: 100vh;
+         display: flex; flex-direction: column; min-height: 100vh; overflow-x: hidden;
          align-items: center; padding: 1.2rem 0; box-sizing: border-box; gap: 1rem; }
   .card { background: #fff; padding: 1.5rem; border-radius: 12px;
           width: min(480px, 92vw); box-sizing: border-box;

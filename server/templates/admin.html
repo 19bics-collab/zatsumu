@@ -6,8 +6,9 @@
 <title>zatsumu 管理画面</title>
 <style>
   :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
-  html { font-size: 17px; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7; }
+  html { font-size: 17px; -webkit-text-size-adjust: 100%; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7;
+         overflow-x: hidden; }  /* iPhoneで横にはみ出さない安全網 */
   header { background: #1f2937; color: #fff; padding: .7rem 1.5rem;
            display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
   header h1 { font-size: 1.3rem; margin: 0; margin-right: 1rem; }
@@ -187,6 +188,25 @@
     .month-nav { gap: .5rem; }
     .month-nav strong { font-size: 1.1rem; }
   }
+  /* スマホ(≤640px)は横長テーブルを「1行=1カード」に縦積みし、横スクロール自体を無くす。
+     各セルは見出し(data-label)を上に付けて縦に並べるので、右端で見切れない */
+  @media (max-width: 640px) {
+    .table-wrap { overflow-x: visible; padding: 0; }
+    .table-wrap table { width: 100%; box-shadow: none; white-space: normal; }
+    .table-wrap thead { display: none; }
+    .table-wrap tbody { display: block; }
+    .table-wrap tr { display: block; background: #fff; border: 1px solid var(--line);
+                     border-radius: 8px; margin: 0 0 .6rem; padding: .3rem .8rem;
+                     box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .table-wrap td { display: block; border: none; border-bottom: 1px solid #f1f5f9;
+                     padding: .5rem 0; text-align: left; }
+    .table-wrap tr td:last-child { border-bottom: none; }
+    .table-wrap td[data-label]::before { content: attr(data-label); display: block;
+                     font-weight: 600; color: #6b7280; font-size: .72rem; margin-bottom: .15rem; }
+    .table-wrap td:empty { display: none; }
+    .table-wrap .tl.mini { min-width: 0; width: 100%; }
+    .table-wrap .set-email { width: 100%; box-sizing: border-box; }
+  }
 </style>
 </head>
 <body>
@@ -243,10 +263,10 @@
     <input type="text" id="new-team" placeholder="チーム名（例：営業部）">
     <button id="add-team">チームを追加</button>
   </div>
-  <table id="teams-table">
+  <div class="table-wrap"><table id="teams-table">
     <thead><tr><th>チーム</th><th>人数</th><th>操作</th></tr></thead>
     <tbody></tbody>
-  </table>
+  </table></div>
 </section>
 
 <section id="journal-view" hidden>
@@ -708,13 +728,13 @@ function renderStatusTable(status) {
       warn += ` <span class="badge warn" title="画面がしばらく変化していません（離席の可能性）">⚠ 画面停滞</span>`;
     return `
     <tr class="user-row" data-id="${u.user_id}" data-name="${esc(u.name)}">
-      <td class="click"><strong>${esc(u.name)}</strong></td>
-      <td>${esc(u.team_name) || "—"}</td>
-      <td><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${u.seated && u.category ? ` <span class="badge" style="background:${catColor(u.category)}">${esc(u.category)}</span>` : ""}${warn}</td>
-      <td>${u.hours_today} h${u.activity != null ? ` <span class="badge ${u.activity < 50 ? "warn" : ""}" title="本日の稼働率（無操作が閾値未満だったキャプチャの割合・PC版のみ）">稼働 ${u.activity}%</span>` : ""}</td>
-      <td><div class="tl mini">${workBandHtml()}${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
-      <td>${u.last_screenshot ? new Date(u.last_screenshot).toLocaleTimeString("ja-JP") : "—"}</td>
-      <td>${u.seated ? `<button class="mini danger force-out" data-id="${u.user_id}" data-name="${esc(u.name)}">強制退席</button>` : ""}</td>
+      <td class="click" data-label="メンバー"><strong>${esc(u.name)}</strong></td>
+      <td data-label="チーム">${esc(u.team_name) || "—"}</td>
+      <td data-label="状態"><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${u.seated && u.category ? ` <span class="badge" style="background:${catColor(u.category)}">${esc(u.category)}</span>` : ""}${warn}</td>
+      <td data-label="本日の在席">${u.hours_today} h${u.activity != null ? ` <span class="badge ${u.activity < 50 ? "warn" : ""}" title="本日の稼働率（無操作が閾値未満だったキャプチャの割合・PC版のみ）">稼働 ${u.activity}%</span>` : ""}</td>
+      <td data-label="タイムライン"><div class="tl mini">${workBandHtml()}${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
+      <td data-label="最終キャプチャ">${u.last_screenshot ? new Date(u.last_screenshot).toLocaleTimeString("ja-JP") : "—"}</td>
+      <td data-label="操作">${u.seated ? `<button class="mini danger force-out" data-id="${u.user_id}" data-name="${esc(u.name)}">強制退席</button>` : ""}</td>
     </tr>`;
   }).join("");
   document.querySelectorAll("#status td.click").forEach(td => {
@@ -825,24 +845,24 @@ async function showUsers() {
     `<option value="${t.id}" ${u.team_id === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("");
   document.querySelector("#users-table tbody").innerHTML = users.map(u => `
     <tr>
-      <td><strong>${esc(u.name)}</strong><br>
+      <td data-label="メンバー"><strong>${esc(u.name)}</strong><br>
         <code class="tok-val" data-token="${esc(u.token)}"
           style="font-size:.66rem;color:#6b7280;word-break:break-all">••••••••</code>
         <button type="button" class="mini ghost tok-show">表示</button></td>
-      <td><select class="set-team" data-id="${u.id}"
+      <td data-label="チーム"><select class="set-team" data-id="${u.id}"
         style="padding:.3rem;border:1px solid #ccc;border-radius:5px">${teamOpts(u)}</select></td>
-      <td>${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
-      <td>${u.active ? "有効" : '<span class="badge gray">無効</span>'}</td>
-      <td>${u.capture_enabled ? "ON" : '<span class="badge gray">停止中</span>'}
+      <td data-label="権限">${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
+      <td data-label="状態">${u.active ? "有効" : '<span class="badge gray">無効</span>'}</td>
+      <td data-label="撮影">${u.capture_enabled ? "ON" : '<span class="badge gray">停止中</span>'}
         <button class="mini ghost toggle-capture" data-id="${u.id}" data-cap="${u.capture_enabled}">
           ${u.capture_enabled ? "停止" : "再開"}</button></td>
-      <td>${u.notify_enabled ? "ON" : '<span class="badge gray">OFF</span>'}
+      <td data-label="通知">${u.notify_enabled ? "ON" : '<span class="badge gray">OFF</span>'}
         <button class="mini ghost toggle-notify" data-id="${u.id}" data-ntf="${u.notify_enabled}">
           ${u.notify_enabled ? "停止" : "再開"}</button></td>
-      <td><input type="email" class="set-email" data-id="${u.id}" value="${esc(u.email || "")}"
+      <td data-label="通知メール"><input type="email" class="set-email" data-id="${u.id}" value="${esc(u.email || "")}"
         placeholder="メール(任意)" style="padding:.3rem;border:1px solid #ccc;border-radius:5px;width:11rem">
         <button class="mini ghost test-email" data-id="${u.id}">テスト</button></td>
-      <td>
+      <td data-label="操作">
         <button class="mini ghost copy-token" data-token="${esc(u.token)}">トークンコピー</button>
         <button class="mini ghost copy-url" data-token="${esc(u.token)}">URLコピー</button>
         <button class="mini ghost regen" data-id="${u.id}" data-name="${esc(u.name)}">トークン再発行</button>
@@ -955,8 +975,8 @@ $("add-user").onclick = async () => {
 /* ---------- チーム管理 ---------- */
 function renderTeams() {
   document.querySelector("#teams-table tbody").innerHTML = teams.map(t => `
-    <tr><td><strong>${esc(t.name)}</strong></td><td>${t.members} 人</td>
-      <td>
+    <tr><td data-label="チーム"><strong>${esc(t.name)}</strong></td><td data-label="人数">${t.members} 人</td>
+      <td data-label="操作">
         <button class="mini ghost team-rename" data-id="${t.id}" data-name="${esc(t.name)}">改名</button>
         <button class="mini danger team-delete" data-id="${t.id}" data-name="${esc(t.name)}">削除</button>
       </td></tr>`).join("") ||
@@ -997,10 +1017,10 @@ async function showLeave() {
   const list = await apiJson("/api/leave" + qs);
   document.querySelector("#leave-table tbody").innerHTML = list.map(l => `
     <tr>
-      <td><strong>${esc(l.name)}</strong></td><td>${esc(l.date)}</td><td>${esc(l.leave_type)}</td>
-      <td>${esc(l.reason) || "—"}</td>
-      <td class="lv-${l.status}">${label[l.status] || l.status}</td>
-      <td>${l.status === "pending" ? `
+      <td data-label="メンバー"><strong>${esc(l.name)}</strong></td><td data-label="日付">${esc(l.date)}</td><td data-label="種別">${esc(l.leave_type)}</td>
+      <td data-label="理由">${esc(l.reason) || "—"}</td>
+      <td data-label="状態" class="lv-${l.status}">${label[l.status] || l.status}</td>
+      <td data-label="操作">${l.status === "pending" ? `
         <button class="mini approve" data-id="${l.id}">承認</button>
         <button class="mini danger reject" data-id="${l.id}">却下</button>` : "—"}</td>
     </tr>`).join("") || `<tr><td colspan="6"><small>申請はありません</small></td></tr>`;
@@ -1009,11 +1029,11 @@ async function showLeave() {
   const tm = t => t ? esc(t) : "—";
   document.querySelector("#correction-table tbody").innerHTML = corr.map(c => `
     <tr>
-      <td><strong>${esc(c.name)}</strong></td><td>${esc(c.date)}</td>
-      <td>${tm(c.requested_in)} / ${tm(c.requested_out)}</td>
-      <td>${esc(c.reason) || "—"}</td>
-      <td class="lv-${c.status}">${label[c.status] || c.status}</td>
-      <td>${c.status === "pending" ? `
+      <td data-label="メンバー"><strong>${esc(c.name)}</strong></td><td data-label="日付">${esc(c.date)}</td>
+      <td data-label="希望(着席/退席)">${tm(c.requested_in)} / ${tm(c.requested_out)}</td>
+      <td data-label="理由">${esc(c.reason) || "—"}</td>
+      <td data-label="状態" class="lv-${c.status}">${label[c.status] || c.status}</td>
+      <td data-label="操作">${c.status === "pending" ? `
         <button class="mini approve-cr" data-id="${c.id}">承認</button>
         <button class="mini danger reject-cr" data-id="${c.id}">却下</button>` : "—"}</td>
     </tr>`).join("") || `<tr><td colspan="6"><small>申請はありません</small></td></tr>`;
@@ -1135,11 +1155,11 @@ async function showReport(month) {
       </div>`;
     }).join("") || `<p><small>この月の勤務記録はありません。</small></p>`;
   document.querySelector("#report-table tbody").innerHTML = data.rows.map(r => `
-    <tr><td><strong>${esc(r.name)}</strong></td><td>${r.work_days} 日</td>
-        <td>${r.total_hours} h</td><td>${r.target_hours} h</td>
-        <td style="color:#c2410c">${r.overtime ? "+" + r.overtime + " h" : "—"}</td>
-        <td style="color:#1565c0">${r.shortfall ? "−" + r.shortfall + " h" : "—"}</td>
-        <td>${r.activity != null ? r.activity + "%" : "—"}</td></tr>`).join("");
+    <tr><td data-label="メンバー"><strong>${esc(r.name)}</strong></td><td data-label="勤務日数">${r.work_days} 日</td>
+        <td data-label="合計勤務時間">${r.total_hours} h</td><td data-label="予定時間">${r.target_hours} h</td>
+        <td data-label="残業" style="color:#c2410c">${r.overtime ? "+" + r.overtime + " h" : "—"}</td>
+        <td data-label="不足" style="color:#1565c0">${r.shortfall ? "−" + r.shortfall + " h" : "—"}</td>
+        <td data-label="稼働率">${r.activity != null ? r.activity + "%" : "—"}</td></tr>`).join("");
   // 集計グラフ: 日別推移・作業区分別・チーム別 (全社)
   const sum = await apiJson(`/api/reports/summary?month=${repMonth}`);
   const maxD = Math.max(1, ...sum.daily.map(d => d.hours));
