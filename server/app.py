@@ -591,14 +591,25 @@ def _monthly_detail(conn, user, month: str) -> dict:
             cat = s["category"] or "未分類"
             by_category[cat] = by_category.get(cat, 0.0) + seg_hours
 
+    # 画面停滞(離席の可能性)を実績画像で分かるように、一致率・無操作秒・停滞判定も返す
+    s_stall = db.get_settings(conn)
+    stall_on = bool(s_stall["notify_stall"])
+    alert_count = s_stall["stall_alert_count"]
+    idle_thr = s_stall["idle_threshold"]
     shots = conn.execute(
-        "SELECT id, taken_at FROM screenshots WHERE user_id = ? "
+        "SELECT id, taken_at, similarity, stall, idle FROM screenshots WHERE user_id = ? "
         "AND taken_at >= ? AND taken_at < ? ORDER BY taken_at",
         (user_id, tz.utc_iso(start), tz.utc_iso(end)),
     ).fetchall()
     for sh in shots:
         t = tz.local(sh["taken_at"])
-        day_of(t)["screenshots"].append({"id": sh["id"], "taken_at": t.isoformat()})
+        day_of(t)["screenshots"].append({
+            "id": sh["id"], "taken_at": t.isoformat(),
+            "similarity": sh["similarity"], "idle": sh["idle"],
+            # 停滞アラート水準に達したキャプチャ(離席の可能性)。設定OFF時は印を付けない
+            "stalled": stall_on and (sh["stall"] or 0) >= alert_count,
+            "idle_over": sh["idle"] is not None and sh["idle"] >= idle_thr,
+        })
 
     mstart, mend = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
     journ = conn.execute(
@@ -1418,10 +1429,17 @@ def list_screenshots(
         args.append(user_id)
     q += " ORDER BY s.taken_at DESC LIMIT ?"
     args.append(limit)
+    s = db.get_settings(conn)
+    stall_on = bool(s["notify_stall"])
+    alert_count = s["stall_alert_count"]
+    idle_thr = s["idle_threshold"]
     out = []
     for r in conn.execute(q, args).fetchall():
         d = dict(r)
         d.pop("sig", None)  # 指紋は内部用途のみ。レスポンスには含めない
+        # 実績画像で「画面停滞(離席の可能性)」が一目で分かるよう判定を付ける
+        d["stalled"] = stall_on and (d.get("stall") or 0) >= alert_count
+        d["idle_over"] = d.get("idle") is not None and d["idle"] >= idle_thr
         out.append(d)
     return out
 

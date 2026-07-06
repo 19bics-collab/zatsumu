@@ -51,9 +51,12 @@
              border-radius: 2px; min-width: 2px; }
   .tl .seg.open { background: repeating-linear-gradient(45deg, var(--seated),
                   var(--seated) 4px, #5b9bd5 4px, #5b9bd5 8px); }
-  .tl .dot { position: absolute; top: 50%; width: 8px; height: 8px; margin: -4px;
+  .tl .dot { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px;
              border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
              cursor: pointer; z-index: 2; }
+  .tl .dot.stall { background: var(--away); width: 13px; height: 13px; margin: -6.5px;
+                   box-shadow: 0 0 0 2px #fff; z-index: 3; }
+  .stall-legend { font-size: .72rem; color: #c62828; margin: .1rem 0; text-align: left; }
   .tl-row.cr { cursor: pointer; }
   .tl-row.cr:hover { background: #eef4ff; }
   .card.flash { animation: cardflash 1.2s ease; }
@@ -183,6 +186,7 @@
   </div>
   <div id="cat-legend" style="margin:.4rem 0"></div>
   <div id="timeline"></div>
+  <p id="stall-note" class="stall-legend"></p>
   <p><small style="color:#777">色=作業区分（斜線は勤務中）、●=画面キャプチャ（タップで確認）。
   <strong>日付の行をタップ</strong>すると、その日の勤務時間の修正申請ができます。</small></p>
   <button class="small ghost" id="logout">ログアウト</button>
@@ -205,6 +209,13 @@ const $ = id => document.getElementById(id);
 // HTML(本文・属性)に安全に埋め込むためのエスケープ
 const esc2 = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// 無操作秒を「N分」「N分M秒」に整形(画面停滞の詳細表示に使う)
+function fmtIdle(sec) {
+  if (sec == null) return "";
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? (s ? `${m}分${s}秒` : `${m}分`) : `${s}秒`;
+}
 let state = null;
 let timer = null;
 const _n = new Date();
@@ -467,6 +478,7 @@ async function loadHistory() {
   $("month-title").textContent = month;
   allShots = [];
   dayTimes = {};
+  let anyStall = false;
   const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
   const [y, m] = month.split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
@@ -504,10 +516,14 @@ async function loadHistory() {
     }).join("");
     const dots = (d?.screenshots || []).map(sh => {
       const i = allShots.length;
-      allShots.push({ id: sh.id, info: new Date(sh.taken_at).toLocaleString("ja-JP") });
-      return `<div class="dot" data-i="${i}" style="left:${pct(sh.taken_at)}%"
-            title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`;
+      allShots.push({ id: sh.id, info: new Date(sh.taken_at).toLocaleString("ja-JP"),
+                      similarity: sh.similarity, idle: sh.idle, stalled: sh.stalled });
+      const tip = new Date(sh.taken_at).toLocaleTimeString("ja-JP")
+        + (sh.stalled ? " ⚠画面停滞" : "") + (sh.similarity != null ? ` 一致${sh.similarity}%` : "");
+      return `<div class="dot${sh.stalled ? " stall" : ""}" data-i="${i}" style="left:${pct(sh.taken_at)}%"
+            title="${tip}"></div>`;
     }).join("");
+    if ((d?.screenshots || []).some(sh => sh.stalled)) anyStall = true;
     const ss = d?.sessions || [];
     if (ss.length) {   // その日の着席/退席(全区間の最早〜最遅)を修正申請の初期値に
       dayTimes[date] = { in: hhmm(Math.min(...ss.map(s => +new Date(s.start)))),
@@ -521,6 +537,9 @@ async function loadHistory() {
     </div>`;
   }
   $("timeline").innerHTML = html;
+  $("stall-note").innerHTML = anyStall
+    ? `<span class="dot" style="position:static;display:inline-block;background:#c62828;box-shadow:0 0 0 1px #fff;vertical-align:middle"></span>
+       赤い点＝<b>画面が動いていなかった時間帯（離席の可能性）</b>。タップで画像を確認できます。` : "";
   // 区分の凡例 + 区分別の合計
   const bc = data.by_category || {};
   $("cat-legend").innerHTML = (data.categories || []).map(c =>
@@ -563,8 +582,17 @@ async function renderModalImage() {
   img.classList.remove("zoomed");        // 新しい画像は全体表示から開く
   img.parentElement.scrollTo(0, 0);      // スクロール位置もリセット
   img.src = memberModalUrl;
-  $("modal-info").textContent =
-    `${cur.info}（${shotIdx + 1}/${allShots.length}）　画像をタップでその位置を拡大`;
+  const bits = [];
+  if (cur.similarity != null) bits.push(`前の画像と${cur.similarity}%一致`);
+  if (cur.idle != null) bits.push(`無操作 ${fmtIdle(cur.idle)}`);
+  const meta = cur.stalled
+    ? `<span style="color:#c62828;font-weight:700">⚠ 画面停滞（離席の可能性）</span>`
+      + (bits.length ? ` ｜ ${esc2(bits.join("・"))}` : "")
+    : (bits.length ? `<span style="color:#64748b">${esc2(bits.join("・"))}</span>` : "");
+  $("modal-info").innerHTML =
+    `${esc2(cur.info)}（${shotIdx + 1}/${allShots.length}）`
+    + (meta ? `<br>${meta}` : "")
+    + `<br><span style="color:#9ca3af">画像をタップでその位置を拡大</span>`;
   $("modal-prev").disabled = shotIdx === 0;
   $("modal-next").disabled = shotIdx === allShots.length - 1;
 }

@@ -18,6 +18,11 @@
   h2 { font-size: 1.15rem; color: #374151; }
   table { border-collapse: collapse; background: #fff; width: 100%;
           box-shadow: 0 1px 3px rgba(0,0,0,.08); font-size: 1rem; }
+  /* 横長テーブルはスマホで横スクロールにし、画面外にはみ出さない。
+     overflow-x:auto は overflow-y も auto 扱いになるため、テーブルの影が
+     切れないよう僅かな余白を確保する */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch;
+                padding: 3px 3px 6px; }
   th, td { padding: .7rem 1rem; border-bottom: 1px solid var(--line); text-align: left; }
   th { background: #f9fafb; font-size: .85rem; color: #6b7280; }
   .badge { display: inline-block; padding: .25rem .8rem; border-radius: 99px;
@@ -27,8 +32,24 @@
   .badge.gray { background: #9ca3af; }
   tr.user-row td.click { cursor: pointer; }
   tr.user-row:hover { background: #f0f6ff; }
-  .shots img { height: 150px; margin: 5px; border: 1px solid #ddd;
-               border-radius: 4px; cursor: pointer; }
+  .shots { display: flex; flex-wrap: wrap; }
+  .shots .shot { position: relative; margin: 5px; }
+  .shots img { height: 150px; border: 1px solid #ddd;
+               border-radius: 4px; cursor: pointer; display: block; }
+  .shot.stall img { border: 3px solid var(--away); }
+  /* 実績画像に重ねる「前と◯%一致」「⚠画面停滞」バッジ */
+  .shot .cap { position: absolute; left: 5px; bottom: 5px; padding: .06rem .4rem;
+               border-radius: 4px; font-size: .68rem; font-weight: 700; color: #fff;
+               background: rgba(15,23,42,.72); }
+  .shot .cap.hi { background: rgba(198,40,40,.9); }
+  .shot .flag { position: absolute; left: 5px; top: 5px; padding: .1rem .45rem;
+                border-radius: 4px; font-size: .68rem; font-weight: 700; color: #fff;
+                background: var(--away); box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+  .stall-legend { font-size: .8rem; color: #64748b; margin: .1rem 0 .5rem;
+                  display: flex; align-items: center; gap: .4rem; flex-wrap: wrap;
+                  flex-basis: 100%; }  /* .shots(flex)内で必ず1行目・全幅に */
+  .stall-legend .sw { display: inline-block; width: .85rem; height: .85rem;
+                      border-radius: 3px; background: var(--away); vertical-align: middle; }
   .cap-group { border: 1px solid #e2e8f0; border-radius: 8px; margin: .5rem 0;
                background: #fff; }
   .cap-group summary { cursor: pointer; padding: .7rem 1rem; font-weight: 600;
@@ -88,13 +109,15 @@
   .tl .dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px;
              border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
              cursor: pointer; z-index: 2; }
+  .tl .dot.stall { background: var(--away); width: 15px; height: 15px; margin: -7.5px;
+                   box-shadow: 0 0 0 2px #fff, 0 1px 4px rgba(198,40,40,.6); z-index: 3; }
   .tl .hour { position: absolute; top: 0; bottom: 0; width: 1px; background: #e5e7eb; }
   .tl .work { position: absolute; top: 0; bottom: 0; background: #fef3c7; z-index: 0; }
   .tl-scale { display: grid; grid-template-columns: 9rem 5.5rem 1fr; padding: 0 1.1rem; }
   .tl-scale div { position: relative; height: 1.1rem; font-size: .75rem; color: #9ca3af; }
   .tl-scale span { position: absolute; transform: translateX(-50%); }
   /* 設定 */
-  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
                    gap: 1rem; }
   .set-card { background: #fff; padding: 1.2rem 1.5rem; border-radius: 8px;
               box-shadow: 0 1px 3px rgba(0,0,0,.08); }
@@ -148,11 +171,21 @@
   @media (max-width: 720px) {
     html { font-size: 15px; }
     main { padding: .8rem; }
+    header { padding: .6rem .8rem; gap: .4rem; }
+    /* 会社名を1行目に、ナビボタンは2行目以降へ折り返す。spacerは無効化して詰める */
+    header h1 { font-size: 1.1rem; margin-right: 0; flex-basis: 100%; }
+    header .spacer { display: none; }
+    header button { padding: .45rem .7rem; font-size: .82rem; }
     th, td { padding: .55rem .7rem; }
+    /* スクロール枠内のテーブルは折り返さず、枠が横スクロールする */
+    .table-wrap table { white-space: nowrap; }
+    .table-wrap th, .table-wrap td { padding: .5rem .6rem; }
     .shots img { height: 100px; }
     .tl-row, .tl-scale { grid-template-columns: 6.5rem 3.5rem 1fr; padding: .3rem .6rem; }
     .tl-row { font-size: .8rem; }
     .tl.mini { min-width: 100px; }
+    .month-nav { gap: .5rem; }
+    .month-nav strong { font-size: 1.1rem; }
   }
 </style>
 </head>
@@ -183,11 +216,11 @@
   <h2>稼働状況 <small>（名前をクリックで個人ページ / 30秒ごとに自動更新）</small>
     <select id="home-team" style="margin-left:1rem;padding:.4rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem"></select>
   </h2>
-  <table id="status">
+  <div class="table-wrap"><table id="status">
     <thead><tr><th>メンバー</th><th>チーム</th><th>状態</th><th>本日の在席</th>
       <th id="tl-head">本日のタイムライン</th><th>最終キャプチャ</th><th>操作</th></tr></thead>
     <tbody></tbody>
-  </table>
+  </table></div>
   <h2>メンバー別キャプチャ <small>（名前をクリックで開閉。画像クリックで拡大、←→で前後に移動）</small></h2>
   <div id="cap-groups"></div>
 </section>
@@ -200,10 +233,10 @@
     <button id="add-user">追加</button>
     <small>追加するとトークンが一度だけ表示されます。本人に安全な方法で渡してください</small>
   </div>
-  <table id="users-table">
+  <div class="table-wrap"><table id="users-table">
     <thead><tr><th>メンバー</th><th>チーム</th><th>権限</th><th>状態</th><th>撮影</th><th>通知</th><th>通知メール</th><th>操作</th></tr></thead>
     <tbody></tbody>
-  </table>
+  </table></div>
 
   <h2 style="margin-top:1.5rem">チーム</h2>
   <div class="add-form">
@@ -235,16 +268,16 @@
       <option value="">すべて</option>
     </select>
   </h2>
-  <table id="leave-table">
+  <div class="table-wrap"><table id="leave-table">
     <thead><tr><th>メンバー</th><th>日付</th><th>種別</th><th>理由</th><th>状態</th><th>操作</th></tr></thead>
     <tbody></tbody>
-  </table>
+  </table></div>
 
   <h2 style="margin-top:1.6rem">勤務時間の修正申請</h2>
-  <table id="correction-table">
+  <div class="table-wrap"><table id="correction-table">
     <thead><tr><th>メンバー</th><th>日付</th><th>希望(着席/退席)</th><th>理由</th><th>状態</th><th>操作</th></tr></thead>
     <tbody></tbody>
-  </table>
+  </table></div>
 </section>
 
 <section id="report" hidden>
@@ -268,10 +301,10 @@
   <div class="rep-sub">チーム別</div>
   <div id="rep-team"></div>
   <div class="rep-sub">メンバー別 明細</div>
-  <table id="report-table">
+  <div class="table-wrap"><table id="report-table">
     <thead><tr><th>メンバー</th><th>勤務日数</th><th>合計勤務時間</th><th>予定時間</th><th>残業</th><th>不足</th><th>稼働率</th></tr></thead>
     <tbody></tbody>
-  </table>
+  </table></div>
 </section>
 
 <section id="settings-view" hidden>
@@ -393,7 +426,7 @@
   <div id="cat-legend" style="margin:.4rem 0"></div>
   <div class="tl-scale"><div></div><div></div><div id="scale"></div></div>
   <div class="tl-wrap" id="timeline"></div>
-  <p><small>青=在席（斜線は勤務中・クリックで修正）、●=画面キャプチャ（クリックで表示、←→で前後に移動）。</small></p>
+  <p><small>青=在席（斜線は勤務中・クリックで修正）、<span style="color:#f59e0b">●</span>=画面キャプチャ（クリックで表示、←→で前後に移動）、<span style="color:#c62828;font-weight:700">●</span>=<b style="color:#c62828">画面停滞</b>（画面が動いていない＝離席の可能性）。</small></p>
 </section>
 
 </main>
@@ -733,13 +766,54 @@ async function loadGroupShots(uid) {
     const url = URL.createObjectURL(blob);
     homeShotUrls.push(url);
     return { id: s.id,
-             info: `${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}`, url };
+             info: `${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}`, url,
+             similarity: s.similarity, idle: s.idle,
+             stalled: s.stalled, idle_over: s.idle_over };
   }));
   if (!box.isConnected) { items.forEach(it => URL.revokeObjectURL(it.url)); return; }
-  box.innerHTML = items.map((it, i) =>
-    `<img src="${it.url}" data-i="${i}" title="${esc(it.info)}">`).join("");
-  box.querySelectorAll("img").forEach(img =>
-    img.onclick = () => openModal(items.map(({ id, info }) => ({ id, info })), +img.dataset.i));
+  const hasStall = items.some(it => it.stalled);
+  box.innerHTML = (hasStall ? stallLegendHtml() : "")
+    + items.map((it, i) => shotFigureHtml(it, i)).join("");
+  box.querySelectorAll(".shot img").forEach(img =>
+    img.onclick = () => openModal(items.map(it =>
+      ({ id: it.id, info: it.info, similarity: it.similarity, idle: it.idle,
+         stalled: it.stalled, idle_over: it.idle_over })), +img.dataset.i));
+}
+
+/* ---------- 実績画像の「画面停滞(離席の可能性)」表示 ---------- */
+// 無操作秒を「N分」「N分M秒」に整形
+function fmtIdle(sec) {
+  if (sec == null) return "";
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? (s ? `${m}分${s}秒` : `${m}分`) : `${s}秒`;
+}
+// 画像に重ねるバッジ(⚠画面停滞 / 前と◯%一致)
+function shotBadges(it) {
+  let h = "";
+  if (it.stalled) h += `<span class="flag">⚠ 画面停滞</span>`;
+  if (it.similarity != null)
+    h += `<span class="cap${it.stalled ? " hi" : ""}">前と${it.similarity}%一致</span>`;
+  return h;
+}
+function shotFigureHtml(it, i) {
+  return `<span class="shot${it.stalled ? " stall" : ""}">`
+    + `<img src="${it.url}" data-i="${i}" title="${esc(it.info)}">${shotBadges(it)}</span>`;
+}
+function stallLegendHtml() {
+  return `<div class="stall-legend"><span class="sw"></span>
+    <span>赤枠＝<b>画面停滞</b>（直前の画像と一定以上一致が続いた＝離席の可能性）。数字は直前画像との一致率。</span></div>`;
+}
+// モーダル下部に出す停滞メタ情報のテキスト
+function modalMetaHtml(cur) {
+  const bits = [];
+  if (cur.similarity != null) bits.push(`前の画像と${cur.similarity}%一致`);
+  if (cur.idle != null) bits.push(`無操作 ${fmtIdle(cur.idle)}`);
+  const meta = bits.join("・");
+  if (cur.stalled)
+    return `<span style="color:#c62828;font-weight:700">⚠ 画面停滞（離席の可能性）</span>`
+      + (meta ? ` ｜ ${esc(meta)}` : "");
+  return meta ? `<span style="color:#64748b">${esc(meta)}</span>` : "";
 }
 
 /* ---------- メンバー管理 ---------- */
@@ -1261,9 +1335,12 @@ async function showDetail(userId, userName, month) {
     const segs = (d?.sessions || []).map(s => segHtml(s, false)).join("");
     const dots = (d?.screenshots || []).map(sh => {
       const i = dayShots.length;
-      dayShots.push({ id: sh.id, info: `${data.user.name} ${new Date(sh.taken_at).toLocaleString("ja-JP")}` });
-      return `<div class="dot" data-i="${i}" style="left:${pct(sh.taken_at)}%"
-              title="${new Date(sh.taken_at).toLocaleTimeString("ja-JP")}"></div>`;
+      dayShots.push({ id: sh.id, info: `${data.user.name} ${new Date(sh.taken_at).toLocaleString("ja-JP")}`,
+                      similarity: sh.similarity, idle: sh.idle, stalled: sh.stalled, idle_over: sh.idle_over });
+      const tip = new Date(sh.taken_at).toLocaleTimeString("ja-JP")
+        + (sh.stalled ? " ⚠画面停滞" : "") + (sh.similarity != null ? ` 一致${sh.similarity}%` : "");
+      return `<div class="dot${sh.stalled ? " stall" : ""}" data-i="${i}" style="left:${pct(sh.taken_at)}%"
+              title="${tip}"></div>`;
     }).join("");
     const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
     const jr = d?.has_journal
@@ -1349,8 +1426,11 @@ async function renderModalImage() {
   if (modalUrl) URL.revokeObjectURL(modalUrl);   // 前の画像のblob URLを解放
   modalUrl = URL.createObjectURL(blob);
   img.src = modalUrl;
-  $("modal-info").textContent =
-    `${cur.info}（${gallery.i + 1}/${gallery.list.length}）　画像をクリックでその位置を拡大（複数モニターは見たい画面をクリック）`;
+  const meta = modalMetaHtml(cur);
+  $("modal-info").innerHTML =
+    `${esc(cur.info)}（${gallery.i + 1}/${gallery.list.length}）`
+    + (meta ? `<br>${meta}` : "")
+    + `<br><span style="color:#9ca3af">画像をクリックでその位置を拡大（複数モニターは見たい画面をクリック）</span>`;
   $("modal-prev").disabled = gallery.i === 0;
   $("modal-next").disabled = gallery.i === gallery.list.length - 1;
 }

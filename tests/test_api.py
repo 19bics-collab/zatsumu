@@ -659,6 +659,17 @@ def _record_session(tmp_path, user_id, clock_in, clock_out):
         )
 
 
+def _record_screenshot(tmp_path, user_id, taken_at, *,
+                       similarity=None, stall=0, idle=None):
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute(
+            "INSERT INTO screenshots (user_id, taken_at, path, similarity, stall, idle) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, taken_at, f"{user_id}/x.jpg", similarity, stall, idle),
+        )
+
+
 def test_monthly_report_and_csv(client, users, tmp_path):
     worker, admin = users
     # 2026-05 に2日分、計3時間勤務 (UTC保存。JSTでも同日)
@@ -766,6 +777,18 @@ def test_user_monthly_detail(client, users, tmp_path):
     # 日またぎは 5/2 に1時間・5/3 に1時間として分割される
     assert days["2026-05-02"]["hours"] == 1.0
     assert days["2026-05-03"]["hours"] == 1.0
+
+    # 実績画像(タイムライン)に一致率・停滞フラグ・無操作情報が含まれる
+    _record_screenshot(tmp_path, worker["id"], "2026-05-01T01:00:00+00:00",
+                       similarity=98, stall=5, idle=600)   # 既定 alert_count=3 → 停滞
+    _record_screenshot(tmp_path, worker["id"], "2026-05-01T01:05:00+00:00",
+                       similarity=20, stall=0, idle=5)
+    data2 = client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
+                       headers=auth(admin)).json()
+    day1 = next(d for d in data2["days"] if d["date"] == "2026-05-01")
+    shots = {s["similarity"]: s for s in day1["screenshots"]}
+    assert shots[98]["stalled"] is True and shots[98]["idle_over"] is True
+    assert shots[20]["stalled"] is False and shots[20]["idle_over"] is False
 
     # 一般ユーザーは不可、存在しないユーザーは404
     assert client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
@@ -1398,6 +1421,13 @@ def test_screen_stall_alert_flow(client, users, monkeypatch):
     # 同じ画面が続いても連投しない(到達した瞬間のみ)
     assert up(same).status_code == 200
     assert len(alerts) == 1
+
+    # 実績画像(一覧API)にも1枚ごとの一致率・停滞フラグが付く
+    shots = client.get(f"/api/screenshots?user_id={worker['id']}",
+                       headers=auth(admin)).json()
+    assert all("stalled" in s and "idle_over" in s for s in shots)
+    assert any(s["stalled"] for s in shots)                 # stall>=2 の画像がある
+    assert any((s.get("similarity") or 0) >= 90 for s in shots)
 
     # 停滞中はステータス一覧に stalled フラグが立つ
     st = {u["name"]: u for u in
