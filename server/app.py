@@ -242,6 +242,7 @@ class SettingsPatch(BaseModel):
     daily_target_minutes: int | None = None
     notify_clock: bool | None = None
     notify_alert: bool | None = None
+    notify_journal: bool | None = None
     notify_stall: bool | None = None
     stall_threshold: int | None = None
     stall_alert_count: int | None = None
@@ -613,7 +614,8 @@ def _monthly_detail(conn, user, month: str) -> dict:
 
     mstart, mend = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
     journ = conn.execute(
-        "SELECT date FROM journals WHERE user_id = ? AND date >= ? AND date < ?",
+        "SELECT date FROM journals WHERE user_id = ? AND date >= ? AND date < ? "
+        "AND body != ''",   # 空にした日報(通知重複防止で残す行)は未提出扱い
         (user_id, mstart, mend),
     ).fetchall()
     journal_days = {r["date"] for r in journ}
@@ -672,6 +674,7 @@ def patch_settings(
         "daily_target_minutes": (0, 1440),
         "notify_clock": (0, 1),
         "notify_alert": (0, 1),
+        "notify_journal": (0, 1),
         "notify_stall": (0, 1),
         "stall_threshold": (50, 100),
         "stall_alert_count": (1, 100),
@@ -1100,17 +1103,34 @@ def put_my_journal(
     date = _valid_date(body.date)
     text = body.body.strip()
     if not text:
+        # 行は消さず本文だけ空にする。notified_at を残すことで「空にして書き直し」で
+        # 再通知するのを防ぐ。空の日報は body='' 判定で未提出扱い(has_journal/提出数)。
         conn.execute(
-            "DELETE FROM journals WHERE user_id = ? AND date = ?",
-            (user["id"], date),
+            "UPDATE journals SET body = '', updated_at = ? WHERE user_id = ? AND date = ?",
+            (now_iso(), user["id"], date),
         )
         return {"date": date, "body": ""}
+    # 既に通知済みか(=その日の日報の初回保存でないか)を保存前に確認する。
+    # notified_at は upsert で書き換えないので、編集で連投しない。
+    prev = conn.execute(
+        "SELECT notified_at FROM journals WHERE user_id = ? AND date = ?",
+        (user["id"], date),
+    ).fetchone()
+    already_notified = bool(prev and prev["notified_at"])
     conn.execute(
         "INSERT INTO journals (user_id, date, body, updated_at) VALUES (?, ?, ?, ?) "
         "ON CONFLICT(user_id, date) DO UPDATE SET body = excluded.body, "
         "updated_at = excluded.updated_at",
         (user["id"], date, text, now_iso()),
     )
+    # 日報が保存されたら通知先(mail_to)へ本文を送る。連投防止に1日1回だけ。
+    s = db.get_settings(conn)
+    if s["notify_journal"] and user["notify_enabled"] and not already_notified:
+        _notify(conn, f"📝 {user['name']} さんの日報（{date}）\n\n{text}")
+        conn.execute(
+            "UPDATE journals SET notified_at = ? WHERE user_id = ? AND date = ?",
+            (now_iso(), user["id"], date),
+        )
     return {"date": date, "body": text}
 
 

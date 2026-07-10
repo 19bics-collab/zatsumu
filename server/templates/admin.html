@@ -401,6 +401,10 @@
         <input type="checkbox" id="set-notify-clock"></label>
       <label class="set-row"><span>長時間在席を通知</span>
         <input type="checkbox" id="set-notify-alert"></label>
+      <label class="set-row"><span>日報が保存されたら通知</span>
+        <input type="checkbox" id="set-notify-journal"></label>
+      <p><small>スタッフがその日の日報を保存したら、下の通知先へ本文をメール（/Slack）します。
+      連投を防ぐため通知は1人1日1回です。</small></p>
       <label class="set-row"><span>Slack Webhook URL</span>
         <input type="text" id="set-slack" placeholder="https://hooks.slack.com/..."></label>
       <label class="set-row"><span>通知メール宛先（カンマ区切り）</span>
@@ -1214,6 +1218,7 @@ async function showSettings() {
   $("set-target").value = (s.daily_target_minutes / 60);
   $("set-notify-clock").checked = !!s.notify_clock;
   $("set-notify-alert").checked = !!s.notify_alert;
+  $("set-notify-journal").checked = !!s.notify_journal;
   $("set-notify-stall").checked = !!s.notify_stall;
   $("set-stall-threshold").value = s.stall_threshold;
   $("set-stall-count").value = s.stall_alert_count;
@@ -1251,6 +1256,7 @@ $("set-save").onclick = async () => {
     daily_target_minutes: Math.round(+$("set-target").value * 60),
     notify_clock: $("set-notify-clock").checked,
     notify_alert: $("set-notify-alert").checked,
+    notify_journal: $("set-notify-journal").checked,
     notify_stall: $("set-notify-stall").checked,
     stall_threshold: +$("set-stall-threshold").value,
     stall_alert_count: +$("set-stall-count").value,

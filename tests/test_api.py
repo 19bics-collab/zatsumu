@@ -94,6 +94,56 @@ def test_journal_flag_in_monthly(client, users):
     assert days["2026-05-03"]["has_journal"] is True
 
 
+def test_journal_email_notify(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    sent = []
+    monkeypatch.setattr(app_module, "_notify",
+                        lambda conn, text, member_email=None: sent.append(text))
+    # 既定で notify_journal は ON。初回保存で本人名+本文を通知先へ送る
+    r = client.put("/api/me/journal", headers=auth(worker),
+                   json={"date": "2026-05-01", "body": "清掃3件完了"})
+    assert r.status_code == 200
+    assert len(sent) == 1
+    assert "tanaka" in sent[0] and "清掃3件完了" in sent[0]
+    # 同じ日の編集では連投しない (1人1日1回)
+    client.put("/api/me/journal", headers=auth(worker),
+               json={"date": "2026-05-01", "body": "追記：明日は9時"})
+    assert len(sent) == 1
+    # OFF にすると通知しない
+    client.patch("/api/settings", headers=auth(admin), json={"notify_journal": False})
+    client.put("/api/me/journal", headers=auth(worker),
+               json={"date": "2026-05-02", "body": "別日の報告"})
+    assert len(sent) == 1
+    # notify_enabled OFF のメンバーは (ON に戻しても) 通知しない
+    client.patch("/api/settings", headers=auth(admin), json={"notify_journal": True})
+    client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                 json={"notify_enabled": False})
+    client.put("/api/me/journal", headers=auth(worker),
+               json={"date": "2026-05-03", "body": "通知OFFメンバーの日報"})
+    assert len(sent) == 1
+
+
+def test_journal_clear_resave_no_double_notify(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    sent = []
+    monkeypatch.setattr(app_module, "_notify",
+                        lambda conn, text, member_email=None: sent.append(text))
+    d = {"date": "2026-05-05"}
+    client.put("/api/me/journal", headers=auth(worker), json={**d, "body": "初回の日報"})
+    assert len(sent) == 1
+    # 空にして保存: 行は残り notified_at を保つ / has_journal からは外れる
+    client.put("/api/me/journal", headers=auth(worker), json={**d, "body": "   "})
+    detail = client.get(f"/api/users/{worker['id']}/monthly?month=2026-05",
+                        headers=auth(admin)).json()
+    days = {x["date"]: x for x in detail["days"]}
+    assert not (days.get("2026-05-05") or {}).get("has_journal")
+    # 書き直して保存しても同じ日は再通知しない
+    client.put("/api/me/journal", headers=auth(worker), json={**d, "body": "書き直した日報"})
+    assert len(sent) == 1
+
+
 def test_auth_required(client, users):
     assert client.post("/api/clock-in").status_code == 401
     assert client.post(

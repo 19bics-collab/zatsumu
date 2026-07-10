@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS journals (
     date TEXT NOT NULL,
     body TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    notified_at TEXT,             -- 日報通知を送った時刻 (NULL=未通知・重複通知防止)
     UNIQUE(user_id, date)
 );
 CREATE TABLE IF NOT EXISTS teams (
@@ -107,6 +108,7 @@ INT_SETTINGS = {
     "daily_target_minutes": 480,   # 1日の予定勤務時間(分) 既定8時間
     "notify_clock": 0,             # 着席/退席を通知するか
     "notify_alert": 1,             # 長時間在席を通知するか
+    "notify_journal": 1,           # 日報が保存されたら通知先(mail_to)へ通知するか
     "notify_stall": 1,             # 画面が変化しない(停滞)場合に通知するか
     "stall_threshold": 95,         # 直前のキャプチャとの一致率がこの%以上で「同じ画面」
     "stall_alert_count": 3,        # 同じ画面が連続でこの回数続いたら通知
@@ -197,6 +199,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE sessions ADD COLUMN clockout_reminded INTEGER NOT NULL DEFAULT 0"
         )
+    jcols = [r["name"] for r in conn.execute("PRAGMA table_info(journals)")]
+    if "notified_at" not in jcols:  # 日報通知済み時刻(重複通知防止・NULLなら未通知)
+        conn.execute("ALTER TABLE journals ADD COLUMN notified_at TEXT")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
 
