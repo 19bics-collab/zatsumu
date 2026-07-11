@@ -142,7 +142,7 @@ $env:ZATSUMU_DATA_DIR = "C:\zatsumu-data"
 .venv\Scripts\python manage.py add-user 管理者 --admin
 ```
 
-3. 常駐化: タスクスケジューラで「スタートアップ時」に以下を実行するタスクを登録
+3. 常騐化: タスクスケジューラーで「スタートアップ時」に以下を実行するタスクを登録
    （環境変数 `ZATSUMU_DATA_DIR=C:\zatsumu-data` をタスクに設定）:
 
 ```
@@ -151,7 +151,7 @@ C:\zatsumu\.venv\Scripts\uvicorn.exe server.app:app --host 127.0.0.1 --port 8000
 
 4. HTTPS: [Caddy の Windows 版](https://caddyserver.com/download) をダウンロードし、
    `deploy/Caddyfile.host` の内容（ドメイン名を書き換え）で起動。こちらも
-   タスクスケジューラで常駐化します。
+   タスクスケジューラーで常騐化します。
 
 ---
 
@@ -160,7 +160,7 @@ C:\zatsumu\.venv\Scripts\uvicorn.exe server.app:app --host 127.0.0.1 --port 8000
 [Render](https://render.com) にアカウントを作り、この GitHub リポジトリを連携する
 だけでデプロイできます（リポジトリ直下の `render.yaml` を自動で読み込みます）。
 
-- 費用: Starter プラン + 1GB ディスクで月 $7〜8 程度
+- 費用: Starter プラン + 1GB ディスクで月 $7～8 程度
 - ドメインは Render が `xxx.onrender.com` を無料で発行（独自ドメインも設定可）
 - ユーザー作成は Render ダッシュボードの「Shell」タブから
   `python manage.py add-user 管理者 --admin`
@@ -238,10 +238,17 @@ sudo tar czf zatsumu-backup.tar.gz /var/lib/zatsumu
 
 cron などで毎日実行し、別の場所に保管してください。
 
-### トークンの再発行
+### トークンの再発行・管理者の復旧
 
-現状は再発行コマンドが無いため、`add-user` で新しい名前のユーザーを作るか、
-DB を直接更新します（必要なら再発行コマンドを追加実装できます）。
+- 通常は管理画面の「メンバー管理 → トークン再発行」で再発行できます。
+- **管理者トークンを紛失し、他に管理者がいない場合**は、サーバ上で CLI を使います
+  （パターンAは `sudo docker compose exec app`、Bは venv の python を前に付けて実行）:
+
+  ```bash
+  python manage.py list-users              # ユーザー名を確認
+  python manage.py reset-token 管理者       # トークンを再発行して表示
+  python manage.py make-admin 田中          # 既存ユーザーを管理者に昇格
+  ```
 
 ### うまくいかないとき
 
