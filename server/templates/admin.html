@@ -78,6 +78,18 @@
               align-items: center; margin: .2rem 0; font-size: .85rem; }
   .hbar { height: 16px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
   .hbar > div { height: 100%; border-radius: 4px; }
+  /* 個人ページ: 作業区分ごとの在席時間 */
+  .cat-bd { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 8px;
+            padding: .7rem 1rem; margin: .2rem 0 .8rem; }
+  .cat-bd-title { font-size: .85rem; font-weight: 600; color: #374151; margin-bottom: .5rem; }
+  .cat-bd-row { display: grid; grid-template-columns: 8rem 1fr 7rem; gap: .6rem;
+                align-items: center; margin: .3rem 0; font-size: .85rem; }
+  .cat-bd-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cat-bd-sw { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px;
+               vertical-align: middle; margin-right: .35rem; }
+  .cat-bd-bar { height: 14px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+  .cat-bd-bar > span { display: block; height: 100%; border-radius: 4px; }
+  .cat-bd-val { text-align: right; color: #475569; white-space: nowrap; }
   small { color: #777; }
   button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
            background: #2563eb; color: #fff; cursor: pointer; font-size: .9rem; }
@@ -308,6 +320,8 @@
     <button id="rep-csv-monthly" class="ghost">月次集計CSV</button>
     <button id="rep-csv-payroll" class="ghost">給与用CSV</button>
     <button id="rep-csv-daily" class="ghost">日別集計CSV</button>
+    <button id="rep-csv-daily-cat" class="ghost">日別×区分CSV</button>
+    <button id="rep-csv-category" class="ghost">区分別集計CSV</button>
     <button id="rep-csv-sessions" class="ghost">在席データCSV</button>
     <button id="rep-csv-audit" class="ghost">修正履歴CSV</button>
   </div>
@@ -463,6 +477,7 @@
     <button id="add-session" class="ghost">＋打刻を追加</button>
   </div>
   <div id="cat-legend" style="margin:.4rem 0"></div>
+  <div id="cat-breakdown"></div>
   <div class="tl-scale"><div></div><div></div><div id="scale"></div></div>
   <div class="tl-wrap" id="timeline"></div>
   <p><small>青=在席（斜線は勤務中・クリックで修正）、<span style="color:#f59e0b">●</span>=画面キャプチャ（クリックで表示、←→で前後に移動）、<span style="color:#c62828;font-weight:700">●</span>=<b style="color:#c62828">画面停滞</b>（画面が動いていない＝離席の可能性）。</small></p>
@@ -1205,6 +1220,8 @@ $("rep-next").onclick = () => showReport(shiftMonth(repMonth, 1));
 $("rep-csv-monthly").onclick = () => downloadCsv(`/api/reports/monthly.csv?month=${repMonth}`, `zatsumu_${repMonth}.csv`);
 $("rep-csv-payroll").onclick = () => downloadCsv(`/api/reports/payroll.csv?month=${repMonth}`, `zatsumu_payroll_${repMonth}.csv`);
 $("rep-csv-daily").onclick = () => downloadCsv(`/api/reports/daily.csv?month=${repMonth}`, `zatsumu_daily_${repMonth}.csv`);
+$("rep-csv-daily-cat").onclick = () => downloadCsv(`/api/reports/daily-by-category.csv?month=${repMonth}`, `zatsumu_daily_category_${repMonth}.csv`);
+$("rep-csv-category").onclick = () => downloadCsv(`/api/reports/category.csv?month=${repMonth}`, `zatsumu_category_${repMonth}.csv`);
 $("rep-csv-sessions").onclick = () => downloadCsv(`/api/reports/sessions.csv?month=${repMonth}`, `zatsumu_sessions_${repMonth}.csv`);
 $("rep-csv-audit").onclick = () => downloadCsv(`/api/reports/audit.csv?month=${repMonth}`, `zatsumu_audit_${repMonth}.csv`);
 
@@ -1364,6 +1381,18 @@ async function showDetail(userId, userName, month) {
        <span style="display:inline-block;width:.9rem;height:.9rem;border-radius:2px;
        background:${catColor(c)};vertical-align:middle"></span>
        ${esc(c)} ${bc[c] ? "<strong>" + bc[c] + "h</strong>" : ""}</span>`).join("");
+  // 作業区分ごとの在席時間(当月): 設定に無い区分・未分類も漏れなく多い順に表示
+  const catRows = Object.entries(bc).filter(([, h]) => h > 0).sort((a, b) => b[1] - a[1]);
+  const catTotal = catRows.reduce((s, [, h]) => s + h, 0);
+  $("cat-breakdown").innerHTML = catRows.length ? `<div class="cat-bd">
+    <div class="cat-bd-title">作業区分ごとの在席時間（当月 合計 ${Math.round(catTotal * 10) / 10}h）</div>
+    ${catRows.map(([c, h]) => {
+      const p = catTotal ? Math.round(h / catTotal * 100) : 0;
+      return `<div class="cat-bd-row">
+        <span class="cat-bd-name"><span class="cat-bd-sw" style="background:${catColor(c)}"></span>${esc(c)}</span>
+        <span class="cat-bd-bar"><span style="width:${p}%;background:${catColor(c)}"></span></span>
+        <span class="cat-bd-val">${h}h・${p}%</span></div>`;
+    }).join("")}</div>` : "";
 
   const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
   const [y, m] = month.split("-").map(Number);

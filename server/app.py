@@ -1658,6 +1658,38 @@ def daily_csv_api(
     )
 
 
+@app.get("/api/reports/daily-by-category.csv", response_class=PlainTextResponse)
+def daily_by_category_csv_api(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """日別×区分: 日付・メンバー・作業区分ごとの在席時間 (縦持ち・ピボット向き)."""
+    month = _validate_month(month)
+    return Response(
+        content="﻿" + reports.daily_by_category_csv(conn, month),  # Excel 用 BOM
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="zatsumu_daily_category_{month}.csv"'
+        },
+    )
+
+
+@app.get("/api/reports/category.csv", response_class=PlainTextResponse)
+def category_csv_api(
+    month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """区分別集計(月次): メンバー×作業区分の合計時間マトリクス."""
+    month = _validate_month(month)
+    return Response(
+        content="﻿" + reports.category_totals_csv(conn, month),  # Excel 用 BOM
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="zatsumu_category_{month}.csv"'
+        },
+    )
+
+
 @app.get("/api/reports/audit.csv", response_class=PlainTextResponse)
 def audit_csv(
     month: str | None = None, _admin=Depends(require_admin), conn=Depends(get_conn)

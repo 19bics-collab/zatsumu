@@ -172,6 +172,78 @@ def daily_csv(conn: sqlite3.Connection, month: str) -> str:
     return buf.getvalue()
 
 
+def _seg_hours_by_date_user_cat(conn: sqlite3.Connection, month: str) -> dict:
+    """{(date, user_id, category): 在席時間} を集計 (日跨ぎはローカル日付で分割)."""
+    start, end = tz.month_window(month)
+    now = datetime.now(timezone.utc)
+    agg: dict[tuple, float] = {}
+    seen_cats: set[str] = set()
+    for s in _month_sessions(conn, month):
+        cat = s["category"] or "未分類"
+        seen_cats.add(cat)
+        for seg_start, seg_end, _open in tz.day_segments(
+            s["clock_in"], s["clock_out"], start, end, now
+        ):
+            h = (seg_end - seg_start).total_seconds() / 3600
+            key = (seg_start.date().isoformat(), s["user_id"], cat)
+            agg[key] = agg.get(key, 0.0) + h
+    return agg, seen_cats
+
+
+def _ordered_categories(conn: sqlite3.Connection, seen: set) -> list:
+    """列順: 設定の作業区分順 → データにしかない区分 → 未分類 を最後に."""
+    from . import db
+    configured = db.work_categories(conn)
+    # 設定が重複区分名を含んでも列が重複しないよう順序保持で dedup する
+    ordered = [c for c in dict.fromkeys(configured) if c in seen]
+    extras = sorted(c for c in seen if c not in configured and c != "未分類")
+    return ordered + extras + (["未分類"] if "未分類" in seen else [])
+
+
+def daily_by_category_csv(conn: sqlite3.Connection, month: str) -> str:
+    """日別×区分: 日付・メンバー・作業区分ごとの在席時間 (縦持ち・ピボット向き)."""
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM users")}
+    agg, _ = _seg_hours_by_date_user_cat(conn, month)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["日付", "メンバー", "作業区分", "在席時間(h)", "在席時間(時:分)"])
+    for date, uid, cat in sorted(
+        agg, key=lambda k: (k[0], names.get(k[1], ""), k[2])
+    ):
+        h = agg[(date, uid, cat)]
+        if h <= 0:
+            continue
+        writer.writerow([date, names.get(uid, uid), cat, round(h, 2), _hhmm(h)])
+    return buf.getvalue()
+
+
+def category_totals_csv(conn: sqlite3.Connection, month: str) -> str:
+    """区分別集計(月次): メンバー × 作業区分 の合計時間マトリクス (末尾に合計列)."""
+    names = {
+        r["id"]: r["name"]
+        for r in conn.execute("SELECT id, name FROM users ORDER BY name")
+    }
+    agg, seen = _seg_hours_by_date_user_cat(conn, month)
+    cats = _ordered_categories(conn, seen)
+    # メンバーごとに区分別合計へ畳み込む
+    per: dict[int, dict[str, float]] = {}
+    for (date, uid, cat), h in agg.items():
+        d = per.setdefault(uid, {})
+        d[cat] = d.get(cat, 0.0) + h
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["メンバー"] + cats + ["合計"])
+    for uid, name in sorted(names.items(), key=lambda kv: kv[1]):
+        row = per.get(uid)
+        if not row:
+            continue
+        # 各セルを先に丸め、合計は「表示セルの和」にして表と合計を一致させる
+        rounded = {c: round(row[c], 2) for c in cats if c in row}
+        vals = [rounded.get(c, "") for c in cats]
+        writer.writerow([name] + vals + [round(sum(rounded.values()), 2)])
+    return buf.getvalue()
+
+
 def sessions_csv(conn: sqlite3.Connection, month: str) -> str:
     """在席データ: 当月の全打刻 (着席/退席) を生データで出力する."""
     tz.month_window(month)  # validate

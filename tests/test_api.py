@@ -876,6 +876,48 @@ def test_sessions_csv(client, users, tmp_path):
     assert "作業区分" in r.text
 
 
+def test_category_csv_exports(client, users, tmp_path):
+    from server import db
+    worker, admin = users
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        for ci, co, cat in [
+            ("2026-05-01T00:00:00+00:00", "2026-05-01T02:00:00+00:00", "事務作業"),
+            ("2026-05-01T03:00:00+00:00", "2026-05-01T04:00:00+00:00", "現場"),
+            ("2026-05-02T00:00:00+00:00", "2026-05-02T01:00:00+00:00", "現場"),
+        ]:
+            conn.execute(
+                "INSERT INTO sessions (user_id, clock_in, clock_out, category) "
+                "VALUES (?, ?, ?, ?)", (worker["id"], ci, co, cat))
+    # 日別×区分 (縦持ち): 日付・メンバー・作業区分・時間
+    r = client.get("/api/reports/daily-by-category.csv?month=2026-05",
+                   headers=auth(admin))
+    assert r.status_code == 200
+    body = r.text
+    assert "日付" in body and "作業区分" in body
+    assert "事務作業" in body and "現場" in body and "tanaka" in body
+    assert "2026-05-01" in body and "2026-05-02" in body
+    # 区分別集計(月次マトリクス): メンバー×区分の合計
+    r2 = client.get("/api/reports/category.csv?month=2026-05", headers=auth(admin))
+    assert r2.status_code == 200
+    assert "メンバー" in r2.text and "合計" in r2.text
+    assert "事務作業" in r2.text and "現場" in r2.text and "tanaka" in r2.text
+    # 列重複なし & 合計=表示セルの和 (丸め順を統一)
+    import csv as _csv
+    import io as _io
+    grid = list(_csv.reader(_io.StringIO(r2.text.lstrip("﻿"))))
+    header, ti = grid[0], grid[0].index("合計")
+    assert header.count("事務作業") == 1 and header.count("現場") == 1
+    for gr in grid[1:]:
+        if gr and gr[0]:
+            cells = [float(x) for x in gr[1:ti] if x != ""]
+            assert abs(sum(cells) - float(gr[ti])) < 1e-9
+    # 一般ユーザーは不可
+    assert client.get("/api/reports/daily-by-category.csv?month=2026-05",
+                      headers=auth(worker)).status_code == 403
+    assert client.get("/api/reports/category.csv?month=2026-05",
+                      headers=auth(worker)).status_code == 403
+
+
 def test_clock_in_with_category_and_switch(client, users):
     worker, admin = users
     # 既定の区分一覧
