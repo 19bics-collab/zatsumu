@@ -331,6 +331,21 @@
   <h2>設定 <small>（撮影設定はクライアントの次の撮影サイクルから自動反映されます）</small></h2>
   <div class="settings-grid">
     <div class="set-card">
+      <h3>管理者トークン（あなたのログイン用）</h3>
+      <p style="margin:.2rem 0 .6rem"><small>この端末でログイン中の<b>あなた自身</b>のトークンです。
+      別の端末・ブラウザで管理画面にログインするときに使います。
+      <b style="color:#c62828">他人には渡さないでください</b>（このトークンで管理者としてログインできます）。</small></p>
+      <code id="my-token" data-shown="0" style="display:block;background:#f3f4f6;padding:.7rem;
+        border-radius:6px;font-size:.9rem;word-break:break-all">••••••••</code>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
+        <button type="button" class="ghost" id="my-token-show">表示</button>
+        <button type="button" class="ghost" id="my-token-copy">トークンをコピー</button>
+        <button type="button" class="ghost" id="my-token-url">ログインURLをコピー</button>
+      </div>
+      <p style="margin:.6rem 0 0"><small>「ログインURLをコピー」で <code>/admin#token=…</code> 付きのURLをコピーできます。
+      そのURLを別端末で開けば、トークン入力なしでログインできます（URLの取り扱いにも注意）。</small></p>
+    </div>
+    <div class="set-card">
       <h3>会社・表示</h3>
       <label class="set-row"><span>会社名／サービス名</span>
         <input type="text" id="set-company" maxlength="40"></label>
@@ -1202,6 +1217,10 @@ function freqHint() {
 }
 async function showSettings() {
   switchView("settings");
+  // 管理者トークンは開くたびに伏せ字に戻す(肩越しの覗き見対策)
+  $("my-token").textContent = "••••••••";
+  $("my-token").dataset.shown = "0";
+  $("my-token-show").textContent = "表示";
   const s = await apiJson("/api/settings");
   $("set-company").value = s.company_name;
   $("set-tz").value = s.timezone;
@@ -1509,6 +1528,17 @@ $("nav-journal").onclick = () => showJournal();
 $("nav-leave").onclick = () => showLeave();
 $("nav-report").onclick = () => showReport();
 $("nav-settings").onclick = () => showSettings();
+/* 管理者トークン(自分のログイン用)の表示・コピー */
+const myToken = () => localStorage.getItem(KEY) || "";
+$("my-token-show").onclick = () => {
+  const el = $("my-token"), shown = el.dataset.shown === "1";
+  el.textContent = shown ? "••••••••" : (myToken() || "(トークンを取得できませんでした)");
+  el.dataset.shown = shown ? "0" : "1";
+  $("my-token-show").textContent = shown ? "表示" : "隠す";
+};
+$("my-token-copy").onclick = () => copyFlash($("my-token-copy"), myToken());
+$("my-token-url").onclick = () => copyFlash($("my-token-url"),
+  location.origin + "/admin#token=" + encodeURIComponent(myToken()));
 $("back-home").onclick = () => showHome();
 $("prev-month").onclick = () => showDetail(view.userId, view.userName, shiftMonth(view.month, -1));
 $("next-month").onclick = () => showDetail(view.userId, view.userName, shiftMonth(view.month, 1));
