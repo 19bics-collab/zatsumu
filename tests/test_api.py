@@ -565,10 +565,12 @@ def test_daily_csv(client, users, tmp_path):
     r = client.get("/api/reports/daily.csv?month=2026-05", headers=auth(admin))
     assert r.status_code == 200
     lines = r.text.strip().splitlines()
-    assert lines[0].lstrip("﻿") == "日付,tanaka"
-    assert "2026-05-01,3.0" in r.text
-    assert "2026-05-02,1.5" in r.text
+    assert lines[0].lstrip("﻿") == "日付,tanaka,合計"
+    assert "2026-05-01,3.0,3.0" in r.text   # 右端に各日の合計
+    assert "2026-05-02,1.5,1.5" in r.text
     assert len([l for l in lines if l.startswith("2026-05")]) == 31  # 全日分
+    # 末尾に各メンバーの月合計行 (tanaka=4.5, 総合計=4.5)
+    assert lines[-1].startswith("合計,4.5") and lines[-1].endswith(",4.5")
 
 
 def test_target_hours_overtime_shortfall(client, users, tmp_path):
@@ -893,9 +895,24 @@ def test_category_csv_exports(client, users, tmp_path):
                    headers=auth(admin))
     assert r.status_code == 200
     body = r.text
-    assert "日付" in body and "作業区分" in body
+    assert "日付" in body and "作業区分" in body and "当日合計(h)" in body
     assert "事務作業" in body and "現場" in body and "tanaka" in body
     assert "2026-05-01" in body and "2026-05-02" in body
+    # 5/1 は 事務2h+現場1h=当日合計3.0 が各行の右端に付く
+    assert "2026-05-01,tanaka,事務作業,2.0,2:00,3.0" in body
+    # 当日合計(h) = その(日,人)の区分別セル(在席時間(h))の和 に一致する
+    import csv as _c
+    import io as _i
+    dg = list(_c.reader(_i.StringIO(body.lstrip("﻿"))))
+    hi = {name: dg[0].index(name) for name in ("在席時間(h)", "当日合計(h)")}
+    dm = {}
+    for gr in dg[1:]:
+        if not gr or not gr[0]:
+            continue
+        dm.setdefault((gr[0], gr[1]), [0.0, float(gr[hi["当日合計(h)"]])])
+        dm[(gr[0], gr[1])][0] += float(gr[hi["在席時間(h)"]])
+    for (date, name), (cell_sum, day_total) in dm.items():
+        assert abs(round(cell_sum, 2) - day_total) < 1e-9
     # 区分別集計(月次マトリクス): メンバー×区分の合計
     r2 = client.get("/api/reports/category.csv?month=2026-05", headers=auth(admin))
     assert r2.status_code == 200

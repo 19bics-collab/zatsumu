@@ -70,9 +70,13 @@
   .rep-bar .fill.over { background: #f59e0b; border-radius: 0 4px 4px 0; }
   .rep-bar .tmark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #0f172a; }
   .rep-sub { margin: 1rem 0 .3rem; font-size: .9rem; font-weight: 600; color: #334155; }
-  .daily-chart { display: flex; align-items: flex-end; gap: 2px; height: 96px;
+  .daily-chart { display: flex; align-items: stretch; gap: 2px; height: 110px;
                  padding: .3rem 0; border-bottom: 1px solid #e2e8f0; }
-  .daily-chart .d { flex: 1 1 0; background: #93c5fd; border-radius: 2px 2px 0 0; min-height: 1px; }
+  .daily-chart .dcol { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+                       justify-content: flex-end; }
+  .daily-chart .dnum { font-size: .58rem; color: #64748b; text-align: center;
+                       line-height: 1; margin-bottom: 1px; height: .8rem; }
+  .daily-chart .d { background: #93c5fd; border-radius: 2px 2px 0 0; min-height: 1px; }
   .daily-chart .d.we { background: #fca5a5; }
   .hbar-row { display: grid; grid-template-columns: 9rem 1fr 4.5rem; gap: .5rem;
               align-items: center; margin: .2rem 0; font-size: .85rem; }
@@ -90,6 +94,12 @@
   .cat-bd-bar { height: 14px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
   .cat-bd-bar > span { display: block; height: 100%; border-radius: 4px; }
   .cat-bd-val { text-align: right; color: #475569; white-space: nowrap; }
+  /* 個人ページ: 各日のタイムライン下に出す作業区分別の内訳 */
+  .day-cats { display: flex; flex-wrap: wrap; gap: .05rem .6rem; margin-top: .2rem;
+              font-size: .72rem; color: #64748b; }
+  .day-cats .dcat { white-space: nowrap; }
+  .day-cats .dcat-sw { display: inline-block; width: .6rem; height: .6rem; border-radius: 2px;
+                       vertical-align: middle; margin-right: .2rem; }
   small { color: #777; }
   button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
            background: #2563eb; color: #fff; cursor: pointer; font-size: .9rem; }
@@ -199,6 +209,8 @@
     .tl.mini { min-width: 100px; }
     .month-nav { gap: .5rem; }
     .month-nav strong { font-size: 1.1rem; }
+    /* 日別グラフの数値はスマホでは棒が細く重なるので隠す(タップで数値は出る) */
+    .daily-chart .dnum { display: none; }
   }
   /* スマホ(≤640px)は横長テーブルを「1行=1カード」に縦積みし、横スクロール自体を無くす。
      各セルは見出し(data-label)を上に付けて縦に並べるので、右端で見切れない */
@@ -1200,8 +1212,11 @@ async function showReport(month) {
   $("rep-daily").innerHTML = `<div class="daily-chart">` + sum.daily.map(d => {
     const dow = new Date(d.date + "T00:00").getDay();
     const we = dow === 0 || dow === 6 ? " we" : "";
-    return `<div class="d${we}" style="height:${Math.round(d.hours / maxD * 100)}%"
-            title="${d.date}: ${d.hours}h"></div>`;
+    const label = d.hours ? Math.round(d.hours * 10) / 10 : "";
+    // 棒は最大84%まで(上の数値ラベル .dnum の高さ分の余白を残す)。相対比較は保たれる
+    return `<div class="dcol" title="${d.date}: ${d.hours}h">
+      <span class="dnum">${label}</span>
+      <div class="d${we}" style="height:${Math.round(d.hours / maxD * 84)}%"></div></div>`;
   }).join("") + `</div>`;
   const cats = Object.entries(sum.by_category).sort((a, b) => b[1] - a[1]);
   const maxC = Math.max(1, ...cats.map(c => c[1]));
@@ -1359,6 +1374,22 @@ async function downloadCsv(path, filename) {
 }
 
 /* ---------- 個人ページ (日別タイムライン) ---------- */
+// その日のセッションを作業区分別に合算し、色付きの小さな内訳を返す
+function dayCatHtml(d) {
+  if (!d || !(d.sessions || []).length) return "";
+  const by = {};
+  d.sessions.forEach(s => {
+    const h = (new Date(s.end) - new Date(s.start)) / 3600e3;
+    const c = s.category || "未分類";
+    by[c] = (by[c] || 0) + h;
+  });
+  const parts = Object.entries(by).filter(([, h]) => h > 0.004)
+    .sort((a, b) => b[1] - a[1])
+    .map(([c, h]) => `<span class="dcat"><span class="dcat-sw"
+        style="background:${catColor(c)}"></span>${esc(c)} ${Math.round(h * 10) / 10}h</span>`);
+  return parts.length ? `<div class="day-cats">${parts.join("")}</div>` : "";
+}
+
 async function showDetail(userId, userName, month) {
   view = { ...view, userId, userName, month };
   const data = await apiJson(`/api/users/${userId}/monthly?month=${month}`);
@@ -1425,7 +1456,7 @@ async function showDetail(userId, userName, month) {
       <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})${jr}${lv}</div>
       <div>${d ? d.hours + " h" : ""}${d && d.over != null && Math.abs(d.over) >= 0.01
         ? `<br><small style="color:${d.over > 0 ? "#c2410c" : "#1565c0"}">${d.over > 0 ? "+" : "−"}${Math.abs(d.over)}</small>` : ""}</div>
-      <div class="tl">${work}${grid}${segs}${dots}</div>
+      <div><div class="tl">${work}${grid}${segs}${dots}</div>${dayCatHtml(d)}</div>
     </div>`;
   }
   $("timeline").innerHTML = html;

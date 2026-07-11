@@ -160,15 +160,27 @@ def daily_csv(conn: sqlite3.Connection, month: str) -> str:
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["日付"] + [u["name"] for u in users])
+    writer.writerow(["日付"] + [u["name"] for u in users] + ["合計"])
+    member_totals = {u["id"]: 0.0 for u in users}
     day = start
     while day < end:
         key = day.date().isoformat()
         row = hours.get(key, {})
-        writer.writerow(
-            [key] + [round(row[u["id"]], 2) if u["id"] in row else "" for u in users]
-        )
+        # 各セルを丸め、右端の「合計」は表示セルの和にして表と一致させる。
+        # 丸めて 0 になるセルは表示せず(空欄)、合計とゼロ扱いを揃える。
+        cells = {u["id"]: round(row[u["id"]], 2) for u in users
+                 if u["id"] in row and round(row[u["id"]], 2) > 0}
+        vals = [cells.get(u["id"], "") for u in users]
+        day_total = round(sum(cells.values()), 2)
+        for uid, h in cells.items():
+            member_totals[uid] += h
+        writer.writerow([key] + vals + [day_total if cells else ""])
         day += timedelta(days=1)
+    # 末尾に各メンバーの月合計行 (最右は総合計)
+    mvals = [round(member_totals[u["id"]], 2) if member_totals[u["id"]] else ""
+             for u in users]
+    grand = round(sum(member_totals.values()), 2)
+    writer.writerow(["合計"] + mvals + [grand])
     return buf.getvalue()
 
 
@@ -204,16 +216,26 @@ def daily_by_category_csv(conn: sqlite3.Connection, month: str) -> str:
     """日別×区分: 日付・メンバー・作業区分ごとの在席時間 (縦持ち・ピボット向き)."""
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM users")}
     agg, _ = _seg_hours_by_date_user_cat(conn, month)
+    # (日付, メンバー) ごとの当日合計 (全区分の合算) を右端に添える。
+    # 各区分セルは丸めて表示するので、当日合計も丸め済みセルの和にして表と一致させる。
+    day_member: dict[tuple, float] = {}
+    for (date, uid, cat), h in agg.items():
+        day_member[(date, uid)] = day_member.get((date, uid), 0.0) + round(h, 2)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["日付", "メンバー", "作業区分", "在席時間(h)", "在席時間(時:分)"])
+    writer.writerow(
+        ["日付", "メンバー", "作業区分", "在席時間(h)", "在席時間(時:分)", "当日合計(h)"]
+    )
     for date, uid, cat in sorted(
         agg, key=lambda k: (k[0], names.get(k[1], ""), k[2])
     ):
         h = agg[(date, uid, cat)]
         if h <= 0:
             continue
-        writer.writerow([date, names.get(uid, uid), cat, round(h, 2), _hhmm(h)])
+        writer.writerow([
+            date, names.get(uid, uid), cat, round(h, 2), _hhmm(h),
+            round(day_member[(date, uid)], 2),
+        ])
     return buf.getvalue()
 
 
