@@ -1,0 +1,1621 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zatsumu 管理画面</title>
+<style>
+  :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
+  html { font-size: 17px; -webkit-text-size-adjust: 100%; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7;
+         overflow-x: hidden; }  /* iPhoneで横にはみ出さない安全網 */
+  header { background: #1f2937; color: #fff; padding: .7rem 1.5rem;
+           display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  header h1 { font-size: 1.3rem; margin: 0; margin-right: 1rem; }
+  header .spacer { flex: 1; }
+  header button { background: #4b5563; }
+  header button.active { background: #2563eb; }
+  main { padding: 1.5rem; max-width: 1320px; margin: 0 auto; }
+  h2 { font-size: 1.15rem; color: #374151; }
+  table { border-collapse: collapse; background: #fff; width: 100%;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); font-size: 1rem; }
+  /* 横長テーブルはスマホで横スクロールにし、画面外にはみ出さない。
+     overflow-x:auto は overflow-y も auto 扱いになるため、テーブルの影が
+     切れないよう僅かな余白を確保する */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch;
+                padding: 3px 3px 6px; }
+  th, td { padding: .7rem 1rem; border-bottom: 1px solid var(--line); text-align: left; }
+  th { background: #f9fafb; font-size: .85rem; color: #6b7280; }
+  .badge { display: inline-block; padding: .25rem .8rem; border-radius: 99px;
+           color: #fff; font-size: .9rem; font-weight: 600; white-space: nowrap; }
+  .badge.seated { background: var(--seated); }
+  .badge.away { background: var(--away); }
+  .badge.gray { background: #9ca3af; }
+  tr.user-row td.click { cursor: pointer; }
+  tr.user-row:hover { background: #f0f6ff; }
+  .shots { display: flex; flex-wrap: wrap; }
+  .shots .shot { position: relative; margin: 5px; }
+  .shots img { height: 150px; border: 1px solid #ddd;
+               border-radius: 4px; cursor: pointer; display: block; }
+  .shot.stall img { border: 3px solid var(--away); }
+  /* 実績画像に重ねる「前と◯%一致」「⚠画面停滞」バッジ */
+  .shot .cap { position: absolute; left: 5px; bottom: 5px; padding: .06rem .4rem;
+               border-radius: 4px; font-size: .68rem; font-weight: 700; color: #fff;
+               background: rgba(15,23,42,.72); }
+  .shot .cap.hi { background: rgba(198,40,40,.9); }
+  .shot .flag { position: absolute; left: 5px; top: 5px; padding: .1rem .45rem;
+                border-radius: 4px; font-size: .68rem; font-weight: 700; color: #fff;
+                background: var(--away); box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+  .stall-legend { font-size: .8rem; color: #64748b; margin: .1rem 0 .5rem;
+                  display: flex; align-items: center; gap: .4rem; flex-wrap: wrap;
+                  flex-basis: 100%; }  /* .shots(flex)内で必ず1行目・全幅に */
+  .stall-legend .sw { display: inline-block; width: .85rem; height: .85rem;
+                      border-radius: 3px; background: var(--away); vertical-align: middle; }
+  .cap-group { border: 1px solid #e2e8f0; border-radius: 8px; margin: .5rem 0;
+               background: #fff; }
+  .cap-group summary { cursor: pointer; padding: .7rem 1rem; font-weight: 600;
+               list-style: none; display: flex; align-items: center; gap: .6rem; }
+  .cap-group summary::-webkit-details-marker { display: none; }
+  .cap-group summary::before { content: "▸"; color: #64748b; transition: transform .15s; }
+  .cap-group[open] summary::before { transform: rotate(90deg); }
+  .cap-group .shots { padding: 0 .6rem .6rem; }
+  .cap-meta { font-weight: 400; color: #64748b; font-size: .82rem; margin-left: auto; }
+  .cap-hint { color: #94a3b8; font-size: .85rem; padding: .3rem .5rem; display: inline-block; }
+  .rep-legend { font-size: .8rem; color: #64748b; margin: .2rem 0 .6rem; }
+  .rep-bar-row { display: grid; grid-template-columns: 9rem 1fr 8.5rem; gap: .5rem;
+                 align-items: center; margin: .28rem 0; font-size: .85rem; }
+  .rep-bar { position: relative; height: 18px; background: #f1f5f9; border-radius: 4px; }
+  .rep-bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #16a34a;
+                   border-radius: 4px 0 0 4px; }
+  .rep-bar .fill.over { background: #f59e0b; border-radius: 0 4px 4px 0; }
+  .rep-bar .tmark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #0f172a; }
+  .rep-sub { margin: 1rem 0 .3rem; font-size: .9rem; font-weight: 600; color: #334155; }
+  .daily-chart { display: flex; align-items: stretch; gap: 2px; height: 110px;
+                 padding: .3rem 0; border-bottom: 1px solid #e2e8f0; }
+  .daily-chart .dcol { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+                       justify-content: flex-end; }
+  .daily-chart .dnum { font-size: .58rem; color: #64748b; text-align: center;
+                       line-height: 1; margin-bottom: 1px; height: .8rem; }
+  .daily-chart .d { background: #93c5fd; border-radius: 2px 2px 0 0; min-height: 1px; }
+  .daily-chart .d.we { background: #fca5a5; }
+  .hbar-row { display: grid; grid-template-columns: 9rem 1fr 4.5rem; gap: .5rem;
+              align-items: center; margin: .2rem 0; font-size: .85rem; }
+  .hbar { height: 16px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+  .hbar > div { height: 100%; border-radius: 4px; }
+  /* 個人ページ: 作業区分ごとの在席時間 */
+  .cat-bd { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 8px;
+            padding: .7rem 1rem; margin: .2rem 0 .8rem; }
+  .cat-bd-title { font-size: .85rem; font-weight: 600; color: #374151; margin-bottom: .5rem; }
+  .cat-bd-row { display: grid; grid-template-columns: 8rem 1fr 7rem; gap: .6rem;
+                align-items: center; margin: .3rem 0; font-size: .85rem; }
+  .cat-bd-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cat-bd-sw { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px;
+               vertical-align: middle; margin-right: .35rem; }
+  .cat-bd-bar { height: 14px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+  .cat-bd-bar > span { display: block; height: 100%; border-radius: 4px; }
+  .cat-bd-val { text-align: right; color: #475569; white-space: nowrap; }
+  /* 個人ページ: 各日のタイムライン下に出す作業区分別の内訳 */
+  .day-cats { display: flex; flex-wrap: wrap; gap: .05rem .6rem; margin-top: .2rem;
+              font-size: .72rem; color: #64748b; }
+  .day-cats .dcat { white-space: nowrap; }
+  .day-cats .dcat-sw { display: inline-block; width: .6rem; height: .6rem; border-radius: 2px;
+                       vertical-align: middle; margin-right: .2rem; }
+  small { color: #777; }
+  button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
+           background: #2563eb; color: #fff; cursor: pointer; font-size: .9rem; }
+  button.danger { background: var(--away); }
+  button.ghost { background: #e5e7eb; color: #374151; }
+  button.mini { padding: .3rem .7rem; font-size: .8rem; }
+  /* ログイン */
+  #login { max-width: 360px; margin: 12vh auto; background: #fff; padding: 2rem;
+           border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  #login input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
+                 border: 1px solid #ccc; border-radius: 4px; }
+  .error { color: var(--away); }
+  /* タイムライン */
+  .month-nav { display: flex; align-items: center; gap: .8rem; margin: 1rem 0;
+               flex-wrap: wrap; }
+  .month-nav strong { font-size: 1.35rem; }
+  .tl-wrap { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .tl-row { display: grid; grid-template-columns: 9rem 5.5rem 1fr;
+            align-items: center; border-bottom: 1px solid var(--line);
+            padding: .45rem 1.1rem; gap: .7rem; font-size: .95rem; }
+  .tl-row.head { color: #6b7280; font-size: .8rem; background: #f9fafb; }
+  .tl-row .sat { color: var(--seated); } .tl-row .sun { color: var(--away); }
+  .tl { position: relative; height: 28px; background: #f3f4f6; border-radius: 4px; }
+  .tl.mini { height: 18px; min-width: 180px; }
+  .tl .seg { position: absolute; top: 4px; bottom: 4px; background: var(--seated);
+             border-radius: 2px; min-width: 2px; cursor: pointer; }
+  .tl.mini .seg { top: 2px; bottom: 2px; cursor: default; }
+  .tl .seg.open { background: repeating-linear-gradient(45deg, var(--seated),
+                  var(--seated) 4px, #5b9bd5 4px, #5b9bd5 8px); }
+  .tl .dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px;
+             border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
+             cursor: pointer; z-index: 2; }
+  .tl .dot.stall { background: var(--away); width: 15px; height: 15px; margin: -7.5px;
+                   box-shadow: 0 0 0 2px #fff, 0 1px 4px rgba(198,40,40,.6); z-index: 3; }
+  .tl .hour { position: absolute; top: 0; bottom: 0; width: 1px; background: #e5e7eb; }
+  .tl .work { position: absolute; top: 0; bottom: 0; background: #fef3c7; z-index: 0; }
+  .tl-scale { display: grid; grid-template-columns: 9rem 5.5rem 1fr; padding: 0 1.1rem; }
+  .tl-scale div { position: relative; height: 1.1rem; font-size: .75rem; color: #9ca3af; }
+  .tl-scale span { position: absolute; transform: translateX(-50%); }
+  /* 設定 */
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+                   gap: 1rem; }
+  .set-card { background: #fff; padding: 1.2rem 1.5rem; border-radius: 8px;
+              box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .set-card h3 { font-size: 1rem; margin: 0 0 .8rem; color: #374151; }
+  .set-row { display: flex; align-items: center; justify-content: space-between;
+             gap: 1rem; margin: .7rem 0; font-size: .95rem; }
+  .set-row input[type=number] { width: 7rem; padding: .45rem; border: 1px solid #ccc;
+                                border-radius: 6px; font-size: 1rem; }
+  .set-row input[type=text], .set-row input[type=time] { width: 9rem; padding: .45rem;
+                                border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+  .set-row input[type=checkbox] { width: 1.3rem; height: 1.3rem; }
+  .badge.warn { background: #d97706; }
+  .ntf { background: #c62828; color: #fff; border-radius: 99px; font-size: .7rem;
+         padding: .05rem .4rem; margin-left: .3rem; }
+  .lv-approved { color: #0a7d32; } .lv-rejected { color: #c62828; }
+  .lv-pending { color: #d97706; }
+  /* 日報 */
+  .jr-item { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 6px;
+             padding: .8rem 1.1rem; margin-bottom: .7rem; }
+  .jr-item.empty { background: #fafafa; }
+  .jr-head { display: flex; align-items: center; gap: .8rem; margin-bottom: .3rem; }
+  .jr-head small { color: #9ca3af; }
+  .jr-body { white-space: pre-wrap; color: #374151; font-size: .95rem; }
+  .jr-mark { cursor: pointer; }
+  /* メンバー管理 */
+  .add-form { display: flex; gap: .6rem; align-items: center; margin: 1rem 0;
+              flex-wrap: wrap; background: #fff; padding: 1rem;
+              box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 6px; }
+  .add-form input[type=text] { padding: .55rem; border: 1px solid #ccc;
+                               border-radius: 6px; font-size: 1rem; }
+  /* モーダル */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+           align-items: center; justify-content: center; z-index: 10; }
+  .modal[hidden] { display: none; }
+  .modal .box { background: #fff; padding: 1.2rem; border-radius: 8px;
+                max-width: 94vw; max-height: 94vh; display: flex; flex-direction: column; }
+  .modal .imgwrap { overflow: auto; max-width: 90vw; max-height: 78vh; margin-bottom: .8rem; }
+  #modal img { max-width: 88vw; max-height: 74vh; display: block; cursor: zoom-in; }
+  /* クリックで実寸ズーム: マルチモニターの横長画像も各画面を細かく見られる */
+  #modal img.zoomed { max-width: none; max-height: none; cursor: zoom-out; }
+  .modal .bar { display: flex; gap: .6rem; align-items: center; }
+  .modal .bar span { flex: 1; color: #374151; font-size: .9rem; }
+  .navbtn { font-size: 1.1rem; padding: .45rem .9rem; }
+  #token-modal code { display: block; background: #f3f4f6; padding: .8rem;
+                      border-radius: 6px; margin: .8rem 0; font-size: 1rem;
+                      word-break: break-all; }
+  #session-modal label { display: block; margin: .7rem 0 .2rem; font-size: .85rem;
+                         color: #6b7280; }
+  #session-modal input { padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
+                         font-size: 1rem; width: 100%; box-sizing: border-box; }
+  @media (max-width: 720px) {
+    html { font-size: 15px; }
+    main { padding: .8rem; }
+    header { padding: .6rem .8rem; gap: .4rem; }
+    /* 会社名を1行目に、ナビボタンは2行目以降へ折り返す。spacerは無効化して詰める */
+    header h1 { font-size: 1.1rem; margin-right: 0; flex-basis: 100%; }
+    header .spacer { display: none; }
+    header button { padding: .45rem .7rem; font-size: .82rem; }
+    th, td { padding: .55rem .7rem; }
+    /* スクロール枠内のテーブルは折り返さず、枠が横スクロールする */
+    .table-wrap table { white-space: nowrap; }
+    .table-wrap th, .table-wrap td { padding: .5rem .6rem; }
+    .shots img { height: 100px; }
+    .tl-row, .tl-scale { grid-template-columns: 6.5rem 3.5rem 1fr; padding: .3rem .6rem; }
+    .tl-row { font-size: .8rem; }
+    .tl.mini { min-width: 100px; }
+    .month-nav { gap: .5rem; }
+    .month-nav strong { font-size: 1.1rem; }
+    /* 日別グラフの数値はスマホでは棒が細く重なるので隠す(タップで数値は出る) */
+    .daily-chart .dnum { display: none; }
+  }
+  /* スマホ(≤640px)は横長テーブルを「1行=1カード」に縦積みし、横スクロール自体を無くす。
+     各セルは見出し(data-label)を上に付けて縦に並べるので、右端で見切れない */
+  @media (max-width: 640px) {
+    .table-wrap { overflow-x: visible; padding: 0; }
+    .table-wrap table { width: 100%; box-shadow: none; white-space: normal; }
+    .table-wrap thead { display: none; }
+    .table-wrap tbody { display: block; }
+    .table-wrap tr { display: block; background: #fff; border: 1px solid var(--line);
+                     border-radius: 8px; margin: 0 0 .6rem; padding: .3rem .8rem;
+                     box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .table-wrap td { display: block; border: none; border-bottom: 1px solid #f1f5f9;
+                     padding: .5rem 0; text-align: left; }
+    .table-wrap tr td:last-child { border-bottom: none; }
+    .table-wrap td[data-label]::before { content: attr(data-label); display: block;
+                     font-weight: 600; color: #6b7280; font-size: .72rem; margin-bottom: .15rem; }
+    .table-wrap td:empty { display: none; }
+    .table-wrap .tl.mini { min-width: 0; width: 100%; }
+    .table-wrap .set-email { width: 100%; box-sizing: border-box; }
+  }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <h1>🪑 zatsumu</h1>
+  <p>管理者トークンを入力してください</p>
+  <input type="password" id="token-input" placeholder="管理者トークン" autocomplete="current-password">
+  <button id="login-btn">ログイン</button>
+  <p id="login-error" class="error" hidden>トークンが正しくないか、管理者権限がありません</p>
+</div>
+
+<div id="app" hidden>
+<header>
+  <h1>🪑 <span id="brand">zatsumu</span></h1>
+  <button id="nav-home">稼働状況</button>
+  <button id="nav-journal">日報</button>
+  <button id="nav-leave">申請<span id="leave-badge" class="ntf" hidden></span></button>
+  <button id="nav-users">メンバー管理</button>
+  <button id="nav-report">月次レポート</button>
+  <button id="nav-settings">設定</button>
+  <span class="spacer"></span>
+  <button id="logout">ログアウト</button>
+</header>
+<main>
+
+<section id="home" hidden>
+  <h2>稼働状況 <small>（名前をクリックで個人ページ / 30秒ごとに自動更新）</small>
+    <select id="home-team" style="margin-left:1rem;padding:.4rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem"></select>
+  </h2>
+  <div class="table-wrap"><table id="status">
+    <thead><tr><th>メンバー</th><th>チーム</th><th>状態</th><th>本日の在席</th>
+      <th id="tl-head">本日のタイムライン</th><th>最終キャプチャ</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <h2>メンバー別キャプチャ <small>（名前をクリックで開閉。画像クリックで拡大、←→で前後に移動）</small></h2>
+  <div id="cap-groups"></div>
+</section>
+
+<section id="users-view" hidden>
+  <h2>メンバー管理</h2>
+  <div class="add-form">
+    <input type="text" id="new-name" placeholder="名前">
+    <label><input type="checkbox" id="new-admin"> 管理者</label>
+    <button id="add-user">追加</button>
+    <small>追加するとトークンが一度だけ表示されます。本人に安全な方法で渡してください</small>
+  </div>
+  <div class="table-wrap"><table id="users-table">
+    <thead><tr><th>メンバー</th><th>チーム</th><th>権限</th><th>状態</th><th>撮影</th><th>通知</th><th>通知メール</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+
+  <h2 style="margin-top:1.5rem">チーム</h2>
+  <div class="add-form">
+    <input type="text" id="new-team" placeholder="チーム名（例：営業部）">
+    <button id="add-team">チームを追加</button>
+  </div>
+  <div class="table-wrap"><table id="teams-table">
+    <thead><tr><th>チーム</th><th>人数</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</section>
+
+<section id="journal-view" hidden>
+  <div class="month-nav">
+    <button id="jr-prev" class="ghost">◀ 前日</button>
+    <input type="date" id="jr-date" style="padding:.5rem;border:1px solid #ccc;border-radius:6px;font-size:1rem">
+    <button id="jr-next" class="ghost">翌日 ▶</button>
+    <span id="jr-summary" style="color:#6b7280;font-size:.9rem"></span>
+  </div>
+  <div id="journal-list"></div>
+</section>
+
+<section id="leave-view" hidden>
+  <h2>休暇・欠勤の申請
+    <select id="leave-filter" style="margin-left:1rem;padding:.4rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem">
+      <option value="pending">承認待ち</option>
+      <option value="approved">承認済み</option>
+      <option value="rejected">却下</option>
+      <option value="">すべて</option>
+    </select>
+  </h2>
+  <div class="table-wrap"><table id="leave-table">
+    <thead><tr><th>メンバー</th><th>日付</th><th>種別</th><th>理由</th><th>状態</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+
+  <h2 style="margin-top:1.6rem">勤務時間の修正申請</h2>
+  <div class="table-wrap"><table id="correction-table">
+    <thead><tr><th>メンバー</th><th>日付</th><th>希望(着席/退席)</th><th>理由</th><th>状態</th><th>操作</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</section>
+
+<section id="report" hidden>
+  <div class="month-nav">
+    <button id="rep-prev" class="ghost">◀ 前月</button>
+    <strong id="rep-title"></strong>
+    <button id="rep-next" class="ghost">翌月 ▶</button>
+    <button id="rep-csv-monthly" class="ghost">月次集計CSV</button>
+    <button id="rep-csv-payroll" class="ghost">給与用CSV</button>
+    <button id="rep-csv-daily" class="ghost">日別集計CSV</button>
+    <button id="rep-csv-daily-cat" class="ghost">日別×区分CSV</button>
+    <button id="rep-csv-category" class="ghost">区分別集計CSV</button>
+    <button id="rep-csv-sessions" class="ghost">在席データCSV</button>
+    <button id="rep-csv-audit" class="ghost">修正履歴CSV</button>
+  </div>
+  <div class="rep-legend">棒＝合計勤務時間（<span style="color:#16a34a">緑</span>＝予定内 /
+    <span style="color:#f59e0b">橙</span>＝残業分）、縦線＝予定時間、右端＝合計h・稼働率（PC版のみ）</div>
+  <div id="rep-chart"></div>
+  <div class="rep-sub">日別の労働時間（全社・赤=土日）</div>
+  <div id="rep-daily"></div>
+  <div class="rep-sub">作業区分別</div>
+  <div id="rep-cat"></div>
+  <div class="rep-sub">チーム別</div>
+  <div id="rep-team"></div>
+  <div class="rep-sub">メンバー別 明細</div>
+  <div class="table-wrap"><table id="report-table">
+    <thead><tr><th>メンバー</th><th>勤務日数</th><th>合計勤務時間</th><th>予定時間</th><th>残業</th><th>不足</th><th>稼働率</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</section>
+
+<section id="settings-view" hidden>
+  <h2>設定 <small>（撮影設定はクライアントの次の撮影サイクルから自動反映されます）</small></h2>
+  <div class="settings-grid">
+    <div class="set-card">
+      <h3>管理者トークン（あなたのログイン用）</h3>
+      <p style="margin:.2rem 0 .6rem"><small>この端末でログイン中の<b>あなた自身</b>のトークンです。
+      別の端末・ブラウザで管理画面にログインするときに使います。
+      <b style="color:#c62828">他人には渡さないでください</b>（このトークンで管理者としてログインできます）。</small></p>
+      <code id="my-token" data-shown="0" style="display:block;background:#f3f4f6;padding:.7rem;
+        border-radius:6px;font-size:.9rem;word-break:break-all">••••••••</code>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
+        <button type="button" class="ghost" id="my-token-show">表示</button>
+        <button type="button" class="ghost" id="my-token-copy">トークンをコピー</button>
+        <button type="button" class="ghost" id="my-token-url">ログインURLをコピー</button>
+      </div>
+      <p style="margin:.6rem 0 0"><small>「ログインURLをコピー」で <code>/admin#token=…</code> 付きのURLをコピーできます。
+      そのURLを別端末で開けば、トークン入力なしでログインできます（URLの取り扱いにも注意）。</small></p>
+    </div>
+    <div class="set-card">
+      <h3>会社・表示</h3>
+      <label class="set-row"><span>会社名／サービス名</span>
+        <input type="text" id="set-company" maxlength="40"></label>
+      <label class="set-row"><span>タイムゾーン</span>
+        <input type="text" id="set-tz" list="tz-list" placeholder="Asia/Tokyo"></label>
+      <datalist id="tz-list">
+        <option value="Asia/Tokyo"><option value="Asia/Seoul">
+        <option value="Asia/Shanghai"><option value="Asia/Singapore">
+        <option value="America/New_York"><option value="America/Los_Angeles">
+        <option value="Europe/London"><option value="UTC">
+      </datalist>
+      <label class="set-row"><span>勤務時間帯（開始）</span>
+        <input type="time" id="set-work-start"></label>
+      <label class="set-row"><span>勤務時間帯（終了）</span>
+        <input type="time" id="set-work-end"></label>
+      <label class="set-row"><span>作業区分（カンマ区切り）</span>
+        <input type="text" id="set-categories" placeholder="事務作業,現場"></label>
+      <p><small>会社名はヘッダーに表示され、勤務時間帯はタイムラインに目安の帯として
+      表示されます。作業区分はメンバーが在席中に切り替えられ、先頭が既定です。</small></p>
+    </div>
+    <div class="set-card">
+      <h3>画面キャプチャ</h3>
+      <label class="set-row"><span>撮影する（全社）</span>
+        <input type="checkbox" id="set-capture-enabled"></label>
+      <label class="set-row"><span>最短間隔（秒）</span>
+        <input type="number" id="set-min" min="30" max="86400"></label>
+      <label class="set-row"><span>最長間隔（秒）</span>
+        <input type="number" id="set-max" min="30" max="86400"></label>
+      <p><small id="freq-hint"></small></p>
+      <label class="set-row"><span>画質（10〜95）</span>
+        <input type="number" id="set-quality" min="10" max="95"></label>
+      <label class="set-row"><span>ぼかし強度（0〜20）</span>
+        <input type="number" id="set-blur" min="0" max="20"></label>
+    </div>
+    <div class="set-card">
+      <h3>勤務・保存・アラート</h3>
+      <label class="set-row"><span>1日の予定勤務時間（時間）</span>
+        <input type="number" id="set-target" min="0" max="24" step="0.5"></label>
+      <label class="set-row"><span>キャプチャ保存日数（0=自動削除なし）</span>
+        <input type="number" id="set-retention" min="0" max="3650"></label>
+      <label class="set-row"><span>連続在席アラート（時間）</span>
+        <input type="number" id="set-alert" min="1" max="24"></label>
+      <p><small>予定勤務時間を基準に、月次レポートと個人ページで残業/不足を集計します。
+      保存日数を超えたキャプチャは自動削除、連続在席がアラート時間を超えると⚠表示・通知されます。</small></p>
+      <h3>画面停滞アラート（離席検知）</h3>
+      <label class="set-row"><span>画面が変化しない時に通知</span>
+        <input type="checkbox" id="set-notify-stall"></label>
+      <label class="set-row"><span>同じ画面とみなす一致率（%）</span>
+        <input type="number" id="set-stall-threshold" min="50" max="100"></label>
+      <label class="set-row"><span>連続で一致したら通知（回数）</span>
+        <input type="number" id="set-stall-count" min="1" max="100"></label>
+      <p><small>各キャプチャを直前の画像と見比べ、一致率がしきい値以上の状態が
+      指定回数つづくと「画面が変化していない（離席の可能性）」として通知します。
+      一致率を上げる（例 98%）ほど厳しく、下げるほど小さな変化でも停滞とみなします。</small></p>
+      <h3>退勤リマインド・稼働率</h3>
+      <label class="set-row"><span>未退勤の本人にリマインド</span>
+        <input type="checkbox" id="set-clockout-reminder"></label>
+      <label class="set-row"><span>リマインド時刻（この時刻以降）</span>
+        <input type="time" id="set-clockout-time"></label>
+      <label class="set-row"><span>稼働とみなす無操作の上限（秒）</span>
+        <input type="number" id="set-idle-threshold" min="10" max="86400"></label>
+      <p><small>終業時刻を過ぎても退勤していない人に、本人（と通知先）へ退勤を促します。
+      稼働率は、PCの無操作がこの秒数未満だったキャプチャの割合で算出します（PC版クライアントのみ計測）。</small></p>
+    </div>
+    <div class="set-card">
+      <h3>通知（Slack / メール）</h3>
+      <label class="set-row"><span>着席・退席を通知</span>
+        <input type="checkbox" id="set-notify-clock"></label>
+      <label class="set-row"><span>長時間在席を通知</span>
+        <input type="checkbox" id="set-notify-alert"></label>
+      <label class="set-row"><span>日報が保存されたら通知</span>
+        <input type="checkbox" id="set-notify-journal"></label>
+      <p><small>スタッフがその日の日報を保存したら、下の通知先へ本文をメール（/Slack）します。
+      連投を防ぐため通知は1人1日1回です。</small></p>
+      <label class="set-row"><span>Slack Webhook URL</span>
+        <input type="text" id="set-slack" placeholder="https://hooks.slack.com/..."></label>
+      <label class="set-row"><span>通知メール宛先（カンマ区切り）</span>
+        <input type="text" id="set-mail-to" placeholder="boss@example.com"></label>
+      <label class="set-row"><span>SMTPサーバ</span>
+        <input type="text" id="set-smtp-host" placeholder="smtp.example.com"></label>
+      <label class="set-row"><span>SMTPポート</span>
+        <input type="text" id="set-smtp-port" placeholder="587"></label>
+      <label class="set-row"><span>SMTPユーザー</span>
+        <input type="text" id="set-smtp-user"></label>
+      <label class="set-row"><span>SMTPパスワード</span>
+        <input type="password" id="set-smtp-pass" placeholder="(変更時のみ入力)"></label>
+      <label class="set-row"><span>差出人メール</span>
+        <input type="text" id="set-mail-from"></label>
+      <p><small>Slack は Incoming Webhook の URL を貼り付けるだけ。メールは SMTP の設定が必要です。
+      保存後に「テスト送信」で疎通確認できます。</small></p>
+      <button class="ghost" id="set-test-notify">テスト送信</button>
+      <span id="test-notify-msg" style="margin-left:.6rem;font-size:.85rem"></span>
+      <div style="margin-top:.7rem;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <input type="email" id="set-test-email-to" placeholder="送信先メール（例 you@example.com）"
+          style="flex:1;min-width:180px;padding:.4rem;border:1px solid #ccc;border-radius:6px">
+        <button class="ghost" id="set-test-email">このアドレスにテスト送信</button>
+      </div>
+      <span id="test-email-msg" style="font-size:.85rem"></span>
+      <p><small>「テスト送信」は設定済みの全チャネル（Slack/メール）へ。下のフォームは
+      入力した1つのメールアドレス宛にだけ送って、SMTPと宛先の疎通を確認できます（保存後に実施）。</small></p>
+    </div>
+  </div>
+  <p style="margin-top:1rem">
+    <button id="set-save">保存</button>
+    <span id="set-msg" style="margin-left:.8rem;color:#0a7d32"></span>
+  </p>
+</section>
+
+<section id="detail" hidden>
+  <div class="month-nav">
+    <button id="back-home" class="ghost">← 稼働状況へ</button>
+    <button id="prev-month" class="ghost">◀ 前月</button>
+    <strong id="detail-title"></strong>
+    <button id="next-month" class="ghost">翌月 ▶</button>
+    <button id="add-session" class="ghost">＋打刻を追加</button>
+  </div>
+  <div id="cat-legend" style="margin:.4rem 0"></div>
+  <div id="cat-breakdown"></div>
+  <div class="tl-scale"><div></div><div></div><div id="scale"></div></div>
+  <div class="tl-wrap" id="timeline"></div>
+  <p><small>青=在席（斜線は勤務中・クリックで修正）、<span style="color:#f59e0b">●</span>=画面キャプチャ（クリックで表示、←→で前後に移動）、<span style="color:#c62828;font-weight:700">●</span>=<b style="color:#c62828">画面停滞</b>（画面が動いていない＝離席の可能性）。</small></p>
+</section>
+
+</main>
+</div>
+
+<div id="modal" class="modal" hidden>
+  <div class="box">
+    <div class="imgwrap"><img id="modal-img" alt="screenshot"></div>
+    <div class="bar">
+      <button id="modal-prev" class="ghost navbtn">←</button>
+      <button id="modal-next" class="ghost navbtn">→</button>
+      <span id="modal-info"></span>
+      <button id="modal-del" class="danger">削除</button>
+      <button id="modal-close" class="ghost">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div id="token-modal" class="modal" hidden>
+  <div class="box">
+    <h2 id="token-title"></h2>
+    <p>この情報は<strong>今だけ</strong>表示されます。本人に渡してください。</p>
+    <label style="font-size:.85rem;color:#374151">ログインURL（このリンクを送るだけで本人がログインできます）</label>
+    <code id="token-url"></code>
+    <button id="token-url-copy" class="ghost">URLをコピー</button>
+    <label style="font-size:.85rem;color:#374151;display:block;margin-top:1rem">トークン（PC常駐アプリ用）</label>
+    <code id="token-value"></code>
+    <div class="bar">
+      <span></span>
+      <button id="token-copy">トークンをコピー</button>
+      <button id="token-close" class="ghost">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div id="journal-modal" class="modal" hidden>
+  <div class="box" style="min-width: 320px; max-width: 560px">
+    <h2 id="jrm-title"></h2>
+    <div class="jr-body" id="jrm-body"></div>
+    <div class="bar" style="margin-top: 1rem"><span></span>
+      <button id="jrm-close" class="ghost">閉じる</button></div>
+  </div>
+</div>
+
+<div id="session-modal" class="modal" hidden>
+  <div class="box" style="min-width: 300px">
+    <h2 id="session-title"></h2>
+    <label>作業区分</label><select id="sess-cat" style="padding:.5rem;border:1px solid #ccc;border-radius:6px;font-size:1rem;width:100%"></select>
+    <label>着席</label><input type="datetime-local" id="sess-in" step="60">
+    <label>退席</label><input type="datetime-local" id="sess-out" step="60">
+    <p class="error" id="sess-error" hidden></p>
+    <div class="bar" style="margin-top: 1rem">
+      <button id="sess-delete" class="danger">削除</button>
+      <span></span>
+      <button id="sess-save">保存</button>
+      <button id="sess-close" class="ghost">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const KEY = "zatsumu_token";
+const $ = id => document.getElementById(id);
+let timer = null;
+let view = { name: "home", userId: null, userName: "", month: null };
+let repMonth = null;
+let homeShotUrls = [];   // 稼働状況サムネのblob URL(再描画時に解放してリーク防止)
+let modalUrl = null;     // 拡大モーダル画像のblob URL
+
+// ?token= / #token= からの移行: 保存して URL から即座に消す(#はアクセスログに残らない)
+const url = new URL(location);
+const _tok = (url.hash && new URLSearchParams(url.hash.slice(1)).get("token"))
+  || url.searchParams.get("token");
+if (_tok) {
+  localStorage.setItem(KEY, _tok);
+  url.searchParams.delete("token");
+  url.hash = "";
+  history.replaceState(null, "", url);
+}
+
+const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+  if (r.status === 401) { showLogin(true); throw new Error("auth"); }
+  return r;
+}
+async function apiJson(path, opts = {}) {
+  const r = await api(path, opts);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    alert(e.detail || "エラーが発生しました");
+    throw new Error(e.detail || "api error");
+  }
+  return r.json();
+}
+
+const currentMonth = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+function shiftMonth(month, delta) {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+// 表示窓(時): 誰も勤務しない深夜/早朝をカットし、勤務時間帯を横いっぱいに広げる。
+// 各画面の描画前に setWindow() で、勤務時間設定＋実データから窓(winStart〜winEnd)を決める。
+let winStart = 0, winEnd = 24;
+const hOf = iso => {
+  const d = new Date(iso);
+  return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+};
+const hhmmToH = s => {
+  const [h, m] = String(s || "").split(":").map(Number);
+  return isNaN(h) ? null : h + (m || 0) / 60;
+};
+function setWindow(hours) {
+  const ws = hhmmToH(appSettings.work_start) ?? 9;
+  const we = hhmmToH(appSettings.work_end) ?? 18;
+  const all = (hours || []).filter(h => h != null && !isNaN(h));
+  let lo = Math.min(ws, ...(all.length ? all : [ws]));
+  let hi = Math.max(we, ...(all.length ? all : [we]));
+  lo = Math.max(0, Math.floor(lo));
+  hi = Math.min(24, Math.ceil(hi));
+  if (hi - lo < 8) { hi = Math.min(24, lo + 8); lo = Math.max(0, hi - 8); }  // 狭すぎ防止
+  winStart = lo; winEnd = hi;
+}
+const pct = t => {
+  const span = (winEnd - winStart) || 24;
+  return Math.max(0, Math.min(100, (hOf(t) - winStart) / span * 100));
+};
+function scaleHtml() {
+  const span = (winEnd - winStart) || 24;
+  const step = span <= 9 ? 1 : span <= 16 ? 2 : 3;
+  let out = "";
+  for (let h = Math.ceil(winStart); h <= winEnd + 0.001; h += step)
+    out += `<span style="left:${(h - winStart) / span * 100}%">${h}</span>`;
+  return out;
+}
+function gridHtml() {
+  const span = (winEnd - winStart) || 24;
+  const step = span <= 9 ? 1 : span <= 16 ? 2 : 3;
+  let out = "";
+  for (let h = Math.ceil(winStart) + step; h < winEnd - 0.001; h += step)
+    out += `<div class="hour" style="left:${(h - winStart) / span * 100}%"></div>`;
+  return out;
+}
+// HTML(本文・属性)に安全に埋め込むためのエスケープ。innerHTMLへ入れる
+// ユーザー由来の文字列(名前・区分・理由など)は必ずこれを通す。
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// 作業区分の色 (設定順のインデックスでパレットから割り当て)
+const CAT_PALETTE = ["#1565c0", "#2e7d32", "#6a1b9a", "#00838f", "#ad1457", "#5d4037"];
+const catColor = cat => {
+  const cats = appSettings.work_categories
+    ? appSettings.work_categories.split(",").map(c => c.trim()) : [];
+  const i = cats.indexOf(cat);
+  return i < 0 ? "#9ca3af" : CAT_PALETTE[i % CAT_PALETTE.length];
+};
+const segHtml = (s, mini) => {
+  const x0 = pct(s.start), x1 = pct(s.end);
+  const width = Math.max(x1 - x0, 0.2);   // 表示窓内に収まる幅(窓外は端でクリップ)
+  const time = `${new Date(s.start).toLocaleTimeString("ja-JP")} - ${s.open ? "勤務中" : new Date(s.end).toLocaleTimeString("ja-JP")}`;
+  const title = (s.category ? s.category + " " : "") + time;
+  const data = mini ? "" : ` data-id="${s.id}" data-in="${esc(s.clock_in)}" data-out="${esc(s.clock_out ?? "")}" data-cat="${esc(s.category ?? "")}"`;
+  const col = catColor(s.category);
+  const bg = s.open
+    ? `repeating-linear-gradient(45deg,${col},${col} 4px,#ffffffaa 4px,#ffffffaa 8px)`
+    : col;
+  return `<div class="seg"${data} style="left:${x0}%;width:${width}%;background:${bg}" title="${esc(title)}"></div>`;
+};
+const hhmmPct = hhmm => {
+  const h = hhmmToH(hhmm);
+  if (h == null) return null;
+  const span = (winEnd - winStart) || 24;
+  return Math.max(0, Math.min(100, (h - winStart) / span * 100));
+};
+// 勤務時間帯の目安バンド (設定の work_start〜work_end)
+const workBandHtml = () => {
+  const a = hhmmPct(appSettings.work_start), b = hhmmPct(appSettings.work_end);
+  if (a === null || b === null || b <= a) return "";
+  return `<div class="work" style="left:${a}%;width:${b - a}%"
+          title="勤務時間帯 ${appSettings.work_start}〜${appSettings.work_end}"></div>`;
+};
+
+function showLogin(withError) {
+  clearInterval(timer);
+  $("app").hidden = true;
+  $("login").hidden = false;
+  $("login-error").hidden = !withError;
+}
+
+let appSettings = { alert_hours: 6, work_start: "09:00", work_end: "18:00",
+                    company_name: "zatsumu" };
+let teams = [];
+function applyBranding() {
+  $("brand").textContent = appSettings.company_name || "zatsumu";
+  document.title = (appSettings.company_name || "zatsumu") + " 管理画面";
+}
+async function showApp() {
+  const r = await fetch("/api/status", { headers: headers() });
+  if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
+  $("login").hidden = true;
+  $("app").hidden = false;
+  try { appSettings = await apiJson("/api/settings"); applyBranding(); } catch {}
+  try { teams = await apiJson("/api/teams"); } catch {}
+  refreshLeaveBadge();
+  showHome(await r.json());
+}
+
+async function refreshLeaveBadge() {
+  try {
+    const [lv, cr] = await Promise.all([
+      apiJson("/api/leave?status=pending"),
+      apiJson("/api/corrections?status=pending"),
+    ]);
+    const n = lv.length + cr.length;
+    const b = $("leave-badge");
+    b.hidden = n === 0;
+    b.textContent = n;
+  } catch {}
+}
+
+function switchView(name) {
+  view.name = name;
+  for (const id of ["home", "journal-view", "leave-view", "users-view", "report",
+                    "settings-view", "detail"])
+    $(id).hidden = true;
+  $({ home: "home", journal: "journal-view", leave: "leave-view",
+      users: "users-view", report: "report", settings: "settings-view",
+      detail: "detail" }[name]).hidden = false;
+  for (const [btn, v] of [["nav-home", "home"], ["nav-journal", "journal"],
+                          ["nav-leave", "leave"], ["nav-users", "users"],
+                          ["nav-report", "report"], ["nav-settings", "settings"]])
+    $(btn).classList.toggle("active", v === name || (v === "home" && name === "detail"));
+}
+
+/* ---------- 稼働状況 ---------- */
+function homeTeamQuery() {
+  const v = $("home-team").value;
+  return v ? `?team_id=${v}` : "";
+}
+async function showHome(prefetched) {
+  switchView("home");
+  $("home-team").innerHTML = `<option value="">全チーム</option>` +
+    teams.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("");
+  await renderHome(prefetched || await apiJson("/api/status"));
+  clearInterval(timer);
+  timer = setInterval(async () => {
+    // 30秒ごとは状態テーブルのみ更新(開いているキャプチャは閉じない)
+    if (view.name === "home")
+      renderStatusTable(await apiJson("/api/status" + homeTeamQuery()));
+  }, 30000);
+}
+$("home-team").onchange = async () =>
+  renderHome(await apiJson("/api/status" + homeTeamQuery()));
+
+function renderHome(status) {
+  renderStatusTable(status);
+  renderCaptureGroups(status);
+}
+
+function renderStatusTable(status) {
+  // 表示窓を今日の在席データから決める(深夜/早朝の空き時間をカット)
+  const hrs = [];
+  status.forEach(u => (u.today_sessions || []).forEach(s => {
+    hrs.push(hOf(s.start), hOf(s.end));
+  }));
+  setWindow(hrs);
+  $("tl-head").textContent = `本日のタイムライン (${winStart}〜${winEnd}時)`;
+  document.querySelector("#status tbody").innerHTML = status.map(u => {
+    let warn = "";
+    if (u.seated && u.open_since) {
+      const h = (Date.now() - new Date(u.open_since)) / 3600e3;
+      if (h >= appSettings.alert_hours)
+        warn = ` <span class="badge warn" title="連続在席が${appSettings.alert_hours}時間を超えています">⚠ ${Math.floor(h)}h連続</span>`;
+    }
+    if (u.stalled)
+      warn += ` <span class="badge warn" title="画面がしばらく変化していません（離席の可能性）">⚠ 画面停滞</span>`;
+    return `
+    <tr class="user-row" data-id="${u.user_id}" data-name="${esc(u.name)}">
+      <td class="click" data-label="メンバー"><strong>${esc(u.name)}</strong></td>
+      <td data-label="チーム">${esc(u.team_name) || "—"}</td>
+      <td data-label="状態"><span class="badge ${u.seated ? "seated" : "away"}">${u.seated ? "着席中" : "退席"}</span>${u.seated && u.category ? ` <span class="badge" style="background:${catColor(u.category)}">${esc(u.category)}</span>` : ""}${warn}</td>
+      <td data-label="本日の在席">${u.hours_today} h${u.activity != null ? ` <span class="badge ${u.activity < 50 ? "warn" : ""}" title="本日の稼働率（無操作が閾値未満だったキャプチャの割合・PC版のみ）">稼働 ${u.activity}%</span>` : ""}</td>
+      <td data-label="タイムライン"><div class="tl mini">${workBandHtml()}${(u.today_sessions || []).map(s => segHtml(s, true)).join("")}</div></td>
+      <td data-label="最終キャプチャ">${u.last_screenshot ? new Date(u.last_screenshot).toLocaleTimeString("ja-JP") : "—"}</td>
+      <td data-label="操作">${u.seated ? `<button class="mini danger force-out" data-id="${u.user_id}" data-name="${esc(u.name)}">強制退席</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+  document.querySelectorAll("#status td.click").forEach(td => {
+    const tr = td.parentElement;
+    td.onclick = () => showDetail(+tr.dataset.id, tr.dataset.name, currentMonth());
+  });
+  document.querySelectorAll("#status .force-out").forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    if (!confirm(`${b.dataset.name} さんを退席にしますか？`)) return;
+    try {
+      await apiJson(`/api/users/${b.dataset.id}/clock-out`, { method: "POST" });
+      renderHome(await apiJson("/api/status" + homeTeamQuery()));  // 絞り込みを維持
+    } catch { /* apiJson が通知・再ログイン処理済み */ }
+  });
+}
+
+// メンバーごとのキャプチャを折りたたみ(プルダウン)でまとめる。
+// 画像は開いたときに初めて読み込む(遅延ロード)。
+function renderCaptureGroups(status) {
+  // 開いていたメンバーを覚えておき、再描画後も開いたままにする
+  const open = new Set([...document.querySelectorAll("#cap-groups details[open]")]
+    .map(d => +d.dataset.uid));
+  homeShotUrls.forEach(u => URL.revokeObjectURL(u));   // 既存サムネのblobを解放
+  homeShotUrls = [];
+  $("cap-groups").innerHTML = status.map(u => `
+    <details class="cap-group" data-uid="${u.user_id}" ${open.has(u.user_id) ? "open" : ""}>
+      <summary>${esc(u.name)}
+        <span class="cap-meta">最終キャプチャ ${u.last_screenshot ? new Date(u.last_screenshot).toLocaleString("ja-JP") : "—"}</span>
+      </summary>
+      <div class="shots" data-uid="${u.user_id}"><span class="cap-hint">読み込み中…</span></div>
+    </details>`).join("");
+  document.querySelectorAll("#cap-groups details").forEach(d => {
+    d.addEventListener("toggle", () => { if (d.open) loadGroupShots(+d.dataset.uid); });
+    if (d.open) loadGroupShots(+d.dataset.uid);   // 復元したぶんは即読み込み
+  });
+}
+
+async function loadGroupShots(uid) {
+  const box = document.querySelector(`#cap-groups .shots[data-uid="${uid}"]`);
+  if (!box) return;
+  const shots = await apiJson(`/api/screenshots?user_id=${uid}&limit=12`);
+  if (!box.isConnected) return;                  // 読み込み中に再描画されたら破棄
+  if (!shots.length) {
+    box.innerHTML = `<span class="cap-hint">キャプチャはまだありません</span>`;
+    return;
+  }
+  const items = await Promise.all(shots.map(async s => {
+    const blob = await (await api(`/api/screenshots/${s.id}/image`)).blob();
+    const url = URL.createObjectURL(blob);
+    homeShotUrls.push(url);
+    return { id: s.id,
+             info: `${s.name} ${new Date(s.taken_at).toLocaleString("ja-JP")}`, url,
+             similarity: s.similarity, idle: s.idle,
+             stalled: s.stalled, idle_over: s.idle_over };
+  }));
+  if (!box.isConnected) { items.forEach(it => URL.revokeObjectURL(it.url)); return; }
+  const hasStall = items.some(it => it.stalled);
+  box.innerHTML = (hasStall ? stallLegendHtml() : "")
+    + items.map((it, i) => shotFigureHtml(it, i)).join("");
+  box.querySelectorAll(".shot img").forEach(img =>
+    img.onclick = () => openModal(items.map(it =>
+      ({ id: it.id, info: it.info, similarity: it.similarity, idle: it.idle,
+         stalled: it.stalled, idle_over: it.idle_over })), +img.dataset.i));
+}
+
+/* ---------- 実績画像の「画面停滞(離席の可能性)」表示 ---------- */
+// 無操作秒を「N分」「N分M秒」に整形
+function fmtIdle(sec) {
+  if (sec == null) return "";
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? (s ? `${m}分${s}秒` : `${m}分`) : `${s}秒`;
+}
+// 画像に重ねるバッジ(⚠画面停滞 / 前と◯%一致)
+function shotBadges(it) {
+  let h = "";
+  if (it.stalled) h += `<span class="flag">⚠ 画面停滞</span>`;
+  if (it.similarity != null)
+    h += `<span class="cap${it.stalled ? " hi" : ""}">前と${it.similarity}%一致</span>`;
+  return h;
+}
+function shotFigureHtml(it, i) {
+  return `<span class="shot${it.stalled ? " stall" : ""}">`
+    + `<img src="${it.url}" data-i="${i}" title="${esc(it.info)}">${shotBadges(it)}</span>`;
+}
+function stallLegendHtml() {
+  return `<div class="stall-legend"><span class="sw"></span>
+    <span>赤枠＝<b>画面停滞</b>（直前の画像と一定以上一致が続いた＝離席の可能性）。数字は直前画像との一致率。</span></div>`;
+}
+// モーダル下部に出す停滞メタ情報のテキスト
+function modalMetaHtml(cur) {
+  const bits = [];
+  if (cur.similarity != null) bits.push(`前の画像と${cur.similarity}%一致`);
+  if (cur.idle != null) bits.push(`無操作 ${fmtIdle(cur.idle)}`);
+  const meta = bits.join("・");
+  if (cur.stalled)
+    return `<span style="color:#c62828;font-weight:700">⚠ 画面停滞（離席の可能性）</span>`
+      + (meta ? ` ｜ ${esc(meta)}` : "");
+  return meta ? `<span style="color:#64748b">${esc(meta)}</span>` : "";
+}
+
+/* ---------- メンバー管理 ---------- */
+async function showUsers() {
+  switchView("users");
+  teams = await apiJson("/api/teams");
+  const users = await apiJson("/api/users");
+  const teamOpts = u => `<option value="">未所属</option>` + teams.map(t =>
+    `<option value="${t.id}" ${u.team_id === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("");
+  document.querySelector("#users-table tbody").innerHTML = users.map(u => `
+    <tr>
+      <td data-label="メンバー"><strong>${esc(u.name)}</strong><br>
+        <code class="tok-val" data-token="${esc(u.token)}"
+          style="font-size:.66rem;color:#6b7280;word-break:break-all">••••••••</code>
+        <button type="button" class="mini ghost tok-show">表示</button></td>
+      <td data-label="チーム"><select class="set-team" data-id="${u.id}"
+        style="padding:.3rem;border:1px solid #ccc;border-radius:5px">${teamOpts(u)}</select></td>
+      <td data-label="権限">${u.is_admin ? '<span class="badge seated">管理者</span>' : "メンバー"}</td>
+      <td data-label="状態">${u.active ? "有効" : '<span class="badge gray">無効</span>'}</td>
+      <td data-label="撮影">${u.capture_enabled ? "ON" : '<span class="badge gray">停止中</span>'}
+        <button class="mini ghost toggle-capture" data-id="${u.id}" data-cap="${u.capture_enabled}">
+          ${u.capture_enabled ? "停止" : "再開"}</button></td>
+      <td data-label="通知">${u.notify_enabled ? "ON" : '<span class="badge gray">OFF</span>'}
+        <button class="mini ghost toggle-notify" data-id="${u.id}" data-ntf="${u.notify_enabled}">
+          ${u.notify_enabled ? "停止" : "再開"}</button></td>
+      <td data-label="通知メール"><input type="email" class="set-email" data-id="${u.id}" value="${esc(u.email || "")}"
+        placeholder="メール(任意)" style="padding:.3rem;border:1px solid #ccc;border-radius:5px;width:11rem">
+        <button class="mini ghost test-email" data-id="${u.id}">テスト</button></td>
+      <td data-label="操作">
+        <button class="mini ghost copy-token" data-token="${esc(u.token)}">トークンコピー</button>
+        <button class="mini ghost copy-url" data-token="${esc(u.token)}">URLコピー</button>
+        <button class="mini ghost regen" data-id="${u.id}" data-name="${esc(u.name)}">トークン再発行</button>
+        <button class="mini ghost toggle-admin" data-id="${u.id}" data-admin="${u.is_admin}">
+          ${u.is_admin ? "管理者を解除" : "管理者にする"}</button>
+        <button class="mini ${u.active ? "danger" : ""} toggle-active" data-id="${u.id}" data-active="${u.active}">
+          ${u.active ? "無効化" : "有効化"}</button>
+        <button class="mini danger del-user" data-id="${u.id}" data-name="${esc(u.name)}">削除</button>
+      </td>
+    </tr>`).join("");
+  document.querySelectorAll(".set-team").forEach(sel => sel.onchange = async () => {
+    const body = sel.value ? { team_id: +sel.value } : { clear_team: true };
+    await apiJson(`/api/users/${sel.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  });
+  renderTeams();
+  document.querySelectorAll(".regen").forEach(b => b.onclick = async () => {
+    if (!confirm(`${b.dataset.name} さんのトークンを再発行しますか？\n(今のトークンは使えなくなります)`)) return;
+    const r = await apiJson(`/api/users/${b.dataset.id}/token`, { method: "POST" });
+    showToken(r.name, r.token);
+  });
+  document.querySelectorAll(".tok-show").forEach(b => b.onclick = () => {
+    const code = b.previousElementSibling;   // 直前の <code class="tok-val">
+    const shown = b.textContent === "隠す";
+    code.textContent = shown ? "••••••••" : code.dataset.token;
+    b.textContent = shown ? "表示" : "隠す";
+  });
+  document.querySelectorAll(".copy-token").forEach(b => b.onclick = () =>
+    copyFlash(b, b.dataset.token));
+  document.querySelectorAll(".copy-url").forEach(b => b.onclick = () =>
+    copyFlash(b, location.origin + "/me#token=" + encodeURIComponent(b.dataset.token)));
+  document.querySelectorAll(".toggle-admin").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/users/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_admin: b.dataset.admin !== "1" }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".toggle-active").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/users/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: b.dataset.active !== "1" }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".del-user").forEach(b => b.onclick = async () => {
+    const name = b.dataset.name;
+    // 不可逆。打刻・キャプチャ・日報・申請ごと消えることを明示し二段階で確認
+    if (!confirm(`${name} さんを完全に削除します。\n打刻・キャプチャ画像・日報・各種申請も全て消え、元に戻せません。\n続けますか？`)) return;
+    if (!confirm(`本当に「${name}」を削除しますか？この操作は取り消せません。`)) return;
+    try {
+      await apiJson(`/api/users/${b.dataset.id}`, { method: "DELETE" });
+    } catch { return; }   // apiJson がエラー表示・再ログイン処理済み
+    showUsers();
+  });
+  document.querySelectorAll(".toggle-capture").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/users/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capture_enabled: b.dataset.cap !== "1" }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".toggle-notify").forEach(b => b.onclick = async () => {
+    await apiJson(`/api/users/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notify_enabled: b.dataset.ntf !== "1" }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".set-email").forEach(inp => inp.onchange = async () => {
+    await apiJson(`/api/users/${inp.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: inp.value.trim() }),
+    });
+  });
+  // 各メンバーの「テスト」: 入力中のメールアドレスへテスト送信して疎通確認
+  document.querySelectorAll(".test-email").forEach(b => b.onclick = async () => {
+    const inp = document.querySelector(`.set-email[data-id="${b.dataset.id}"]`);
+    const to = (inp && inp.value || "").trim();
+    const old = b.textContent;
+    if (!to) { b.textContent = "未入力"; setTimeout(() => b.textContent = old, 1500); return; }
+    b.disabled = true; b.textContent = "送信中…";
+    try {
+      await apiJson("/api/settings/test-email", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to }),
+      });
+      b.textContent = "送信✓";
+    } catch {
+      b.textContent = "失敗";
+    }
+    setTimeout(() => { b.textContent = old; b.disabled = false; }, 2500);
+  });
+}
+
+$("add-user").onclick = async () => {
+  const name = $("new-name").value.trim();
+  if (!name) { alert("名前を入力してください"); return; }
+  const r = await apiJson("/api/users", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, is_admin: $("new-admin").checked }),
+  });
+  $("new-name").value = ""; $("new-admin").checked = false;
+  showToken(r.name, r.token);
+  showUsers();
+};
+
+/* ---------- チーム管理 ---------- */
+function renderTeams() {
+  document.querySelector("#teams-table tbody").innerHTML = teams.map(t => `
+    <tr><td data-label="チーム"><strong>${esc(t.name)}</strong></td><td data-label="人数">${t.members} 人</td>
+      <td data-label="操作">
+        <button class="mini ghost team-rename" data-id="${t.id}" data-name="${esc(t.name)}">改名</button>
+        <button class="mini danger team-delete" data-id="${t.id}" data-name="${esc(t.name)}">削除</button>
+      </td></tr>`).join("") ||
+    `<tr><td colspan="3"><small>チームがありません</small></td></tr>`;
+  document.querySelectorAll(".team-rename").forEach(b => b.onclick = async () => {
+    const name = prompt("新しいチーム名", b.dataset.name);
+    if (!name) return;
+    await apiJson(`/api/teams/${b.dataset.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    showUsers();
+  });
+  document.querySelectorAll(".team-delete").forEach(b => b.onclick = async () => {
+    if (!confirm(`チーム「${b.dataset.name}」を削除しますか？\n(所属メンバーは未所属に戻ります)`)) return;
+    await apiJson(`/api/teams/${b.dataset.id}`, { method: "DELETE" });
+    showUsers();
+  });
+}
+$("add-team").onclick = async () => {
+  const name = $("new-team").value.trim();
+  if (!name) { alert("チーム名を入力してください"); return; }
+  await apiJson("/api/teams", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  $("new-team").value = "";
+  showUsers();
+};
+
+/* ---------- 休暇・欠勤の申請 ---------- */
+async function showLeave() {
+  switchView("leave");
+  const status = $("leave-filter").value;
+  const qs = status ? `?status=${status}` : "";
+  const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
+  // 休暇・欠勤の申請
+  const list = await apiJson("/api/leave" + qs);
+  document.querySelector("#leave-table tbody").innerHTML = list.map(l => `
+    <tr>
+      <td data-label="メンバー"><strong>${esc(l.name)}</strong></td><td data-label="日付">${esc(l.date)}</td><td data-label="種別">${esc(l.leave_type)}</td>
+      <td data-label="理由">${esc(l.reason) || "—"}</td>
+      <td data-label="状態" class="lv-${l.status}">${label[l.status] || l.status}</td>
+      <td data-label="操作">${l.status === "pending" ? `
+        <button class="mini approve" data-id="${l.id}">承認</button>
+        <button class="mini danger reject" data-id="${l.id}">却下</button>` : "—"}</td>
+    </tr>`).join("") || `<tr><td colspan="6"><small>申請はありません</small></td></tr>`;
+  // 勤務時間の修正申請
+  const corr = await apiJson("/api/corrections" + qs);
+  const tm = t => t ? esc(t) : "—";
+  document.querySelector("#correction-table tbody").innerHTML = corr.map(c => `
+    <tr>
+      <td data-label="メンバー"><strong>${esc(c.name)}</strong></td><td data-label="日付">${esc(c.date)}</td>
+      <td data-label="希望(着席/退席)">${tm(c.requested_in)} / ${tm(c.requested_out)}</td>
+      <td data-label="理由">${esc(c.reason) || "—"}</td>
+      <td data-label="状態" class="lv-${c.status}">${label[c.status] || c.status}</td>
+      <td data-label="操作">${c.status === "pending" ? `
+        <button class="mini approve-cr" data-id="${c.id}">承認</button>
+        <button class="mini danger reject-cr" data-id="${c.id}">却下</button>` : "—"}</td>
+    </tr>`).join("") || `<tr><td colspan="6"><small>申請はありません</small></td></tr>`;
+  document.querySelectorAll(".approve, .reject").forEach(b => b.onclick = async () => {
+    try {
+      await apiJson(`/api/leave/${b.dataset.id}/decision`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approve: b.classList.contains("approve") }),
+      });
+    } catch { /* apiJson が原因をアラート済み。一覧は再描画して最新化する */ }
+    refreshLeaveBadge();
+    showLeave();
+  });
+  document.querySelectorAll(".approve-cr, .reject-cr").forEach(b => b.onclick = async () => {
+    try {
+      await apiJson(`/api/corrections/${b.dataset.id}/decision`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approve: b.classList.contains("approve-cr") }),
+      });
+    } catch { /* apiJson が原因をアラート表示済み。一覧は再描画する */ }
+    refreshLeaveBadge();
+    showLeave();
+  });
+}
+$("leave-filter").onchange = () => showLeave();
+
+function showToken(name, token) {
+  $("token-title").textContent = `${name} さんのトークン`;
+  $("token-value").textContent = token;
+  $("token-url").textContent =
+    location.origin + "/me#token=" + encodeURIComponent(token);
+  $("token-modal").hidden = false;
+}
+async function copyText(text, btnId, label) {
+  try {
+    await navigator.clipboard.writeText(text);
+    $(btnId).textContent = "コピーしました";
+  } catch {
+    $(btnId).textContent = "コピー失敗(手動で選択を)";
+  }
+  setTimeout(() => $(btnId).textContent = label, 1800);
+}
+async function copyFlash(btn, text) {
+  const orig = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "コピー済";
+  } catch {
+    btn.textContent = "コピー失敗";
+  }
+  setTimeout(() => { btn.textContent = orig; }, 1800);
+}
+$("token-copy").onclick = () =>
+  copyText($("token-value").textContent, "token-copy", "トークンをコピー");
+$("token-url-copy").onclick = () =>
+  copyText($("token-url").textContent, "token-url-copy", "URLをコピー");
+$("token-close").onclick = () => $("token-modal").hidden = true;
+
+/* ---------- 月次レポート ---------- */
+/* ---------- 日報 ---------- */
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function shiftDate(date, delta) {
+  const d = new Date(date + "T00:00:00");
+  d.setDate(d.getDate() + delta);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+async function showJournal(date) {
+  switchView("journal");
+  const d = date || $("jr-date").value || todayStr();
+  $("jr-date").value = d;
+  const data = await apiJson(`/api/journals?date=${d}`);
+  const submitted = data.entries.filter(e => e.body).length;
+  $("jr-summary").textContent = `提出 ${submitted} / ${data.entries.length} 人`;
+  $("journal-list").innerHTML = data.entries.map(e => `
+    <div class="jr-item ${e.body ? "" : "empty"}">
+      <div class="jr-head"><strong>${esc(e.name)}</strong>
+        ${e.body ? `<small>${e.updated_at ? new Date(e.updated_at).toLocaleString("ja-JP") : ""}</small>`
+                 : '<span class="badge gray">未提出</span>'}</div>
+      ${e.body ? `<div class="jr-body">${esc(e.body)}</div>` : ""}
+    </div>`).join("");
+}
+$("jr-prev").onclick = () => showJournal(shiftDate($("jr-date").value, -1));
+$("jr-next").onclick = () => showJournal(shiftDate($("jr-date").value, 1));
+$("jr-date").onchange = () => showJournal($("jr-date").value);
+
+// 個人ページの📝から日報を表示
+async function openJournal(userId, name, date) {
+  const j = await apiJson(`/api/users/${userId}/journal?date=${date}`);
+  $("jrm-title").textContent = `${name} の日報 — ${date}`;
+  $("jrm-body").textContent = j.body || "(空)";
+  $("journal-modal").hidden = false;
+}
+$("jrm-close").onclick = () => $("journal-modal").hidden = true;
+$("journal-modal").onclick = e => { if (e.target === $("journal-modal")) $("journal-modal").hidden = true; };
+
+async function showReport(month) {
+  switchView("report");
+  repMonth = month || repMonth || currentMonth();
+  const data = await apiJson(`/api/reports/monthly?month=${repMonth}`);
+  $("rep-title").textContent = `${repMonth}（予定 ${data.target_hours}h/日）`;
+  // 合計勤務時間の横棒グラフ (予定内=緑/残業=橙、縦線=予定時間)
+  const maxH = Math.max(1, ...data.rows.map(r => Math.max(r.total_hours, r.target_hours)));
+  $("rep-chart").innerHTML = data.rows.filter(r => r.total_hours > 0 || r.work_days > 0)
+    .map(r => {
+      const base = Math.min(r.total_hours, r.target_hours) / maxH * 100;
+      const over = Math.max(0, r.total_hours - r.target_hours) / maxH * 100;
+      const tgt = r.target_hours / maxH * 100;
+      return `<div class="rep-bar-row">
+        <div>${esc(r.name)}</div>
+        <div class="rep-bar">
+          <div class="fill" style="width:${base}%"></div>
+          <div class="fill over" style="left:${base}%;width:${over}%"></div>
+          <div class="tmark" style="left:${tgt}%" title="予定 ${r.target_hours}h"></div>
+        </div>
+        <div>${r.total_hours}h${r.activity != null ? ` ・稼働${r.activity}%` : ""}</div>
+      </div>`;
+    }).join("") || `<p><small>この月の勤務記録はありません。</small></p>`;
+  document.querySelector("#report-table tbody").innerHTML = data.rows.map(r => `
+    <tr><td data-label="メンバー"><strong>${esc(r.name)}</strong></td><td data-label="勤務日数">${r.work_days} 日</td>
+        <td data-label="合計勤務時間">${r.total_hours} h</td><td data-label="予定時間">${r.target_hours} h</td>
+        <td data-label="残業" style="color:#c2410c">${r.overtime ? "+" + r.overtime + " h" : "—"}</td>
+        <td data-label="不足" style="color:#1565c0">${r.shortfall ? "−" + r.shortfall + " h" : "—"}</td>
+        <td data-label="稼働率">${r.activity != null ? r.activity + "%" : "—"}</td></tr>`).join("");
+  // 集計グラフ: 日別推移・作業区分別・チーム別 (全社)
+  const sum = await apiJson(`/api/reports/summary?month=${repMonth}`);
+  const maxD = Math.max(1, ...sum.daily.map(d => d.hours));
+  $("rep-daily").innerHTML = `<div class="daily-chart">` + sum.daily.map(d => {
+    const dow = new Date(d.date + "T00:00").getDay();
+    const we = dow === 0 || dow === 6 ? " we" : "";
+    const label = d.hours ? Math.round(d.hours * 10) / 10 : "";
+    // 棒は最大84%まで(上の数値ラベル .dnum の高さ分の余白を残す)。相対比較は保たれる
+    return `<div class="dcol" title="${d.date}: ${d.hours}h">
+      <span class="dnum">${label}</span>
+      <div class="d${we}" style="height:${Math.round(d.hours / maxD * 84)}%"></div></div>`;
+  }).join("") + `</div>`;
+  const cats = Object.entries(sum.by_category).sort((a, b) => b[1] - a[1]);
+  const maxC = Math.max(1, ...cats.map(c => c[1]));
+  $("rep-cat").innerHTML = cats.map(([c, h]) =>
+    `<div class="hbar-row"><div>${esc(c)}</div>
+      <div class="hbar"><div style="width:${h / maxC * 100}%;background:${catColor(c)}"></div></div>
+      <div>${h} h</div></div>`).join("") || `<small>データなし</small>`;
+  const maxT = Math.max(1, ...sum.by_team.map(t => t.hours));
+  $("rep-team").innerHTML = sum.by_team.map(t =>
+    `<div class="hbar-row"><div>${esc(t.team)}</div>
+      <div class="hbar"><div style="width:${t.hours / maxT * 100}%;background:#6366f1"></div></div>
+      <div>${t.hours} h</div></div>`).join("") || `<small>データなし</small>`;
+}
+$("rep-prev").onclick = () => showReport(shiftMonth(repMonth, -1));
+$("rep-next").onclick = () => showReport(shiftMonth(repMonth, 1));
+$("rep-csv-monthly").onclick = () => downloadCsv(`/api/reports/monthly.csv?month=${repMonth}`, `zatsumu_${repMonth}.csv`);
+$("rep-csv-payroll").onclick = () => downloadCsv(`/api/reports/payroll.csv?month=${repMonth}`, `zatsumu_payroll_${repMonth}.csv`);
+$("rep-csv-daily").onclick = () => downloadCsv(`/api/reports/daily.csv?month=${repMonth}`, `zatsumu_daily_${repMonth}.csv`);
+$("rep-csv-daily-cat").onclick = () => downloadCsv(`/api/reports/daily-by-category.csv?month=${repMonth}`, `zatsumu_daily_category_${repMonth}.csv`);
+$("rep-csv-category").onclick = () => downloadCsv(`/api/reports/category.csv?month=${repMonth}`, `zatsumu_category_${repMonth}.csv`);
+$("rep-csv-sessions").onclick = () => downloadCsv(`/api/reports/sessions.csv?month=${repMonth}`, `zatsumu_sessions_${repMonth}.csv`);
+$("rep-csv-audit").onclick = () => downloadCsv(`/api/reports/audit.csv?month=${repMonth}`, `zatsumu_audit_${repMonth}.csv`);
+
+/* ---------- 設定 ---------- */
+function freqHint() {
+  const min = +$("set-min").value, max = +$("set-max").value;
+  if (min > 0 && max >= min)
+    $("freq-hint").textContent =
+      `平均 ${Math.round((min + max) / 2 / 60)} 分間隔 ≒ 1時間に約 ${Math.round(3600 / ((min + max) / 2))} 回撮影`;
+}
+async function showSettings() {
+  switchView("settings");
+  // 管理者トークンは開くたびに伏せ字に戻す(肩越しの覗き見対策)
+  $("my-token").textContent = "••••••••";
+  $("my-token").dataset.shown = "0";
+  $("my-token-show").textContent = "表示";
+  const s = await apiJson("/api/settings");
+  $("set-company").value = s.company_name;
+  $("set-tz").value = s.timezone;
+  $("set-work-start").value = s.work_start;
+  $("set-work-end").value = s.work_end;
+  $("set-categories").value = s.work_categories;
+  $("set-capture-enabled").checked = !!s.capture_enabled;
+  $("set-min").value = s.capture_min_interval;
+  $("set-max").value = s.capture_max_interval;
+  $("set-quality").value = s.capture_quality;
+  $("set-blur").value = s.capture_blur;
+  $("set-retention").value = s.retention_days;
+  $("set-alert").value = s.alert_hours;
+  $("set-target").value = (s.daily_target_minutes / 60);
+  $("set-notify-clock").checked = !!s.notify_clock;
+  $("set-notify-alert").checked = !!s.notify_alert;
+  $("set-notify-journal").checked = !!s.notify_journal;
+  $("set-notify-stall").checked = !!s.notify_stall;
+  $("set-stall-threshold").value = s.stall_threshold;
+  $("set-stall-count").value = s.stall_alert_count;
+  $("set-clockout-reminder").checked = !!s.clockout_reminder;
+  $("set-clockout-time").value = s.clockout_reminder_time;
+  $("set-idle-threshold").value = s.idle_threshold;
+  $("set-slack").value = s.slack_webhook_url;
+  $("set-mail-to").value = s.mail_to;
+  $("set-smtp-host").value = s.smtp_host;
+  $("set-smtp-port").value = s.smtp_port;
+  $("set-smtp-user").value = s.smtp_user;
+  $("set-smtp-pass").value = "";  // パスワードは表示しない(サーバも返さない)
+  $("set-smtp-pass").placeholder = s.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-mail-from").value = s.mail_from;
+  $("set-msg").textContent = "";
+  $("test-notify-msg").textContent = "";
+  freqHint();
+}
+$("set-min").oninput = freqHint;
+$("set-max").oninput = freqHint;
+$("set-save").onclick = async () => {
+  const body = {
+    company_name: $("set-company").value,
+    timezone: $("set-tz").value,
+    work_start: $("set-work-start").value,
+    work_end: $("set-work-end").value,
+    work_categories: $("set-categories").value,
+    capture_enabled: $("set-capture-enabled").checked,
+    capture_min_interval: +$("set-min").value,
+    capture_max_interval: +$("set-max").value,
+    capture_quality: +$("set-quality").value,
+    capture_blur: +$("set-blur").value,
+    retention_days: +$("set-retention").value,
+    alert_hours: +$("set-alert").value,
+    daily_target_minutes: Math.round(+$("set-target").value * 60),
+    notify_clock: $("set-notify-clock").checked,
+    notify_alert: $("set-notify-alert").checked,
+    notify_journal: $("set-notify-journal").checked,
+    notify_stall: $("set-notify-stall").checked,
+    stall_threshold: +$("set-stall-threshold").value,
+    stall_alert_count: +$("set-stall-count").value,
+    clockout_reminder: $("set-clockout-reminder").checked,
+    clockout_reminder_time: $("set-clockout-time").value,
+    idle_threshold: +$("set-idle-threshold").value,
+    slack_webhook_url: $("set-slack").value,
+    mail_to: $("set-mail-to").value,
+    smtp_host: $("set-smtp-host").value,
+    smtp_port: $("set-smtp-port").value,
+    smtp_user: $("set-smtp-user").value,
+    mail_from: $("set-mail-from").value,
+  };
+  if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  applyBranding();
+  $("set-msg").textContent = "保存しました ✓";
+  setTimeout(() => $("set-msg").textContent = "", 2500);
+};
+$("set-test-notify").onclick = async () => {
+  $("test-notify-msg").textContent = "送信中...";
+  try {
+    const r = await apiJson("/api/settings/test-notify", { method: "POST" });
+    $("test-notify-msg").style.color = "#0a7d32";
+    $("test-notify-msg").textContent = "送信しました: " + r.sent.join(", ");
+  } catch {
+    $("test-notify-msg").style.color = "#c62828";
+    $("test-notify-msg").textContent = "送信できませんでした（保存後にお試しください）";
+  }
+};
+$("set-test-email").onclick = async () => {
+  const to = $("set-test-email-to").value.trim();
+  if (!to) {
+    $("test-email-msg").style.color = "#c62828";
+    $("test-email-msg").textContent = "送信先メールを入力してください";
+    return;
+  }
+  $("test-email-msg").style.color = "#475569";
+  $("test-email-msg").textContent = "送信中...";
+  try {
+    await apiJson("/api/settings/test-email", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to }),
+    });
+    $("test-email-msg").style.color = "#0a7d32";
+    $("test-email-msg").textContent = to + " に送信しました ✓";
+  } catch {
+    $("test-email-msg").style.color = "#c62828";
+    $("test-email-msg").textContent = "送信できませんでした（SMTP設定を保存後にお試しください）";
+  }
+};
+
+async function downloadCsv(path, filename) {
+  // 認証ヘッダが必要なため <a href> ではなく fetch でダウンロードする
+  const blob = await (await api(path)).blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ---------- 個人ページ (日別タイムライン) ---------- */
+// その日のセッションを作業区分別に合算し、色付きの小さな内訳を返す
+function dayCatHtml(d) {
+  if (!d || !(d.sessions || []).length) return "";
+  const by = {};
+  d.sessions.forEach(s => {
+    const h = (new Date(s.end) - new Date(s.start)) / 3600e3;
+    const c = s.category || "未分類";
+    by[c] = (by[c] || 0) + h;
+  });
+  const parts = Object.entries(by).filter(([, h]) => h > 0.004)
+    .sort((a, b) => b[1] - a[1])
+    .map(([c, h]) => `<span class="dcat"><span class="dcat-sw"
+        style="background:${catColor(c)}"></span>${esc(c)} ${Math.round(h * 10) / 10}h</span>`);
+  return parts.length ? `<div class="day-cats">${parts.join("")}</div>` : "";
+}
+
+async function showDetail(userId, userName, month) {
+  view = { ...view, userId, userName, month };
+  const data = await apiJson(`/api/users/${userId}/monthly?month=${month}`);
+  if (view.userId !== userId || view.month !== month) return; // 連打対策
+  switchView("detail");
+  detailCats = data.categories || [];
+  $("detail-title").textContent = `${data.user.name} — ${month}`;
+  // 表示窓を当月の在席・キャプチャ実データから決める(深夜/早朝の空き時間をカット)
+  const dhrs = [];
+  (data.days || []).forEach(d => {
+    (d.sessions || []).forEach(s => dhrs.push(hOf(s.start), hOf(s.end)));
+    (d.screenshots || []).forEach(sh => dhrs.push(hOf(sh.taken_at)));
+  });
+  setWindow(dhrs);
+  $("scale").innerHTML = scaleHtml();
+  // 区分の凡例 + 区分別の合計時間
+  const bc = data.by_category || {};
+  $("cat-legend").innerHTML = (data.categories || []).map(c =>
+    `<span style="font-size:.85rem;margin-right:1rem;white-space:nowrap">
+       <span style="display:inline-block;width:.9rem;height:.9rem;border-radius:2px;
+       background:${catColor(c)};vertical-align:middle"></span>
+       ${esc(c)} ${bc[c] ? "<strong>" + bc[c] + "h</strong>" : ""}</span>`).join("");
+  // 作業区分ごとの在席時間(当月): 設定に無い区分・未分類も漏れなく多い順に表示
+  const catRows = Object.entries(bc).filter(([, h]) => h > 0).sort((a, b) => b[1] - a[1]);
+  const catTotal = catRows.reduce((s, [, h]) => s + h, 0);
+  $("cat-breakdown").innerHTML = catRows.length ? `<div class="cat-bd">
+    <div class="cat-bd-title">作業区分ごとの在席時間（当月 合計 ${Math.round(catTotal * 10) / 10}h）</div>
+    ${catRows.map(([c, h]) => {
+      const p = catTotal ? Math.round(h / catTotal * 100) : 0;
+      return `<div class="cat-bd-row">
+        <span class="cat-bd-name"><span class="cat-bd-sw" style="background:${catColor(c)}"></span>${esc(c)}</span>
+        <span class="cat-bd-bar"><span style="width:${p}%;background:${catColor(c)}"></span></span>
+        <span class="cat-bd-val">${h}h・${p}%</span></div>`;
+    }).join("")}</div>` : "";
+
+  const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const youbi = ["日", "月", "火", "水", "木", "金", "土"];
+  const work = workBandHtml();
+  const grid = gridHtml();
+  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>${winStart}時〜${winEnd}時</div></div>`;
+  const dayShots = [];
+  for (let day = 1; day <= lastDay; day++) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const dow = new Date(y, m - 1, day).getDay();
+    const d = byDate[date];
+    const segs = (d?.sessions || []).map(s => segHtml(s, false)).join("");
+    const dots = (d?.screenshots || []).map(sh => {
+      const i = dayShots.length;
+      dayShots.push({ id: sh.id, info: `${data.user.name} ${new Date(sh.taken_at).toLocaleString("ja-JP")}`,
+                      similarity: sh.similarity, idle: sh.idle, stalled: sh.stalled, idle_over: sh.idle_over });
+      const tip = new Date(sh.taken_at).toLocaleTimeString("ja-JP")
+        + (sh.stalled ? " ⚠画面停滞" : "") + (sh.similarity != null ? ` 一致${sh.similarity}%` : "");
+      return `<div class="dot${sh.stalled ? " stall" : ""}" data-i="${i}" style="left:${pct(sh.taken_at)}%"
+              title="${tip}"></div>`;
+    }).join("");
+    const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
+    const jr = d?.has_journal
+      ? ` <span class="jr-mark" data-date="${date}" title="日報あり（クリックで表示）">📝</span>` : "";
+    const lv = d?.leave
+      ? ` <span class="badge ${d.leave.status === "approved" ? "" : "gray"}" style="${d.leave.status === "approved" ? "background:#7c3aed" : ""}" title="${d.leave.status === "approved" ? "承認済" : "申請中"}">${esc(d.leave.type)}</span>` : "";
+    html += `<div class="tl-row">
+      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})${jr}${lv}</div>
+      <div>${d ? d.hours + " h" : ""}${d && d.over != null && Math.abs(d.over) >= 0.01
+        ? `<br><small style="color:${d.over > 0 ? "#c2410c" : "#1565c0"}">${d.over > 0 ? "+" : "−"}${Math.abs(d.over)}</small>` : ""}</div>
+      <div><div class="tl">${work}${grid}${segs}${dots}</div>${dayCatHtml(d)}</div>
+    </div>`;
+  }
+  $("timeline").innerHTML = html;
+  document.querySelectorAll("#timeline .jr-mark").forEach(mk =>
+    mk.onclick = () => openJournal(userId, data.user.name, mk.dataset.date));
+  document.querySelectorAll("#timeline .dot").forEach(dot =>
+    dot.onclick = () => openModal(dayShots, +dot.dataset.i));
+  document.querySelectorAll("#timeline .seg").forEach(seg =>
+    seg.onclick = () => openSessionModal({
+      id: +seg.dataset.id, clock_in: seg.dataset.in, clock_out: seg.dataset.out,
+      category: seg.dataset.cat,
+    }));
+}
+
+/* ---------- 打刻の修正・追加 ---------- */
+let detailCats = [];
+let sessEdit = null;   // {id} 編集 or null=新規追加
+function openSessionModal(sess) {
+  sessEdit = sess;
+  $("sess-error").hidden = true;
+  $("sess-cat").innerHTML = detailCats.map(c => `<option>${esc(c)}</option>`).join("");
+  if (sess) {
+    $("session-title").textContent = "打刻の修正";
+    $("sess-cat").value = sess.category || detailCats[0] || "";
+    $("sess-in").value = sess.clock_in.slice(0, 16);
+    $("sess-out").value = sess.clock_out ? sess.clock_out.slice(0, 16) : "";
+    $("sess-delete").hidden = false;
+  } else {
+    $("session-title").textContent = `打刻を追加 — ${view.userName}`;
+    $("sess-cat").value = detailCats[0] || "";
+    const d = view.month === currentMonth()
+      ? new Date().toISOString().slice(0, 10) : `${view.month}-01`;
+    $("sess-in").value = `${d}T09:00`;
+    $("sess-out").value = `${d}T18:00`;
+    $("sess-delete").hidden = true;
+  }
+  $("session-modal").hidden = false;
+}
+$("add-session").onclick = () => openSessionModal(null);
+$("sess-close").onclick = () => $("session-modal").hidden = true;
+$("sess-save").onclick = async () => {
+  const body = JSON.stringify({ clock_in: $("sess-in").value,
+    clock_out: $("sess-out").value, category: $("sess-cat").value });
+  const opts = { headers: { "Content-Type": "application/json" }, body };
+  try {
+    if (sessEdit) await apiJson(`/api/sessions/${sessEdit.id}`, { ...opts, method: "PATCH" });
+    else await apiJson(`/api/users/${view.userId}/sessions`, { ...opts, method: "POST" });
+  } catch { return; }
+  $("session-modal").hidden = true;
+  showDetail(view.userId, view.userName, view.month);
+};
+$("sess-delete").onclick = async () => {
+  if (!confirm("この打刻を削除しますか？（修正履歴に残ります）")) return;
+  await apiJson(`/api/sessions/${sessEdit.id}`, { method: "DELETE" });
+  $("session-modal").hidden = true;
+  showDetail(view.userId, view.userName, view.month);
+};
+
+/* ---------- キャプチャのモーダル (矢印で前後移動) ---------- */
+let gallery = { list: [], i: 0 };
+async function openModal(list, index) {
+  gallery = { list, i: index };
+  await renderModalImage();
+  $("modal").hidden = false;
+}
+async function renderModalImage() {
+  const cur = gallery.list[gallery.i];
+  const blob = await (await api(`/api/screenshots/${cur.id}/image`)).blob();
+  const img = $("modal-img");
+  img.classList.remove("zoomed");      // 新しい画像は全体表示から開く
+  img.parentElement.scrollTo(0, 0);    // スクロール位置もリセット
+  if (modalUrl) URL.revokeObjectURL(modalUrl);   // 前の画像のblob URLを解放
+  modalUrl = URL.createObjectURL(blob);
+  img.src = modalUrl;
+  const meta = modalMetaHtml(cur);
+  $("modal-info").innerHTML =
+    `${esc(cur.info)}（${gallery.i + 1}/${gallery.list.length}）`
+    + (meta ? `<br>${meta}` : "")
+    + `<br><span style="color:#9ca3af">画像をクリックでその位置を拡大（複数モニターは見たい画面をクリック）</span>`;
+  $("modal-prev").disabled = gallery.i === 0;
+  $("modal-next").disabled = gallery.i === gallery.list.length - 1;
+}
+function modalMove(delta) {
+  const next = gallery.i + delta;
+  if (next < 0 || next >= gallery.list.length) return;
+  gallery.i = next;
+  renderModalImage();
+}
+$("modal-prev").onclick = () => modalMove(-1);
+$("modal-next").onclick = () => modalMove(1);
+// 画像クリックで実寸ズーム⇔全体表示を切り替え。
+// ズーム時はクリックした位置を中心に表示する(マルチモニターの横長画像でも、
+// 見たい画面をクリックすればそこが拡大される)。
+$("modal-img").onclick = (e) => {
+  const img = $("modal-img");
+  const wrap = img.parentElement;            // .imgwrap (スクロール枠)
+  if (img.classList.contains("zoomed")) {
+    img.classList.remove("zoomed");          // 全体表示に戻す
+    return;
+  }
+  const rect = img.getBoundingClientRect();  // クリック位置を画像内の割合で求める
+  const fx = (e.clientX - rect.left) / rect.width;
+  const fy = (e.clientY - rect.top) / rect.height;
+  img.classList.add("zoomed");               // 実寸表示にして…
+  wrap.scrollLeft = fx * img.naturalWidth - wrap.clientWidth / 2;   // …その点を中央へ
+  wrap.scrollTop = fy * img.naturalHeight - wrap.clientHeight / 2;
+};
+document.addEventListener("keydown", e => {
+  if ($("modal").hidden) return;
+  if (e.key === "ArrowLeft") modalMove(-1);
+  if (e.key === "ArrowRight") modalMove(1);
+  if (e.key === "Escape") $("modal").hidden = true;
+});
+$("modal-del").onclick = async () => {
+  if (!confirm("このキャプチャを削除しますか？（元に戻せません）")) return;
+  await apiJson(`/api/screenshots/${gallery.list[gallery.i].id}`, { method: "DELETE" });
+  $("modal").hidden = true;
+  view.name === "detail"
+    ? showDetail(view.userId, view.userName, view.month)
+    : renderHome(await apiJson("/api/status" + homeTeamQuery()));
+};
+$("modal-close").onclick = () => $("modal").hidden = true;
+$("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = true; };
+
+/* ---------- ナビゲーション ---------- */
+$("nav-home").onclick = () => showHome();
+$("nav-users").onclick = () => showUsers();
+$("nav-journal").onclick = () => showJournal();
+$("nav-leave").onclick = () => showLeave();
+$("nav-report").onclick = () => showReport();
+$("nav-settings").onclick = () => showSettings();
+/* 管理者トークン(自分のログイン用)の表示・コピー */
+const myToken = () => localStorage.getItem(KEY) || "";
+$("my-token-show").onclick = () => {
+  const el = $("my-token"), shown = el.dataset.shown === "1";
+  el.textContent = shown ? "••••••••" : (myToken() || "(トークンを取得できませんでした)");
+  el.dataset.shown = shown ? "0" : "1";
+  $("my-token-show").textContent = shown ? "表示" : "隠す";
+};
+$("my-token-copy").onclick = () => copyFlash($("my-token-copy"), myToken());
+$("my-token-url").onclick = () => copyFlash($("my-token-url"),
+  location.origin + "/admin#token=" + encodeURIComponent(myToken()));
+$("back-home").onclick = () => showHome();
+$("prev-month").onclick = () => showDetail(view.userId, view.userName, shiftMonth(view.month, -1));
+$("next-month").onclick = () => showDetail(view.userId, view.userName, shiftMonth(view.month, 1));
+$("login-btn").onclick = () => {
+  localStorage.setItem(KEY, $("token-input").value.trim());
+  showApp();
+};
+$("token-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("login-btn").click();
+});
+$("logout").onclick = () => {
+  localStorage.removeItem(KEY);
+  $("token-input").value = "";
+  showLogin(false);
+};
+
+if (localStorage.getItem(KEY)) showApp(); else showLogin(false);
+</script>
+</body>
+</html>

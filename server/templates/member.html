@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zatsumu 打刻</title>
+<style>
+  :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
+  html { -webkit-text-size-adjust: 100%; }  /* iPhoneの自動文字拡大による横はみ出しを防ぐ */
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7;
+         display: flex; flex-direction: column; min-height: 100vh; overflow-x: hidden;
+         align-items: center; padding: 1.2rem 0; box-sizing: border-box; gap: 1rem; }
+  .card { background: #fff; padding: 1.5rem; border-radius: 12px;
+          width: min(480px, 92vw); box-sizing: border-box;
+          box-shadow: 0 1px 4px rgba(0,0,0,.12); text-align: center; }
+  h1 { font-size: 1.2rem; margin: 0 0 .5rem; }
+  h2 { font-size: 1rem; margin: 0 0 .8rem; color: #374151; }
+  input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
+          border: 1px solid #ccc; border-radius: 6px; }
+  .error { color: var(--away); font-size: .85rem; }
+  .dl-sep { border: none; border-top: 1px solid var(--line); margin: 1.1rem 0 .8rem; }
+  .dl-note { font-size: .85rem; color: #475569; margin: 0 0 .5rem; }
+  .dl-btn { display: inline-block; padding: .55rem 1.1rem; background: #e2e8f0;
+            color: #334155; border-radius: 8px; text-decoration: none; font-weight: 600;
+            font-size: .92rem; }
+  .dl-btn:hover { background: #cbd5e1; }
+  .dl-help { font-size: .78rem; color: #777; margin: .5rem 0 0; line-height: 1.5; }
+  button.small { padding: .5rem 1.2rem; border: 0; border-radius: 6px;
+                 background: #2563eb; color: #fff; cursor: pointer; }
+  button.ghost { background: #e5e7eb; color: #374151; }
+  /* 大きな打刻ボタン */
+  #punch { width: 180px; height: 180px; border-radius: 50%; border: 0;
+           color: #fff; font-size: 1.25rem; font-weight: 700; cursor: pointer;
+           margin: 1rem auto; display: block; transition: transform .1s;
+           box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+  #punch:active { transform: scale(.96); }
+  #punch.seated { background: var(--seated); }
+  #punch.away { background: var(--away); }
+  #punch small { display: block; font-size: .8rem; font-weight: 400; margin-top: .4rem; }
+  .stats { color: #374151; font-size: .9rem; }
+  /* 勤務実績 */
+  .month-nav { display: flex; align-items: center; justify-content: center;
+               gap: .8rem; margin-bottom: .8rem; }
+  .tl-row { display: grid; grid-template-columns: 6.2rem 3.4rem 1fr;
+            align-items: center; border-bottom: 1px solid var(--line);
+            padding: .3rem 0; gap: .5rem; font-size: .78rem; text-align: left; }
+  .tl-row.head { color: #6b7280; font-size: .7rem; }
+  .tl-row .sat { color: var(--seated); } .tl-row .sun { color: var(--away); }
+  .tl { position: relative; height: 18px; background: #f3f4f6; border-radius: 3px; }
+  .tl .work { position: absolute; top: 0; bottom: 0; background: #fef3c7; z-index: 0; }
+  .tl .seg { position: absolute; top: 2px; bottom: 2px; background: var(--seated);
+             border-radius: 2px; min-width: 2px; }
+  .tl .seg.open { background: repeating-linear-gradient(45deg, var(--seated),
+                  var(--seated) 4px, #5b9bd5 4px, #5b9bd5 8px); }
+  .tl .dot { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px;
+             border-radius: 50%; background: #f59e0b; border: 1px solid #fff;
+             cursor: pointer; z-index: 2; }
+  .tl .dot.stall { background: var(--away); width: 13px; height: 13px; margin: -6.5px;
+                   box-shadow: 0 0 0 2px #fff; z-index: 3; }
+  .stall-legend { font-size: .72rem; color: #c62828; margin: .1rem 0; text-align: left; }
+  .tl-row.cr { cursor: pointer; }
+  .tl-row.cr:hover { background: #eef4ff; }
+  .card.flash { animation: cardflash 1.2s ease; }
+  @keyframes cardflash { from { box-shadow: 0 0 0 3px #f59e0baa; }
+                         to { box-shadow: 0 0 0 0 transparent; } }
+  /* PC では大きく表示する */
+  @media (min-width: 720px) {
+    body { font-size: 17px; }
+    .card { width: min(760px, 92vw); padding: 2rem; }
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.25rem; }
+    #punch { width: 230px; height: 230px; font-size: 1.6rem; }
+    #punch small { font-size: 1rem; }
+    .stats { font-size: 1.1rem; }
+    .month-nav strong { font-size: 1.3rem; }
+    .tl-row { grid-template-columns: 8rem 4.5rem 1fr; font-size: .95rem;
+              padding: .45rem 0; }
+    .tl-row.head { font-size: .8rem; }
+    .tl { height: 26px; }
+    .tl .dot { width: 11px; height: 11px; margin: -5.5px; }
+  }
+  textarea { width: 100%; box-sizing: border-box; padding: .6rem; border: 1px solid #ccc;
+             border-radius: 6px; font-size: 1rem; font-family: inherit; resize: vertical; }
+  /* 作業区分の切り替え */
+  #cat-switch { margin-top: .8rem; }
+  .cat-label { font-size: .85rem; color: #6b7280; margin: .3rem 0; }
+  #cat-buttons { display: flex; gap: .5rem; justify-content: center; flex-wrap: wrap; }
+  .cat-btn { padding: .5rem 1rem; border: 2px solid #ccc; border-radius: 8px;
+             background: #fff; color: #374151; cursor: pointer; font-size: .95rem;
+             font-weight: 600; }
+  .cat-btn.current { color: #fff; border-color: transparent; }
+  /* モーダル */
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+           align-items: center; justify-content: center; z-index: 10; }
+  #modal[hidden] { display: none; }
+  #modal .box { background: #fff; padding: 1rem; border-radius: 8px;
+                max-width: 92vw; max-height: 90vh; display: flex; flex-direction: column; }
+  #modal .imgwrap { overflow: auto; max-width: 88vw; max-height: 74vh; margin-bottom: .8rem; }
+  #modal img { max-width: 86vw; max-height: 70vh; display: block; cursor: zoom-in; }
+  /* クリックで実寸ズーム: マルチモニターの横長画像も各画面を細かく見られる */
+  #modal img.zoomed { max-width: none; max-height: none; cursor: zoom-out; }
+</style>
+</head>
+<body>
+<div class="card" id="login" hidden>
+  <h1>🪑 <span class="brand">zatsumu</span> 打刻</h1>
+  <p>自分のトークンを入力してください</p>
+  <input type="password" id="token-input" placeholder="トークン" autocomplete="current-password">
+  <button class="small" id="login-btn">ログイン</button>
+  <p id="login-error" class="error" hidden>トークンが正しくありません</p>
+  <hr class="dl-sep">
+  <p class="dl-note">PCで自動撮影しながら打刻する場合は、専用アプリ（Windows）を使います。</p>
+  <a class="dl-btn" href="/download/client" download>🖥 PCアプリをダウンロード（ZIP）</a>
+  <p class="dl-help">①ZIPを右クリック→<b>「すべて展開」</b>。②できた <b>勤怠管理</b> フォルダの中の
+  <b>勤怠管理.exe</b> をダブルクリック。「WindowsによってPCが保護されました」と出たら〔詳細情報〕→〔実行〕。
+  初回に自分のトークンを入力すれば次回からはダブルクリックで起動します。<br>
+  ※<b>フォルダごと</b>置いて使ってください（exe だけ取り出すと動きません）。</p>
+</div>
+
+<div class="card" id="panel" hidden>
+  <h1 id="hello"></h1>
+  <button id="punch"></button>
+  <p class="stats">本日の在席時間: <strong id="hours"></strong></p>
+  <div id="webcap" style="margin-top:.5rem;font-size:.9rem">
+    <button class="small" id="webcap-btn">🖥 画面共有して撮影する</button>
+    <button class="small" id="webcap-add" hidden>＋モニター追加</button>
+    <span id="webcap-status" style="margin-left:.4rem;color:#6b7280"></span>
+    <p style="font-size:.78rem;color:#999;margin:.3rem 0 0">
+      アプリを入れない場合の撮影用。<strong>着席中</strong>に開始し、画面共有を許可してください
+      （共有中はブラウザに表示が出ます／タブを閉じると止まります）。<br>
+      複数モニターは「＋モニター追加」で1台ずつ共有を許可すると、横に並べて1枚に記録されます。</p>
+  </div>
+  <p style="margin:.5rem 0 0;font-size:.85rem;color:#475569">
+    PCに常駐アプリを入れて自動撮影する場合：
+    <a class="dl-btn" href="/download/client" download>🖥 PCアプリをダウンロード（ZIP）</a>
+    <span style="font-size:.78rem;color:#999;display:block;margin-top:.3rem">
+      ZIPを右クリック→「すべて展開」→フォルダ内の <b>勤怠管理.exe</b> を実行（フォルダごと残す）。</span>
+  </p>
+  <div id="cat-switch">
+    <p class="cat-label" id="cat-label"></p>
+    <div id="cat-buttons"></div>
+  </div>
+  <p class="error" id="punch-error" hidden></p>
+</div>
+
+<div class="card" id="journal-card" hidden>
+  <h2>今日の日報 <small style="color:#777" id="journal-date"></small></h2>
+  <textarea id="journal-body" rows="5" placeholder="今日やったこと・進捗・連絡事項などを記録"></textarea>
+  <div style="display:flex;align-items:center;gap:.8rem;margin-top:.5rem">
+    <button class="small" id="journal-save">保存</button>
+    <span id="journal-msg" style="color:#0a7d32;font-size:.85rem"></span>
+  </div>
+</div>
+
+<div class="card" id="leave-card" hidden>
+  <h2>休暇・欠勤の申請</h2>
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+    <input type="date" id="lv-date">
+    <select id="lv-type"></select>
+    <input type="text" id="lv-reason" placeholder="理由（任意）" style="flex:1;min-width:120px">
+    <button class="small" id="lv-submit">申請</button>
+  </div>
+  <p id="lv-msg" style="font-size:.85rem;margin:.4rem 0"></p>
+  <div id="lv-list"></div>
+</div>
+
+<div class="card" id="correction-card" hidden>
+  <h2>勤務時間の修正申請</h2>
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+    <input type="date" id="cr-date">
+    <label style="font-size:.85rem">着席<input type="time" id="cr-in" style="margin-left:.2rem"></label>
+    <label style="font-size:.85rem">退席<input type="time" id="cr-out" style="margin-left:.2rem"></label>
+    <input type="text" id="cr-reason" placeholder="理由（任意）" style="flex:1;min-width:120px">
+    <button class="small" id="cr-submit">申請</button>
+  </div>
+  <p style="font-size:.8rem;color:#777;margin:.3rem 0">打刻し忘れ等の修正を申請できます。着席・退席は一方だけでもOK（承認されると反映されます）</p>
+  <p id="cr-msg" style="font-size:.85rem;margin:.4rem 0"></p>
+  <div id="cr-list"></div>
+</div>
+
+<div class="card" id="history" hidden>
+  <h2>勤務実績</h2>
+  <div class="month-nav">
+    <button class="small ghost" id="prev-month">◀</button>
+    <strong id="month-title"></strong>
+    <button class="small ghost" id="next-month">▶</button>
+  </div>
+  <div id="cat-legend" style="margin:.4rem 0"></div>
+  <div id="timeline"></div>
+  <p id="stall-note" class="stall-legend"></p>
+  <p><small style="color:#777">色=作業区分（斜線は勤務中）、●=画面キャプチャ（タップで確認）。
+  <strong>日付の行をタップ</strong>すると、その日の勤務時間の修正申請ができます。</small></p>
+  <button class="small ghost" id="logout">ログアウト</button>
+</div>
+
+<div id="modal" hidden>
+  <div class="box">
+    <div class="imgwrap"><img id="modal-img" alt="screenshot"></div>
+    <div style="display:flex;gap:.5rem;align-items:center">
+      <button class="small ghost" id="modal-prev">←</button>
+      <button class="small ghost" id="modal-next">→</button>
+      <span id="modal-info" style="font-size:.85rem;color:#374151;flex:1"></span>
+      <button class="small ghost" id="modal-close">閉じる</button></div>
+  </div>
+</div>
+
+<script>
+const KEY = "zatsumu_me_token";
+const $ = id => document.getElementById(id);
+// HTML(本文・属性)に安全に埋め込むためのエスケープ
+const esc2 = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// 無操作秒を「N分」「N分M秒」に整形(画面停滞の詳細表示に使う)
+function fmtIdle(sec) {
+  if (sec == null) return "";
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? (s ? `${m}分${s}秒` : `${m}分`) : `${s}秒`;
+}
+let state = null;
+let timer = null;
+const _n = new Date();
+let month = `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, "0")}`;
+
+const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
+
+// ?token= / #token= での自動ログイン。#はサーバのアクセスログに残らないので推奨。保存後URLから即削除
+const _url = new URL(location);
+const _tok = (_url.hash && new URLSearchParams(_url.hash.slice(1)).get("token"))
+  || _url.searchParams.get("token");
+if (_tok) {
+  localStorage.setItem(KEY, _tok);
+  _url.searchParams.delete("token");
+  _url.hash = "";
+  history.replaceState(null, "", _url);
+}
+
+// 会社名・勤務時間帯などの公開設定
+let config = { company_name: "zatsumu", work_start: "09:00", work_end: "18:00" };
+async function loadConfig() {
+  try { config = await (await fetch("/api/config")).json(); } catch {}
+  document.title = (config.company_name || "zatsumu") + " 打刻";
+  document.querySelectorAll(".brand").forEach(el =>
+    el.textContent = config.company_name || "zatsumu");
+}
+// 表示窓(時): 深夜/早朝の空き時間をカットし勤務時間帯を横いっぱいに広げる
+let winStart = 0, winEnd = 24;
+const hOf = iso => {
+  const d = new Date(iso);
+  return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+};
+const hhmmToH = s => {
+  const [h, m] = String(s || "").split(":").map(Number);
+  return isNaN(h) ? null : h + (m || 0) / 60;
+};
+function setWindow(hours) {
+  const ws = hhmmToH(config.work_start) ?? 9, we = hhmmToH(config.work_end) ?? 18;
+  const all = (hours || []).filter(h => h != null && !isNaN(h));
+  let lo = Math.min(ws, ...(all.length ? all : [ws]));
+  let hi = Math.max(we, ...(all.length ? all : [we]));
+  lo = Math.max(0, Math.floor(lo)); hi = Math.min(24, Math.ceil(hi));
+  if (hi - lo < 8) { hi = Math.min(24, lo + 8); lo = Math.max(0, hi - 8); }
+  winStart = lo; winEnd = hi;
+}
+const hhmmPct = hhmm => {
+  const h = hhmmToH(hhmm);
+  if (h == null) return null;
+  const span = (winEnd - winStart) || 24;
+  return Math.max(0, Math.min(100, (h - winStart) / span * 100));
+};
+const workBandHtml = () => {
+  const a = hhmmPct(config.work_start), b = hhmmPct(config.work_end);
+  if (a === null || b === null || b <= a) return "";
+  return `<div class="work" style="left:${a}%;width:${b - a}%"></div>`;
+};
+
+// 作業区分の色 (設定順のインデックスでパレットから割り当て)
+const CAT_PALETTE = ["#1565c0", "#2e7d32", "#6a1b9a", "#00838f", "#ad1457", "#5d4037"];
+const catColor = cat => {
+  const cats = (state && state.categories) || [];
+  const i = cats.indexOf(cat);
+  return i < 0 ? "#9ca3af" : CAT_PALETTE[i % CAT_PALETTE.length];
+};
+
+function showLogin(withError) {
+  clearInterval(timer);
+  webcapStop();
+  $("panel").hidden = true;
+  $("journal-card").hidden = true;
+  $("leave-card").hidden = true;
+  $("correction-card").hidden = true;
+  $("history").hidden = true;
+  $("login").hidden = false;
+  $("login-error").hidden = !withError;
+}
+
+async function load() {
+  const r = await fetch("/api/me", { headers: headers() });
+  if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
+  state = await r.json();
+  $("login").hidden = true;
+  $("panel").hidden = false;
+  $("journal-card").hidden = false;
+  $("leave-card").hidden = false;
+  $("correction-card").hidden = false;
+  $("history").hidden = false;
+  $("hello").textContent = state.name + " さん";
+  loadJournal();
+  loadLeave();
+  loadCorrections();
+  draw();
+  clearInterval(timer);
+  timer = setInterval(draw, 1000);
+  loadHistory();
+}
+
+function draw() {
+  const b = $("punch");
+  $("hours").textContent = state.hours_today + " h";
+  if (state.seated) {
+    const mins = Math.max(Math.floor((Date.now() - new Date(state.open_since)) / 60000), 0);
+    b.className = "seated";
+    b.style.background = catColor(state.category);
+    b.innerHTML = `着席中（${esc2(state.category)}）<br>${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, "0")}
+                   <small>タップで退席</small>`;
+  } else {
+    b.className = "away";
+    b.style.background = "";
+    b.innerHTML = `退席中<small>タップで着席</small>`;
+  }
+  drawCategoryButtons();
+}
+
+// 作業区分ボタン: 退席中は「タップで着席」、着席中は区分の切替
+function drawCategoryButtons() {
+  const cats = state.categories || [];
+  if (cats.length <= 1) { $("cat-switch").hidden = true; return; }
+  $("cat-switch").hidden = false;
+  $("cat-label").textContent = state.seated
+    ? "作業区分を切り替え" : "区分を選んで着席";
+  $("cat-buttons").innerHTML = cats.map(c => {
+    const cur = state.seated && state.category === c;
+    return `<button class="cat-btn${cur ? " current" : ""}" data-cat="${esc2(c)}"
+            style="${cur ? `background:${catColor(c)}` : ""}">${esc2(c)}</button>`;
+  }).join("");
+  document.querySelectorAll(".cat-btn").forEach(btn => btn.onclick = async () => {
+    const cat = btn.dataset.cat;
+    if (!state.seated) {
+      await punch("/api/clock-in", { category: cat });
+    } else if (state.category !== cat) {
+      await punch("/api/switch-category", { category: cat });
+    }
+  });
+}
+
+async function punch(path, body) {
+  $("punch-error").hidden = true;
+  const r = await fetch(path, {
+    method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!r.ok && r.status !== 409) {
+    $("punch-error").textContent = "操作に失敗しました。通信環境を確認してください";
+    $("punch-error").hidden = false;
+  }
+  await load();
+  if (!state || !state.seated) webcapStop();   // 退席したら画面共有撮影を停止
+}
+
+/* ---------- Web画面共有での撮影 (アプリ不要・複数モニター対応) ---------- */
+let webcapStreams = [], webcapTimer = null, webcapGen = 0;
+
+async function webcapAdd() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    $("webcap-status").textContent = "このブラウザは画面共有に未対応です";
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  } catch {
+    if (!webcapStreams.length) $("webcap-status").textContent = "画面共有がキャンセルされました";
+    return;
+  }
+  const video = document.createElement("video");
+  video.srcObject = stream;
+  video.muted = true;
+  try { await video.play(); } catch {}
+  const entry = { stream, video };
+  webcapStreams.push(entry);
+  // ブラウザのバナーから共有停止された場合はその画面だけ外す
+  stream.getVideoTracks()[0].addEventListener("ended", () => webcapRemove(entry));
+  if (webcapStreams.length === 1) {
+    const gen = ++webcapGen;                           // 新しい撮影ループ世代
+    webcapTimer = setTimeout(() => webcapTick(gen), 3000);  // 数秒後に1枚目
+  }
+  webcapUpdateUi();
+}
+
+function webcapRemove(entry) {
+  entry.stream.getTracks().forEach(t => t.stop());
+  webcapStreams = webcapStreams.filter(e => e !== entry);
+  if (!webcapStreams.length) webcapStop(); else webcapUpdateUi();
+}
+
+function webcapStop() {
+  webcapGen++;   // 走行中のtickを無効化(await明けに再スケジュールさせない)
+  if (webcapTimer) { clearTimeout(webcapTimer); webcapTimer = null; }
+  webcapStreams.forEach(e => e.stream.getTracks().forEach(t => t.stop()));
+  webcapStreams = [];
+  webcapUpdateUi();
+}
+
+function webcapUpdateUi() {
+  const n = webcapStreams.length;
+  $("webcap-btn").textContent = n ? "■ 撮影を停止" : "🖥 画面共有して撮影する";
+  $("webcap-add").hidden = n === 0;
+  $("webcap-status").textContent = n ? `画面共有で撮影中（${n}画面）` : "";
+}
+
+async function webcapTick(gen) {
+  if (gen !== webcapGen || !webcapStreams.length) return;
+  let conf = { min_interval: 300, max_interval: 900, quality: 60, blur: 0, capture_enabled: true };
+  try { conf = await (await fetch("/api/me/settings", { headers: headers() })).json(); } catch {}
+  if (gen !== webcapGen) return;   // await中に停止/再開されたら終了(再スケジュールしない)
+  if (state && state.seated && conf.capture_enabled) await webcapShot(conf);
+  if (gen !== webcapGen) return;
+  const lo = Math.max(5, conf.min_interval || 300);
+  const hi = Math.max(lo, conf.max_interval || 900);
+  webcapTimer = setTimeout(() => webcapTick(gen), (lo + Math.floor(Math.random() * (hi - lo + 1))) * 1000);
+}
+
+async function webcapShot(conf) {
+  // 共有中の各画面を共通の高さに揃えて横に並べた1枚にする(デスクトップ版と同じ)
+  const vids = webcapStreams.map(e => e.video).filter(v => v.videoWidth > 0);
+  if (!vids.length) return;
+  const gap = 8;
+  const H = Math.min(...vids.map(v => v.videoHeight));
+  const parts = vids.map(v => ({ v, w: Math.round(v.videoWidth * H / v.videoHeight) }));
+  const totalW = parts.reduce((s, p) => s + p.w, 0) + gap * (parts.length - 1);
+  const cap = 1280 * vids.length;                 // モニター数に応じて上限を広げる
+  const k = totalW > cap ? cap / totalW : 1;
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(totalW * k));
+  c.height = Math.max(1, Math.round(H * k));
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#11111b";
+  ctx.fillRect(0, 0, c.width, c.height);
+  if (conf.blur > 0) ctx.filter = `blur(${conf.blur}px)`;
+  let x = 0;
+  for (const { v, w } of parts) {
+    const dw = Math.round(w * k);
+    ctx.drawImage(v, 0, 0, v.videoWidth, v.videoHeight, x, 0, dw, c.height);
+    x += dw + Math.round(gap * k);
+  }
+  const blob = await new Promise(res => c.toBlob(res, "image/jpeg", (conf.quality || 60) / 100));
+  if (!blob) return;
+  const fd = new FormData();
+  fd.append("image", blob, "shot.jpg");
+  fd.append("tiles", String(vids.length));   // 停滞検知をモニター別に行うため
+  try { await fetch("/api/screenshots", { method: "POST", headers: headers(), body: fd }); } catch {}
+}
+
+$("webcap-btn").onclick = () => (webcapStreams.length ? webcapStop() : webcapAdd());
+$("webcap-add").onclick = () => webcapAdd();
+
+/* ---------- 自分の勤務実績 ---------- */
+function shiftMonth(m, delta) {
+  const [y, mo] = m.split("-").map(Number);
+  const d = new Date(y, mo - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+let allShots = [];
+let dayTimes = {};           // 日付ごとの着席/退席(HH:MM)。行クリックの修正申請に使う
+let memberModalUrl = null;   // 拡大モーダル画像のblob URL(差し替え時に解放)
+async function loadHistory() {
+  const data = await (await fetch(`/api/me/monthly?month=${month}`, { headers: headers() })).json();
+  $("month-title").textContent = month;
+  allShots = [];
+  dayTimes = {};
+  let anyStall = false;
+  const byDate = Object.fromEntries(data.days.map(d => [d.date, d]));
+  const [y, m] = month.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const youbi = ["日", "月", "火", "水", "木", "金", "土"];
+  // 表示窓を当月の在席・キャプチャ実データから決める(深夜/早朝の空き時間をカット)
+  const dhrs = [];
+  data.days.forEach(d => {
+    (d.sessions || []).forEach(s => dhrs.push(hOf(s.start), hOf(s.end)));
+    (d.screenshots || []).forEach(sh => dhrs.push(hOf(sh.taken_at)));
+  });
+  setWindow(dhrs);
+  const pct = t => {
+    const span = (winEnd - winStart) || 24;
+    return Math.max(0, Math.min(100, (hOf(t) - winStart) / span * 100));
+  };
+  const hhmm = ms => {
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  const work = workBandHtml();
+  let html = `<div class="tl-row head"><div>日付</div><div>在席</div><div>${winStart}時〜${winEnd}時</div></div>`;
+  for (let day = 1; day <= lastDay; day++) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const dow = new Date(y, m - 1, day).getDay();
+    const d = byDate[date];
+    const segs = (d?.sessions || []).map(s => {
+      const x0 = pct(s.start), x1 = pct(s.end);
+      const width = Math.max(x1 - x0, 0.2);   // 表示窓内に収まる幅
+      const col = catColor(s.category);
+      const bg = s.open
+        ? `repeating-linear-gradient(45deg,${col},${col} 4px,#ffffffaa 4px,#ffffffaa 8px)`
+        : col;
+      return `<div class="seg" title="${esc2(s.category || "")}${s.open ? "（勤務中）" : ""}"
+              style="left:${x0}%;width:${width}%;background:${bg}"></div>`;
+    }).join("");
+    const dots = (d?.screenshots || []).map(sh => {
+      const i = allShots.length;
+      allShots.push({ id: sh.id, info: new Date(sh.taken_at).toLocaleString("ja-JP"),
+                      similarity: sh.similarity, idle: sh.idle, stalled: sh.stalled });
+      const tip = new Date(sh.taken_at).toLocaleTimeString("ja-JP")
+        + (sh.stalled ? " ⚠画面停滞" : "") + (sh.similarity != null ? ` 一致${sh.similarity}%` : "");
+      return `<div class="dot${sh.stalled ? " stall" : ""}" data-i="${i}" style="left:${pct(sh.taken_at)}%"
+            title="${tip}"></div>`;
+    }).join("");
+    if ((d?.screenshots || []).some(sh => sh.stalled)) anyStall = true;
+    const ss = d?.sessions || [];
+    if (ss.length) {   // その日の着席/退席(全区間の最早〜最遅)を修正申請の初期値に
+      dayTimes[date] = { in: hhmm(Math.min(...ss.map(s => +new Date(s.start)))),
+                         out: hhmm(Math.max(...ss.map(s => +new Date(s.end)))) };
+    }
+    const cls = dow === 0 ? "sun" : dow === 6 ? "sat" : "";
+    html += `<div class="tl-row cr" data-date="${date}" title="クリックでこの日の修正申請">
+      <div class="${cls}">${month.slice(5)}/${String(day).padStart(2, "0")} (${youbi[dow]})</div>
+      <div>${d ? d.hours + "h" : ""}</div>
+      <div class="tl">${work}${segs}${dots}</div>
+    </div>`;
+  }
+  $("timeline").innerHTML = html;
+  $("stall-note").innerHTML = anyStall
+    ? `<span class="dot" style="position:static;display:inline-block;background:#c62828;box-shadow:0 0 0 1px #fff;vertical-align:middle"></span>
+       赤い点＝<b>画面が動いていなかった時間帯（離席の可能性）</b>。タップで画像を確認できます。` : "";
+  // 区分の凡例 + 区分別の合計
+  const bc = data.by_category || {};
+  $("cat-legend").innerHTML = (data.categories || []).map(c =>
+    `<span style="font-size:.78rem;margin-right:.8rem;white-space:nowrap">
+       <span style="display:inline-block;width:.8rem;height:.8rem;border-radius:2px;
+       background:${catColor(c)};vertical-align:middle"></span>
+       ${esc2(c)} ${bc[c] ? bc[c] + "h" : ""}</span>`).join("");
+  document.querySelectorAll("#timeline .dot").forEach(dot =>
+    dot.onclick = (e) => { e.stopPropagation(); openModal(+dot.dataset.i); });
+  document.querySelectorAll("#timeline .tl-row.cr").forEach(row =>
+    row.onclick = () => fillCorrection(row.dataset.date));
+}
+
+// 勤務実績の行クリック → その日の修正申請フォームを事前入力して表示する
+function fillCorrection(date) {
+  $("cr-date").value = date;
+  const t = dayTimes[date] || {};
+  $("cr-in").value = t.in || "";
+  $("cr-out").value = t.out || "";
+  $("cr-reason").value = "";
+  $("cr-msg").textContent = "";
+  const card = $("correction-card");
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+  card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+  setTimeout(() => $("cr-reason").focus({ preventScroll: true }), 350);
+}
+
+let shotIdx = 0;
+async function openModal(i) {
+  shotIdx = i;
+  await renderModalImage();
+  $("modal").hidden = false;
+}
+async function renderModalImage() {
+  const cur = allShots[shotIdx];
+  const blob = await (await fetch(`/api/screenshots/${cur.id}/image`, { headers: headers() })).blob();
+  if (memberModalUrl) URL.revokeObjectURL(memberModalUrl);   // 前の画像のblob URLを解放
+  memberModalUrl = URL.createObjectURL(blob);
+  const img = $("modal-img");
+  img.classList.remove("zoomed");        // 新しい画像は全体表示から開く
+  img.parentElement.scrollTo(0, 0);      // スクロール位置もリセット
+  img.src = memberModalUrl;
+  const bits = [];
+  if (cur.similarity != null) bits.push(`前の画像と${cur.similarity}%一致`);
+  if (cur.idle != null) bits.push(`無操作 ${fmtIdle(cur.idle)}`);
+  const meta = cur.stalled
+    ? `<span style="color:#c62828;font-weight:700">⚠ 画面停滞（離席の可能性）</span>`
+      + (bits.length ? ` ｜ ${esc2(bits.join("・"))}` : "")
+    : (bits.length ? `<span style="color:#64748b">${esc2(bits.join("・"))}</span>` : "");
+  $("modal-info").innerHTML =
+    `${esc2(cur.info)}（${shotIdx + 1}/${allShots.length}）`
+    + (meta ? `<br>${meta}` : "")
+    + `<br><span style="color:#9ca3af">画像をタップでその位置を拡大</span>`;
+  $("modal-prev").disabled = shotIdx === 0;
+  $("modal-next").disabled = shotIdx === allShots.length - 1;
+}
+// 画像クリック/タップで実寸ズーム⇔全体表示。ズーム時はその位置を中心に表示
+$("modal-img").onclick = (e) => {
+  const img = $("modal-img");
+  const wrap = img.parentElement;
+  if (img.classList.contains("zoomed")) { img.classList.remove("zoomed"); return; }
+  const rect = img.getBoundingClientRect();
+  const fx = (e.clientX - rect.left) / rect.width;
+  const fy = (e.clientY - rect.top) / rect.height;
+  img.classList.add("zoomed");
+  wrap.scrollLeft = fx * img.naturalWidth - wrap.clientWidth / 2;
+  wrap.scrollTop = fy * img.naturalHeight - wrap.clientHeight / 2;
+};
+function modalMove(delta) {
+  const next = shotIdx + delta;
+  if (next < 0 || next >= allShots.length) return;
+  shotIdx = next;
+  renderModalImage();
+}
+$("modal-prev").onclick = () => modalMove(-1);
+$("modal-next").onclick = () => modalMove(1);
+document.addEventListener("keydown", e => {
+  if ($("modal").hidden) return;
+  if (e.key === "ArrowLeft") modalMove(-1);
+  if (e.key === "ArrowRight") modalMove(1);
+  if (e.key === "Escape") $("modal").hidden = true;
+});
+$("modal-close").onclick = () => $("modal").hidden = true;
+$("modal").onclick = e => { if (e.target === $("modal")) $("modal").hidden = true; };
+
+$("prev-month").onclick = () => { month = shiftMonth(month, -1); loadHistory(); };
+$("next-month").onclick = () => { month = shiftMonth(month, 1); loadHistory(); };
+
+/* ---------- 日報 ---------- */
+async function loadJournal() {
+  const j = await (await fetch("/api/me/journal", { headers: headers() })).json();
+  $("journal-body").value = j.body;
+  $("journal-date").textContent = j.date;
+  $("journal-msg").textContent = "";
+}
+$("journal-save").onclick = async () => {
+  const r = await fetch("/api/me/journal", {
+    method: "PUT", headers: { ...headers(), "Content-Type": "application/json" },
+    body: JSON.stringify({ body: $("journal-body").value }),
+  });
+  $("journal-msg").textContent = r.ok ? "保存しました ✓" : "保存に失敗しました";
+  setTimeout(() => $("journal-msg").textContent = "", 2500);
+};
+
+/* ---------- 休暇・欠勤の申請 ---------- */
+async function loadLeave() {
+  if (!$("lv-type").options.length) {
+    const t = await (await fetch("/api/leave/types", { headers: headers() })).json();
+    $("lv-type").innerHTML = t.types.map(x => `<option>${esc2(x)}</option>`).join("");
+  }
+  const list = await (await fetch("/api/me/leave", { headers: headers() })).json();
+  const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
+  $("lv-list").innerHTML = list.length ? list.map(l => `
+    <div style="display:flex;gap:.6rem;align-items:center;border-bottom:1px solid #eee;padding:.35rem 0;font-size:.9rem">
+      <span style="width:6.5rem">${esc2(l.date)}</span>
+      <span style="flex:1">${esc2(l.leave_type)}${l.reason ? " / " + esc2(l.reason) : ""}</span>
+      <span class="lv-${l.status}">${label[l.status]}</span>
+      ${l.status !== "approved"
+        ? `<button class="small ghost lv-cancel" data-id="${l.id}">取消</button>` : ""}
+    </div>`).join("") : `<small style="color:#777">申請はありません</small>`;
+  document.querySelectorAll(".lv-cancel").forEach(b => b.onclick = async () => {
+    await fetch(`/api/me/leave/${b.dataset.id}`, { method: "DELETE", headers: headers() });
+    loadLeave();
+  });
+}
+$("lv-submit").onclick = async () => {
+  if (!$("lv-date").value) { $("lv-msg").textContent = "日付を選んでください"; return; }
+  const r = await fetch("/api/me/leave", {
+    method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+    body: JSON.stringify({ date: $("lv-date").value, leave_type: $("lv-type").value,
+                           reason: $("lv-reason").value }),
+  });
+  if (r.ok) {
+    $("lv-reason").value = "";
+    $("lv-msg").style.color = "#0a7d32";
+    $("lv-msg").textContent = "申請しました（承認待ち）";
+    loadLeave();
+  } else {
+    const e = await r.json().catch(() => ({}));
+    $("lv-msg").style.color = "#c62828";
+    $("lv-msg").textContent = e.detail || "申請に失敗しました";
+  }
+  setTimeout(() => $("lv-msg").textContent = "", 3000);
+};
+
+/* ---------- 勤務時間の修正申請 ---------- */
+async function loadCorrections() {
+  const list = await (await fetch("/api/me/corrections", { headers: headers() })).json();
+  const label = { pending: "承認待ち", approved: "承認済み", rejected: "却下" };
+  const tm = t => t ? esc2(t) : "—";
+  $("cr-list").innerHTML = list.length ? list.map(c => `
+    <div style="display:flex;gap:.6rem;align-items:center;border-bottom:1px solid #eee;padding:.35rem 0;font-size:.9rem">
+      <span style="width:6.5rem">${esc2(c.date)}</span>
+      <span style="flex:1">着席 ${tm(c.requested_in)} / 退席 ${tm(c.requested_out)}${c.reason ? " ・ " + esc2(c.reason) : ""}</span>
+      <span class="lv-${c.status}">${label[c.status]}</span>
+      ${c.status !== "approved"
+        ? `<button class="small ghost cr-cancel" data-id="${c.id}">取消</button>` : ""}
+    </div>`).join("") : `<small style="color:#777">申請はありません</small>`;
+  document.querySelectorAll(".cr-cancel").forEach(b => b.onclick = async () => {
+    await fetch(`/api/me/corrections/${b.dataset.id}`, { method: "DELETE", headers: headers() });
+    loadCorrections();
+  });
+}
+$("cr-submit").onclick = async () => {
+  if (!$("cr-date").value) { $("cr-msg").textContent = "日付を選んでください"; return; }
+  if (!$("cr-in").value && !$("cr-out").value) {
+    $("cr-msg").textContent = "着席か退席の時刻を入力してください"; return;
+  }
+  const r = await fetch("/api/me/corrections", {
+    method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+    body: JSON.stringify({ date: $("cr-date").value, requested_in: $("cr-in").value || null,
+                           requested_out: $("cr-out").value || null, reason: $("cr-reason").value }),
+  });
+  if (r.ok) {
+    $("cr-reason").value = ""; $("cr-in").value = ""; $("cr-out").value = "";
+    $("cr-msg").style.color = "#0a7d32";
+    $("cr-msg").textContent = "申請しました（承認待ち）";
+    loadCorrections();
+  } else {
+    const e = await r.json().catch(() => ({}));
+    $("cr-msg").style.color = "#c62828";
+    $("cr-msg").textContent = e.detail || "申請に失敗しました";
+  }
+  setTimeout(() => $("cr-msg").textContent = "", 3000);
+};
+
+$("punch").onclick = () =>
+  // 着席中はタップで退席、退席中は既定区分で着席
+  punch(state.seated ? "/api/clock-out" : "/api/clock-in", {});
+
+$("login-btn").onclick = () => {
+  localStorage.setItem(KEY, $("token-input").value.trim());
+  load();
+};
+$("token-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("login-btn").click();
+});
+$("logout").onclick = () => {
+  localStorage.removeItem(KEY);
+  $("token-input").value = "";
+  showLogin(false);
+};
+
+loadConfig();
+if (localStorage.getItem(KEY)) load(); else showLogin(false);
+</script>
+</body>
+</html>

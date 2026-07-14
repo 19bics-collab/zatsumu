@@ -1,0 +1,7 @@
+# Docker を使わずホストに Caddy を入れる場合の設定 (/etc/caddy/Caddyfile)。
+# kintai.example.com を実際のドメインに書き換える。
+# DNS が向いていれば Let's Encrypt の証明書を自動取得して HTTPS になる。
+
+kintai.example.com {
+	reverse_proxy 127.0.0.1:8000
+}

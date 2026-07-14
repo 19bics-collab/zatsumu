@@ -1,0 +1,147 @@
+"""デモモード.
+
+ZATSUMU_DEMO=1 で起動すると、DB が空の場合に固定トークンのデモユーザーと
+架空の勤務データ・キャプチャ画像を自動投入する。本番では使わないこと
+(トークンが公知のため)。
+
+  管理者: demo-admin / メンバー: demo-tanaka, demo-suzuki, demo-sato
+"""
+import random
+import sqlite3
+from datetime import datetime, time as dtime, timedelta, timezone
+from pathlib import Path
+
+from . import tz
+
+DEMO_USERS = [
+    ("管理者", "demo-admin", 1),
+    ("田中", "demo-tanaka", 0),
+    ("鈴木", "demo-suzuki", 0),
+    ("佐藤", "demo-sato", 0),
+]
+
+
+def _fake_desktop(path: Path, accent: str) -> None:
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (1280, 720), "#1e1e2e")
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, 1280, 28), fill="#11111b")
+    d.rectangle((40, 60, 820, 660), fill="#181825")
+    for i in range(10):
+        d.rectangle(
+            (60, 90 + i * 50, 60 + random.randint(220, 620), 110 + i * 50),
+            fill=accent,
+        )
+    d.rectangle((860, 60, 1240, 400), fill="#313244")
+    d.rectangle((0, 692, 1280, 720), fill="#11111b")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, "JPEG", quality=65)
+
+
+def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
+    """DB が空なら投入して True を返す."""
+    if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
+        return False
+
+    ids = {}
+    for name, token, is_admin in DEMO_USERS:
+        cur = conn.execute(
+            "INSERT INTO users (name, token, is_admin) VALUES (?, ?, ?)",
+            (name, token, is_admin),
+        )
+        ids[name] = cur.lastrowid
+
+    # デモ用チームと所属
+    team_ids = {}
+    for tname in ("営業部", "開発部"):
+        team_ids[tname] = conn.execute(
+            "INSERT INTO teams (name) VALUES (?)", (tname,)
+        ).lastrowid
+    conn.execute("UPDATE users SET team_id = ? WHERE id IN (?, ?)",
+                 (team_ids["営業部"], ids["田中"], ids["佐藤"]))
+    conn.execute("UPDATE users SET team_id = ? WHERE id = ?",
+                 (team_ids["開発部"], ids["鈴木"]))
+
+    now_utc = datetime.now(timezone.utc)
+    now = now_utc.astimezone(tz.TZ)
+    accents = {"田中": "#45475a", "鈴木": "#3a5a40", "佐藤": "#5a3a50"}
+
+    def add_session(name, start, end, category="事務作業"):
+        conn.execute(
+            "INSERT INTO sessions (user_id, clock_in, clock_out, category) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                ids[name],
+                start.astimezone(timezone.utc).isoformat(),
+                end.astimezone(timezone.utc).isoformat() if end else None,
+                category,
+            ),
+        )
+
+    def add_shots(name, start, end):
+        t = start
+        while True:
+            t += timedelta(minutes=random.randint(6, 14))
+            if t >= end:
+                break
+            rel = f"{ids[name]}/{t.strftime('%Y%m%d_%H%M%S')}.jpg"
+            _fake_desktop(screenshot_dir / rel, accents[name])
+            conn.execute(
+                "INSERT INTO screenshots (user_id, taken_at, path) VALUES (?, ?, ?)",
+                (ids[name], t.astimezone(timezone.utc).isoformat(), rel),
+            )
+
+    # 田中: 過去5日間 午前=事務作業 / 午後=現場
+    for back in range(5, 0, -1):
+        day = (now - timedelta(days=back)).date()
+        add_session("田中", datetime.combine(day, dtime(9, 0), tz.TZ),
+                    datetime.combine(day, dtime(12, 0), tz.TZ), "事務作業")
+        # 午後は日により 18:00 / 19:00 で終わり、残業・不足が分かるように
+        end_h = 19 if back % 2 else 17
+        add_session("田中", datetime.combine(day, dtime(13, 0), tz.TZ),
+                    datetime.combine(day, dtime(end_h, 0), tz.TZ), "現場")
+
+    # 今日: 田中=2時間前から着席中(現場) / 鈴木=45分前から着席中(事務作業)
+    t_start = now - timedelta(hours=2)
+    add_session("田中", t_start, None, "現場")
+    add_shots("田中", t_start, now)
+    s_start = now - timedelta(minutes=45)
+    add_session("鈴木", s_start, None, "事務作業")
+    add_shots("鈴木", s_start, now)
+    add_session("佐藤", now - timedelta(hours=6), now - timedelta(hours=3),
+                "事務作業")
+    add_shots("佐藤", now - timedelta(hours=6), now - timedelta(hours=3))
+
+    # デモ用の日報
+    today = now.strftime("%Y-%m-%d")
+    yday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    journals = [
+        ("田中", today, "・午前: 請求書の処理\n・午後: A社現場で設備点検\n明日は見積書を作成予定。"),
+        ("田中", yday, "月次レポートの作成と、B社向け提案資料のレビュー対応。"),
+        ("鈴木", today, "問い合わせ対応(5件)と、マニュアルの更新作業を実施。"),
+        ("佐藤", today, "午前のみ勤務。経費精算をまとめて処理しました。"),
+    ]
+    for name, date, body in journals:
+        conn.execute(
+            "INSERT INTO journals (user_id, date, body, updated_at) VALUES (?,?,?,?)",
+            (ids[name], date, body, now_utc.isoformat()),
+        )
+
+    # デモ用の休暇申請 (承認待ち1件・承認済み1件)
+    d5 = (now + timedelta(days=5)).strftime("%Y-%m-%d")
+    d10 = (now + timedelta(days=10)).strftime("%Y-%m-%d")
+    conn.execute(
+        "INSERT INTO leave_requests (user_id, date, leave_type, reason, status, "
+        "created_at) VALUES (?,?,?,?, 'pending', ?)",
+        (ids["鈴木"], d5, "有給休暇", "私用のため", now_utc.isoformat()),
+    )
+    conn.execute(
+        "INSERT INTO leave_requests (user_id, date, leave_type, reason, status, "
+        "created_at, decided_at, decided_by) VALUES (?,?,?,?, 'approved', ?, ?, ?)",
+        (ids["田中"], d10, "有給休暇", "通院", now_utc.isoformat(),
+         now_utc.isoformat(), ids["管理者"]),
+    )
+
+    conn.commit()
+    return True
