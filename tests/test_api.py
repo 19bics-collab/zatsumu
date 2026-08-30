@@ -1945,7 +1945,8 @@ def _add_mail(tmp_path, n=1, **kw):
              kw.get("subject", f"件名{n}"),
              kw.get("body", "本文"),
              kw.get("received_at", f"2026-08-{10 + n:02d}T00:00:00+00:00"),
-             kw.get("received_at", f"2026-08-{10 + n:02d}T00:00:00+00:00"),
+             kw.get("fetched_at",
+                    kw.get("received_at", f"2026-08-{10 + n:02d}T00:00:00+00:00")),
              kw.get("priority", 2),
              kw.get("status", "unhandled"),
              kw.get("draft_reply", ""),
@@ -2186,9 +2187,10 @@ def test_mail_send_failure_keeps_status(client, users, tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.mail, "send_reply", boom)
     assert client.post(f"/api/mail/{mid}/send", headers=auth(admin),
                        json={"body": "本文"}).status_code == 502
-    # 送信失敗時は未対応のまま (返信済みにならない)
-    assert client.get(f"/api/mail/{mid}",
-                      headers=auth(admin)).json()["status"] == "unhandled"
+    # 送信失敗時は未対応へ戻り、送信記録も残らない (画面から再試行できる)
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["status"] == "unhandled"
+    assert d["reply_body"] == "" and d["replied_at"] is None
 
 
 def test_mail_fetch_endpoint(client, users, monkeypatch):
@@ -2225,24 +2227,35 @@ def test_check_mail_notifies_high_priority(client, users, tmp_path, monkeypatch)
     monkeypatch.setattr(
         mail, "fetch_new_mail",
         lambda conn, s: [
-            {"priority": 1, "subject": "至急の件", "from_addr": "a@e.com"},
+            {"priority": 1, "subject": "至急 <!channel> の件", "from_addr": "a@e.com"},
             {"priority": 2, "subject": "普通の件", "from_addr": "b@e.com"}])
     notified = []
     with db.get_db(tmp_path / "zatsumu.db") as conn:
         n = mail.check_mail(conn, notifier=lambda s, text: notified.append(text))
     assert n == 2
-    assert len(notified) == 1 and "至急の件" in notified[0]  # 高のみ通知
+    assert len(notified) == 1 and "至急" in notified[0]      # 高のみ通知
+    # Slack の特殊トークン (<!channel> 等) は無害化される
+    assert "<!channel>" not in notified[0]
+    assert "＜!channel＞" in notified[0]
 
 
 def test_mail_purge(client, users, tmp_path):
+    from datetime import datetime, timezone
     from server import db, mail
     _add_mail(tmp_path, n=1, received_at="2020-01-01T00:00:00+00:00")
-    mid_new = _add_mail(tmp_path, n=2)  # 2026年 (保持期間内)
+    mid_new = _add_mail(tmp_path, n=2,
+                        received_at="2026-08-20T00:00:00+00:00",
+                        fetched_at="2026-08-20T00:00:00+00:00")
+    # Date ヘッダ(received_at)が細工されて大昔でも、取り込みが最近なら消えない
+    now = datetime.now(timezone.utc).isoformat()
+    mid_forged = _add_mail(tmp_path, n=3,
+                           received_at="1999-01-01T00:00:00+00:00",
+                           fetched_at=now)
     with db.get_db(tmp_path / "zatsumu.db") as conn:
         assert mail.purge_old_mails(conn, 0) == 0     # 0 = 自動削除なし
-        assert mail.purge_old_mails(conn, 180) == 1   # 古い1件だけ消える
-        rows = conn.execute("SELECT id FROM mails").fetchall()
-    assert [r["id"] for r in rows] == [mid_new]
+        assert mail.purge_old_mails(conn, 180) == 1   # 取込が古い1件だけ消える
+        rows = conn.execute("SELECT id FROM mails ORDER BY id").fetchall()
+    assert [r["id"] for r in rows] == [mid_new, mid_forged]
 
 
 def test_settings_mail_secrets_redacted(client, users, tmp_path):
@@ -2301,3 +2314,108 @@ def test_test_imap_endpoint(client, users, monkeypatch):
                        headers=auth(admin)).status_code == 502
     assert client.post("/api/settings/test-imap",
                        headers=auth(worker)).status_code == 403
+
+
+def test_mail_fetch_incremental_uid_and_failure(tmp_path, monkeypatch):
+    """差分取得は UID のみで絞り (SINCE は初回だけ)、取得失敗した UID は
+    last_uid を進めず次回に再試行する。"""
+    from email.message import EmailMessage
+    from server import db, mail
+
+    def raw_mail(n):
+        msg = EmailMessage()
+        msg["From"] = f"s{n}@example.com"
+        msg["Subject"] = f"件名{n}"
+        msg["Message-ID"] = f"<u{n}@example.com>"
+        msg.set_content("本文")
+        return msg.as_bytes()
+
+    class FakeIMAP:
+        criteria = []
+
+        def __init__(self, mails, fail_uids=()):
+            self.mails, self.fail_uids = mails, set(fail_uids)
+
+        def select(self, folder, readonly=False):
+            assert readonly  # 受信箱は変更しない
+            return ("OK", [str(len(self.mails)).encode()])
+
+        def response(self, key):
+            return ("UIDVALIDITY", [b"111"])
+
+        def uid(self, cmd, *args):
+            if cmd == "search":
+                FakeIMAP.criteria.append(args[1])
+                return ("OK",
+                        [b" ".join(str(u).encode() for u in sorted(self.mails))])
+            u = int(args[0])
+            if u in self.fail_uids:
+                return ("NO", [None])
+            return ("OK", [(b"header", self.mails[u])])
+
+        def logout(self):
+            pass
+
+    box = FakeIMAP({101: raw_mail(101), 102: raw_mail(102), 103: raw_mail(103)},
+                   fail_uids={102})
+    monkeypatch.setattr(mail, "_imap_connect", lambda s: box)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        s = {**db.get_settings(conn), "imap_host": "imap.example.com",
+             "mail_auto_draft": 0}
+        # 1回目: 初回は SINCE で範囲を絞る。UID102 の取得失敗で打ち切り
+        added = mail.fetch_new_mail(conn, s)
+        assert [a["message_id"] for a in added] == ["<u101@example.com>"]
+        assert FakeIMAP.criteria[-1].startswith("(SINCE ")
+        # 2回目: 失敗した 102 から再開し、SINCE は付けない (取り逃し防止)
+        box.fail_uids = set()
+        added = mail.fetch_new_mail(conn, s)
+        assert [a["message_id"] for a in added] == [
+            "<u102@example.com>", "<u103@example.com>"]
+        assert FakeIMAP.criteria[-1] == "(UID 102:*)"
+        # 3回目: 新着なし ("UID n:*" が最後の1通を返しても重複しない)
+        assert mail.fetch_new_mail(conn, s) == []
+        rows = conn.execute("SELECT COUNT(*) FROM mails").fetchone()[0]
+        assert rows == 3
+
+
+def test_mail_send_reply_strips_header_newlines(monkeypatch):
+    """デコード済みヘッダに CRLF が含まれても、送信ヘッダは1行に無害化される."""
+    import email as email_mod
+    from server import mail
+
+    class FakeSMTP:
+        last = None
+
+        def __init__(self, host, port, timeout=None):
+            self.sent = None
+            FakeSMTP.last = self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def ehlo(self):
+            pass
+
+        def starttls(self):
+            pass
+
+        def login(self, u, p):
+            pass
+
+        def sendmail(self, frm, to, msg):
+            self.sent = (frm, to, msg)
+
+    monkeypatch.setattr(mail.smtplib, "SMTP", FakeSMTP)
+    cfg = {"smtp_host": "smtp.e", "smtp_port": "587", "smtp_user": "u@e",
+           "smtp_pass": "", "mail_from": "from@e"}
+    mail.send_reply(cfg, "to@e.com", "Re: hello\r\nX-Evil: 1", "本文",
+                    in_reply_to="<id\r\n@e.com>", references="")
+    frm, to, raw = FakeSMTP.last.sent
+    parsed = email_mod.message_from_string(raw)
+    assert parsed["Subject"] == "Re: hello X-Evil: 1"  # 改行は空白になり1行
+    assert parsed["X-Evil"] is None                    # ヘッダは注入されない
+    assert parsed["In-Reply-To"] == "<id @e.com>"
+    assert to == ["to@e.com"]

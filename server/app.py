@@ -107,10 +107,20 @@ async def _background_loop() -> None:
                 check_clockout_reminders(conn)
             finally:
                 conn.close()
-            # IMAP/Claude API はブロッキングI/Oなのでイベントループを塞がない
-            await asyncio.to_thread(_mail_tick)
         except Exception as e:  # noqa: BLE001
             print(f"バックグラウンド処理でエラー: {e}")
+
+
+async def _mail_loop() -> None:
+    # メール受信は IMAP/Claude API で数分かかることがあるため、パージや
+    # アラートを遅らせないよう独立ループにする。ブロッキングI/Oは
+    # to_thread でイベントループの外に逃がす。
+    while True:
+        await asyncio.sleep(ALERT_CHECK_INTERVAL_MIN * 60)
+        try:
+            await asyncio.to_thread(_mail_tick)
+        except Exception as e:  # noqa: BLE001
+            print(f"メール受信処理でエラー: {e}")
 
 
 @asynccontextmanager
@@ -127,8 +137,10 @@ async def lifespan(app: FastAPI):
     finally:
         conn.close()
     task = asyncio.create_task(_background_loop())
+    mail_task = asyncio.create_task(_mail_loop())
     yield
     task.cancel()
+    mail_task.cancel()
 
 
 app = FastAPI(title="zatsumu", version="0.1.0", lifespan=lifespan)
@@ -1994,18 +2006,30 @@ def mail_send(
     if not s.get("smtp_host"):
         raise HTTPException(400, "SMTPが未設定です。設定画面で送信サーバを保存してください")
     subject = (body.subject or "").strip() or mail.reply_subject(r["subject"])
+    # 先に「返信済み」へ原子的に更新・コミットしてから送信する (二重送信防止:
+    # 同じメールへ同時に送信した場合、後の方は rowcount=0 になり 409 で止まる)
+    cur = conn.execute(
+        "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
+        " replied_at = ?, replied_by = ? WHERE id = ? AND status != 'replied'",
+        (subject, text, now_iso(), admin["name"], mail_id),
+    )
+    if not cur.rowcount:
+        raise HTTPException(409, "このメールには返信済みです")
+    conn.commit()
     try:
         mail.send_reply(
             s, r["from_addr"], subject, text,
             in_reply_to=r["message_id"], references=r["references_hdr"],
         )
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+        # 送信できなかったら未対応に戻し、画面から再試行できるようにする
+        conn.execute(
+            "UPDATE mails SET status = 'unhandled', reply_subject = '',"
+            " reply_body = '', replied_at = NULL, replied_by = '' WHERE id = ?",
+            (mail_id,),
+        )
+        conn.commit()
         raise HTTPException(502, f"送信に失敗しました: {e}")
-    conn.execute(
-        "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
-        " replied_at = ?, replied_by = ? WHERE id = ?",
-        (subject, text, now_iso(), admin["name"], mail_id),
-    )
     _audit(conn, admin, "mail_send",
            detail=f"to={r['from_addr']} subject={subject}")
     return {"sent": r["from_addr"], "subject": subject}

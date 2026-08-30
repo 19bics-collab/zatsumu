@@ -1269,7 +1269,7 @@ $("mail-fetch").onclick = async () => {
     $("mail-msg").style.color = "#0a7d32";
     $("mail-msg").textContent = `新着 ${r.fetched} 件`;
     setTimeout(() => $("mail-msg").textContent = "", 4000);
-    showMail();
+    if (view.name === "mail") showMail();  // 受信が遅くても他画面を奪わない
     refreshMailBadge();
   } catch { /* apiJson が原因をアラート表示済み */ }
   b.disabled = false; b.textContent = "今すぐ受信";
@@ -1344,6 +1344,10 @@ $("mail-m-send").onclick = async () => {
     mailModal.savedDraft = text;
     $("mail-m-status").textContent = `${r.sent} へ送信しました ✓`;
     b.textContent = "返信済み";
+    // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)
+    $("mail-m-draft").readOnly = true;
+    $("mail-m-gen").disabled = true;
+    $("mail-m-archive").disabled = true;
     showMail();
     refreshMailBadge();
   } catch {

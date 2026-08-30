@@ -81,7 +81,10 @@ def _extract_body(msg) -> str:
             text = _strip_html(text)
     elif not msg.is_multipart():
         payload = msg.get_payload(decode=True) or b""
-        text = payload.decode(msg.get_content_charset() or "utf-8", "replace")
+        try:
+            text = payload.decode(msg.get_content_charset() or "utf-8", "replace")
+        except LookupError:  # 未知の charset 名はUTF-8として救済
+            text = payload.decode("utf-8", "replace")
     return text.strip()
 
 
@@ -242,24 +245,36 @@ def generate_reply(settings: dict, mail: dict,
 
 
 def reply_subject(subject: str) -> str:
-    subject = (subject or "").strip() or "(件名なし)"
+    subject = _header_text(subject) or "(件名なし)"
     return subject if subject.lower().startswith("re:") else f"Re: {subject}"
 
 
 # ---------- 返信送信 (SMTP) ----------
 
+def _header_text(value) -> str:
+    """ヘッダに埋め込む値から改行・制御文字を除去する.
+
+    受信メールのデコード済みヘッダ(件名等)には CRLF が含まれ得る。
+    そのまま送信ヘッダへ入れるとヘッダインジェクション相当になり、
+    Python 側では組み立てエラー (HeaderParseError) で送信不能になる。
+    """
+    return re.sub(r"[\r\n\x00]+", " ", str(value or "")).strip()
+
+
 def send_reply(settings: dict, to_addr: str, subject: str, body: str,
                in_reply_to: str = "", references: str = "") -> None:
     """返信メールを1通送信する (失敗時は例外を送出)."""
+    to_addr = _header_text(to_addr)
+    in_reply_to = _header_text(in_reply_to)
     msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
+    msg["Subject"] = _header_text(subject)
     sender = settings.get("mail_from") or settings.get("smtp_user")
     msg["From"] = sender
     msg["To"] = to_addr
     if in_reply_to:
         # 受信側のメーラーで元メールと同じスレッドに繋がるようにする
         msg["In-Reply-To"] = in_reply_to
-        msg["References"] = f"{references} {in_reply_to}".strip()
+        msg["References"] = _header_text(f"{references} {in_reply_to}")
     port = int(settings.get("smtp_port") or 587)
     with smtplib.SMTP(settings["smtp_host"], port, timeout=15) as s:
         s.ehlo()
@@ -335,11 +350,13 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
                 last_uid = int(_get_state(conn, "mail_state_last_uid", "0"))
             except ValueError:
                 last_uid = 0
-        since = _since_date(int(settings.get("mail_fetch_days") or 7))
         if last_uid:
-            criteria = f"(UID {last_uid + 1}:* SINCE {since})"
+            # 差分取得。SINCE を併用すると停止期間(遡り日数より前)に届いた
+            # メールを取り逃したまま last_uid が進んでしまうため UID だけで絞る
+            criteria = f"(UID {last_uid + 1}:*)"
         else:
-            criteria = f"(SINCE {since})"
+            # 初回 (または UIDVALIDITY 変化時) のみ遡る範囲を日数で制限する
+            criteria = f"(SINCE {_since_date(int(settings.get('mail_fetch_days') or 7))})"
         typ, data = m.uid("search", None, criteria)
         if typ != "OK":
             raise RuntimeError("メールの検索に失敗しました")
@@ -348,19 +365,25 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
         uids = sorted(u for u in uids if u > last_uid)[:FETCH_LIMIT]
         for u in uids:
             typ, fd = m.uid("fetch", str(u), "(RFC822)")
-            if typ != "OK" or not fd:
-                continue
-            for part in fd:
-                if isinstance(part, tuple) and len(part) >= 2 and part[1]:
-                    raws.append((u, part[1]))
-                    break
+            raw = None
+            if typ == "OK" and fd:
+                for part in fd:
+                    if isinstance(part, tuple) and len(part) >= 2 and part[1]:
+                        raw = part[1]
+                        break
+            if raw is None:
+                # 一時的な取得失敗の可能性があるため、この UID より先へは
+                # 進めない (last_uid を進めると失敗分が永久に取り込まれない)
+                print(f"メールの取得に失敗 (UID {u}) — 次回の受信で再試行します")
+                break
+            raws.append((u, raw))
     finally:
         try:
             m.logout()
         except Exception:  # noqa: BLE001
             pass
 
-    # ネットワーク処理 (パース・AI 分類・下書き) を済ませてから短時間で書き込む
+    # パースと既知メールの除外 (まだ書き込まない)
     own = {a.strip().lower()
            for a in (settings.get("mail_from", ""), settings.get("smtp_user", ""))
            if a and a.strip()}
@@ -368,7 +391,7 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
     for uid, raw in raws:
         try:
             p = parse_message(raw)
-        except Exception as e:  # noqa: BLE001  1通の壊れたメールで全体を止めない
+        except Exception as e:  # noqa: BLE001  壊れたメールは飛ばす(再試行しても直らない)
             print(f"メールのパースに失敗 (UID {uid}): {e}")
             continue
         if p["from_addr"].lower() in own:
@@ -380,14 +403,22 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
             continue
         parsed.append((uid, p))
 
-    added: list[dict] = []
+    # AI 分類・下書き生成 (時間のかかるネットワーク処理) を INSERT の前に
+    # すべて済ませる。書き込みトランザクションを長く保持すると、他の接続の
+    # 書き込み (打刻・スクショ等) が database is locked で失敗するため。
     now = tz.utc_iso(datetime.now(timezone.utc))
+    rows: list[tuple] = []
     for uid, p in parsed:
         prio, reason, source = classify_priority(settings, p)
         draft, draft_source, drafted_at = "", "", None
         if settings.get("mail_auto_draft"):
             draft, draft_source = generate_reply(settings, p)
             drafted_at = now
+        rows.append((uid, p, prio, reason, source, draft, draft_source,
+                     drafted_at))
+
+    added: list[dict] = []
+    for uid, p, prio, reason, source, draft, draft_source, drafted_at in rows:
         cur = conn.execute(
             "INSERT OR IGNORE INTO mails (message_id, imap_uid, from_addr,"
             " from_name, to_addr, subject, body, received_at, fetched_at,"
@@ -400,11 +431,12 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
         )
         if cur.rowcount:
             added.append({**p, "priority": prio})
+    # 取得に成功した UID までだけ進める (途中で break した分は次回再試行)
     max_uid = max([u for u, _ in raws], default=0)
-    if max_uid > 0:
+    if max_uid > last_uid:
         if uv:
             _set_state(conn, "mail_state_uidvalidity", uv)
-        _set_state(conn, "mail_state_last_uid", max(max_uid, last_uid))
+        _set_state(conn, "mail_state_last_uid", max_uid)
     conn.commit()
     return added
 
@@ -425,19 +457,34 @@ def check_mail(conn, notifier=None) -> int:
     if s.get("notify_mail_high"):
         for row in added:
             if row["priority"] == 1:
+                subj = _notify_text(row["subject"]) or "(件名なし)"
                 send(
                     s,
                     f"📧 優先度[高]のメールを受信しました: "
-                    f"{row['subject'] or '(件名なし)'} ({row['from_addr']})",
+                    f"{subj} ({_notify_text(row['from_addr'])})",
                 )
     return len(added)
 
 
+def _notify_text(s) -> str:
+    """通知文に埋め込む外部由来の文字列を無害化する.
+
+    Slack の Incoming Webhook は <!channel> や <url|表示名> を特殊解釈する
+    ため、差出人が細工した件名で全員メンションや偽装リンクを起こせないよう
+    山括弧を全角へ置き換える (メール通知でもそのまま読める)。
+    """
+    return str(s or "").replace("<", "＜").replace(">", "＞").strip()
+
+
 def purge_old_mails(conn, days: int) -> int:
-    """保存日数を過ぎた受信メールを削除する (days<=0 なら何もしない)."""
+    """保存日数を過ぎた受信メールを削除する (days<=0 なら何もしない).
+
+    received_at は差出人が付けた Date ヘッダ由来で細工され得るため、
+    サーバが付与した取込時刻 (fetched_at) を基準にする。
+    """
     if days <= 0:
         return 0
     cutoff = tz.utc_iso(datetime.now(timezone.utc) - timedelta(days=days))
-    cur = conn.execute("DELETE FROM mails WHERE received_at < ?", (cutoff,))
+    cur = conn.execute("DELETE FROM mails WHERE fetched_at < ?", (cutoff,))
     conn.commit()
     return cur.rowcount
