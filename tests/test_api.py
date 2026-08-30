@@ -1063,7 +1063,8 @@ def test_db_indexes_created(client, users, tmp_path):
             "SELECT name FROM sqlite_master WHERE type='index'")}
     for idx in ("idx_sessions_user_open", "idx_sessions_clock_in",
                 "idx_screenshots_user_taken", "idx_screenshots_taken",
-                "idx_leave_date", "idx_audit_at", "idx_users_team"):
+                "idx_leave_date", "idx_audit_at", "idx_users_team",
+                "idx_mails_status", "idx_mails_received"):
         assert idx in names
 
 
@@ -1827,6 +1828,7 @@ def test_staff_cannot_see_other_staff(client, tmp_path):
     for path in ["/api/status", "/api/users", "/api/teams", "/api/journals",
                  "/api/leave", "/api/corrections", "/api/screenshots",
                  "/api/reports/monthly", "/api/reports/summary", "/api/settings",
+                 "/api/mail",
                  f"/api/users/{a['id']}/monthly", f"/api/users/{a['id']}/journal"]:
         assert client.get(path, headers=H).status_code == 403, path
     # 他人を操作する系も 403
@@ -1925,3 +1927,377 @@ def test_download_client(client, tmp_path):
     assert r.status_code == 200
     assert r.content == b"PK-fake-zip-bytes"
     assert "application/zip" in r.headers.get("content-type", "")
+
+
+# ===================== メール (受信箱・優先度・AI返信) =====================
+
+def _add_mail(tmp_path, n=1, **kw):
+    """テスト用に受信メールを1件直接投入して id を返す."""
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        cur = conn.execute(
+            "INSERT INTO mails (message_id, from_addr, from_name, subject, body,"
+            " received_at, fetched_at, priority, status, draft_reply,"
+            " references_hdr) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (kw.get("message_id", f"<m{n}@example.com>"),
+             kw.get("from_addr", "taro@example.com"),
+             kw.get("from_name", "太郎"),
+             kw.get("subject", f"件名{n}"),
+             kw.get("body", "本文"),
+             kw.get("received_at", f"2026-08-{10 + n:02d}T00:00:00+00:00"),
+             kw.get("received_at", f"2026-08-{10 + n:02d}T00:00:00+00:00"),
+             kw.get("priority", 2),
+             kw.get("status", "unhandled"),
+             kw.get("draft_reply", ""),
+             kw.get("references_hdr", "")))
+        return cur.lastrowid
+
+
+def test_mail_rule_priority():
+    from server import mail
+    s = {"mail_vip_addresses": "boss@client.com",
+         "mail_urgent_keywords": "至急,緊急,クレーム"}
+    base = {"from_addr": "a@e.com", "from_name": "A", "body": ""}
+    # 緊急キーワード → 高
+    p, reason = mail.rule_priority(s, {**base, "subject": "【至急】確認のお願い"})
+    assert p == 1 and "至急" in reason
+    # VIP差出人 → 高
+    p, _ = mail.rule_priority(
+        s, {**base, "from_addr": "boss@client.com", "subject": "定例の件"})
+    assert p == 1
+    # 自動配信 → 低
+    p, _ = mail.rule_priority(
+        s, {**base, "from_addr": "no-reply@news.com", "subject": "お知らせ"})
+    assert p == 3
+    p, _ = mail.rule_priority(
+        s, {**base, "subject": "メルマガ 8月号", "body": "配信停止はこちら"})
+    assert p == 3
+    # それ以外 → 中
+    p, _ = mail.rule_priority(s, {**base, "subject": "打ち合わせ日程の相談"})
+    assert p == 2
+
+
+def test_mail_classify_falls_back_to_rule_without_api_key():
+    from server import mail
+    s = {"anthropic_api_key": "", "mail_vip_addresses": "",
+         "mail_urgent_keywords": "至急"}
+    p, reason, source = mail.classify_priority(
+        s, {"from_addr": "a@e.com", "from_name": "", "subject": "至急お願い",
+            "body": ""})
+    assert (p, source) == (1, "rule") and reason
+
+
+def test_mail_template_reply_and_signature():
+    from server import mail
+    s = {"anthropic_api_key": "", "company_name": "テスト商事",
+         "mail_signature": "――\nテスト商事 総務部"}
+    m = {"from_addr": "taro@example.com", "from_name": "太郎",
+         "subject": "見積もりの件", "body": "よろしくお願いします"}
+    body, source = mail.generate_reply(s, m)
+    assert source == "template"
+    assert "太郎 様" in body and "見積もりの件" in body
+    assert body.endswith("テスト商事 総務部")   # 署名が末尾に付く
+    # reply_subject は Re: を付ける (既に付いていれば二重にしない)
+    assert mail.reply_subject("見積もりの件") == "Re: 見積もりの件"
+    assert mail.reply_subject("Re: 見積もりの件") == "Re: 見積もりの件"
+    assert mail.reply_subject("") == "Re: (件名なし)"
+
+
+def test_mail_parse_message():
+    from email.message import EmailMessage
+    from server import mail
+    msg = EmailMessage()
+    msg["From"] = "山田 <yamada@example.com>"
+    msg["To"] = "info@example.com"
+    msg["Subject"] = "【至急】テストの件"
+    msg["Date"] = "Mon, 24 Aug 2026 10:00:00 +0900"
+    msg["Message-ID"] = "<abc123@example.com>"
+    msg.set_content("本文です。\nよろしくお願いします。")
+    p = mail.parse_message(msg.as_bytes())
+    assert p["message_id"] == "<abc123@example.com>"
+    assert p["from_addr"] == "yamada@example.com"
+    assert p["from_name"] == "山田"
+    assert p["subject"] == "【至急】テストの件"
+    assert "本文です。" in p["body"]
+    assert p["received_at"] == "2026-08-24T01:00:00+00:00"  # UTC ISO に正規化
+    # Message-ID が無いメールでも内容ハッシュで重複判定用IDが付く
+    msg2 = EmailMessage()
+    msg2["From"] = "x@example.com"
+    msg2["Subject"] = "id無し"
+    msg2.set_content("a")
+    p2 = mail.parse_message(msg2.as_bytes())
+    assert p2["message_id"].startswith("<zatsumu-")
+
+
+def test_mail_parse_html_only_body():
+    from email.message import EmailMessage
+    from server import mail
+    msg = EmailMessage()
+    msg["From"] = "h@example.com"
+    msg["Subject"] = "html"
+    msg.set_content("<p>こんにちは<br>世界</p><script>evil()</script>",
+                    subtype="html")
+    p = mail.parse_message(msg.as_bytes())
+    assert "こんにちは" in p["body"] and "世界" in p["body"]
+    assert "<p>" not in p["body"] and "evil" not in p["body"]
+
+
+def test_mail_list_sort_and_filters(client, users, tmp_path):
+    _, admin = users
+    mid_low = _add_mail(tmp_path, n=1, priority=3)
+    mid_high = _add_mail(tmp_path, n=2, priority=1)
+    mid_mid_old = _add_mail(tmp_path, n=3, priority=2,
+                            received_at="2026-08-01T00:00:00+00:00")
+    mid_mid_new = _add_mail(tmp_path, n=4, priority=2,
+                            received_at="2026-08-20T00:00:00+00:00")
+    mid_replied = _add_mail(tmp_path, n=5, priority=2, status="replied")
+    rows = client.get("/api/mail", headers=auth(admin)).json()
+    # 優先度[高]が先頭・同一優先度は新しい順
+    assert [r["id"] for r in rows] == [
+        mid_high, mid_mid_new, mid_replied, mid_mid_old, mid_low]
+    # status フィルタ
+    ids = {r["id"] for r in
+           client.get("/api/mail?status=unhandled", headers=auth(admin)).json()}
+    assert mid_replied not in ids and mid_high in ids
+    # priority フィルタ
+    rows = client.get("/api/mail?priority=1", headers=auth(admin)).json()
+    assert [r["id"] for r in rows] == [mid_high]
+    # 不正な値は 400
+    assert client.get("/api/mail?status=bogus",
+                      headers=auth(admin)).status_code == 400
+    assert client.get("/api/mail?priority=9",
+                      headers=auth(admin)).status_code == 400
+    # 一覧は本文を含まない(要約のみ)・認証必須
+    assert "body" not in client.get(
+        "/api/mail", headers=auth(admin)).json()[0]
+    assert client.get("/api/mail").status_code == 401
+
+
+def test_mail_detail_and_patch(client, users, tmp_path):
+    worker, admin = users
+    mid = _add_mail(tmp_path, body="こんにちは")
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["body"] == "こんにちは" and d["status"] == "unhandled"
+    assert client.get("/api/mail/9999", headers=auth(admin)).status_code == 404
+    assert client.get(f"/api/mail/{mid}", headers=auth(worker)).status_code == 403
+    # 下書きの保存
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_reply": "編集済みの下書き"})
+    assert r.status_code == 200
+    assert client.get(f"/api/mail/{mid}",
+                      headers=auth(admin)).json()["draft_reply"] == "編集済みの下書き"
+    # 優先度の手動変更 → priority_source が manual になる
+    client.patch(f"/api/mail/{mid}", headers=auth(admin), json={"priority": 1})
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["priority"] == 1 and d["priority_source"] == "manual"
+    # 状態変更 (対応不要)
+    client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                 json={"status": "archived"})
+    assert client.get(f"/api/mail/{mid}",
+                      headers=auth(admin)).json()["status"] == "archived"
+    # バリデーション
+    assert client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                        json={}).status_code == 400
+    assert client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                        json={"priority": 9}).status_code == 400
+    assert client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                        json={"status": "bogus"}).status_code == 400
+
+
+def test_mail_generate_draft_endpoint(client, users, tmp_path, monkeypatch):
+    from server import app as app_module
+    _, admin = users
+    mid = _add_mail(tmp_path)
+    calls = []
+
+    def fake_generate(settings, mail_row, instructions=""):
+        calls.append(instructions)
+        return "生成した返信文", "ai"
+
+    monkeypatch.setattr(app_module.mail, "generate_reply", fake_generate)
+    r = client.post(f"/api/mail/{mid}/draft", headers=auth(admin),
+                    json={"instructions": "丁寧に断る"})
+    assert r.status_code == 200
+    assert r.json() == {"draft_reply": "生成した返信文", "draft_source": "ai"}
+    assert calls == ["丁寧に断る"]
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["draft_reply"] == "生成した返信文" and d["draft_source"] == "ai"
+    assert d["draft_generated_at"]
+
+
+def test_mail_send_flow(client, users, tmp_path, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    mid = _add_mail(tmp_path, subject="見積もりの件",
+                    references_hdr="<prev@example.com>")
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"smtp_host": "smtp.example.com"})
+    sent = []
+    monkeypatch.setattr(
+        app_module.mail, "send_reply",
+        lambda s, to, subject, body, in_reply_to="", references="":
+            sent.append((to, subject, body, in_reply_to, references)))
+    # 本文が空なら 400
+    assert client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                       json={"body": "  "}).status_code == 400
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                    json={"body": "ご連絡ありがとうございます。"})
+    assert r.status_code == 200
+    to, subject, body, in_reply_to, references = sent[0]
+    assert to == "taro@example.com"
+    assert subject == "Re: 見積もりの件"        # 件名は自動で Re: が付く
+    assert in_reply_to == "<m1@example.com>"   # スレッドが繋がるヘッダ
+    assert references == "<prev@example.com>"
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["status"] == "replied" and d["replied_at"]
+    assert d["reply_subject"] == "Re: 見積もりの件"
+    # 返信済みへの再送信は 409
+    assert client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                       json={"body": "x"}).status_code == 409
+    # 一般ユーザーは送信できない
+    mid2 = _add_mail(tmp_path, n=2)
+    assert client.post(f"/api/mail/{mid2}/send", headers=auth(worker),
+                       json={"body": "x"}).status_code == 403
+    # 監査ログに記録される
+    import datetime as _dt
+    csv_text = client.get(
+        "/api/reports/audit.csv?month=" + _dt.datetime.now().strftime("%Y-%m"),
+        headers=auth(admin)).text
+    assert "メール返信送信" in csv_text
+
+
+def test_mail_send_smtp_not_configured(client, users, tmp_path):
+    _, admin = users
+    mid = _add_mail(tmp_path)
+    assert client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                       json={"body": "本文"}).status_code == 400
+
+
+def test_mail_send_failure_keeps_status(client, users, tmp_path, monkeypatch):
+    from server import app as app_module
+    _, admin = users
+    mid = _add_mail(tmp_path)
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"smtp_host": "smtp.example.com"})
+
+    def boom(*a, **kw):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(app_module.mail, "send_reply", boom)
+    assert client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                       json={"body": "本文"}).status_code == 502
+    # 送信失敗時は未対応のまま (返信済みにならない)
+    assert client.get(f"/api/mail/{mid}",
+                      headers=auth(admin)).json()["status"] == "unhandled"
+
+
+def test_mail_fetch_endpoint(client, users, monkeypatch):
+    from server import app as app_module
+    _, admin = users
+    # IMAP 未設定 → 400
+    assert client.post("/api/mail/fetch",
+                       headers=auth(admin)).status_code == 400
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"imap_host": "imap.example.com"})
+    monkeypatch.setattr(app_module.mail, "fetch_new_mail",
+                        lambda conn, s: [{"priority": 2}, {"priority": 1}])
+    r = client.post("/api/mail/fetch", headers=auth(admin))
+    assert r.status_code == 200 and r.json() == {"fetched": 2}
+    # 受信エラーは 502 で原因を返す
+    def boom(conn, s):
+        raise RuntimeError("login failed")
+    monkeypatch.setattr(app_module.mail, "fetch_new_mail", boom)
+    assert client.post("/api/mail/fetch",
+                       headers=auth(admin)).status_code == 502
+
+
+def test_check_mail_noop_without_imap(client, users, tmp_path):
+    from server import db, mail
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert mail.check_mail(conn) == 0   # IMAP未設定なら何もしない
+
+
+def test_check_mail_notifies_high_priority(client, users, tmp_path, monkeypatch):
+    from server import db, mail
+    _, admin = users
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"imap_host": "imap.example.com"})
+    monkeypatch.setattr(
+        mail, "fetch_new_mail",
+        lambda conn, s: [
+            {"priority": 1, "subject": "至急の件", "from_addr": "a@e.com"},
+            {"priority": 2, "subject": "普通の件", "from_addr": "b@e.com"}])
+    notified = []
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        n = mail.check_mail(conn, notifier=lambda s, text: notified.append(text))
+    assert n == 2
+    assert len(notified) == 1 and "至急の件" in notified[0]  # 高のみ通知
+
+
+def test_mail_purge(client, users, tmp_path):
+    from server import db, mail
+    _add_mail(tmp_path, n=1, received_at="2020-01-01T00:00:00+00:00")
+    mid_new = _add_mail(tmp_path, n=2)  # 2026年 (保持期間内)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert mail.purge_old_mails(conn, 0) == 0     # 0 = 自動削除なし
+        assert mail.purge_old_mails(conn, 180) == 1   # 古い1件だけ消える
+        rows = conn.execute("SELECT id FROM mails").fetchall()
+    assert [r["id"] for r in rows] == [mid_new]
+
+
+def test_settings_mail_secrets_redacted(client, users, tmp_path):
+    _, admin = users
+    r = client.patch("/api/settings", headers=auth(admin),
+                     json={"imap_host": "imap.example.com",
+                           "imap_pass": "imap-secret",
+                           "anthropic_api_key": "sk-ant-secret"})
+    # PATCH のレスポンスにも秘密情報は含まれない
+    body = r.json()
+    assert body["imap_pass"] == "" and body["anthropic_api_key"] == ""
+    assert body["smtp_pass"] == ""
+    s = client.get("/api/settings", headers=auth(admin)).json()
+    assert s["imap_pass"] == "" and s["imap_pass_set"] is True
+    assert s["anthropic_api_key"] == "" and s["anthropic_api_key_set"] is True
+    # 秘密を送らない更新では既存値が保持される
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"imap_folder": "Archive"})
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        stored = db.get_settings(conn)
+        assert stored["imap_pass"] == "imap-secret"
+        assert stored["anthropic_api_key"] == "sk-ant-secret"
+    # 監査ログでは秘密がマスクされる
+    import datetime as _dt
+    csv_text = client.get(
+        "/api/reports/audit.csv?month=" + _dt.datetime.now().strftime("%Y-%m"),
+        headers=auth(admin)).text
+    assert "imap-secret" not in csv_text and "sk-ant-secret" not in csv_text
+
+
+def test_imap_port_validation(client, users):
+    _, admin = users
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"imap_port": "abc"}).status_code == 400
+    assert client.patch("/api/settings", headers=auth(admin),
+                        json={"imap_port": "993"}).status_code == 200
+
+
+def test_test_imap_endpoint(client, users, monkeypatch):
+    from server import app as app_module
+    worker, admin = users
+    # 未設定 → 400
+    assert client.post("/api/settings/test-imap",
+                       headers=auth(admin)).status_code == 400
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"imap_host": "imap.example.com"})
+    monkeypatch.setattr(app_module.mail, "test_imap", lambda s: 42)
+    r = client.post("/api/settings/test-imap", headers=auth(admin))
+    assert r.status_code == 200 and r.json() == {"ok": True, "count": 42}
+    # 接続失敗 → 502 / 一般ユーザー → 403
+    def boom(s):
+        raise RuntimeError("auth error")
+    monkeypatch.setattr(app_module.mail, "test_imap", boom)
+    assert client.post("/api/settings/test-imap",
+                       headers=auth(admin)).status_code == 502
+    assert client.post("/api/settings/test-imap",
+                       headers=auth(worker)).status_code == 403

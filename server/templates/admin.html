@@ -157,6 +157,25 @@
          padding: .05rem .4rem; margin-left: .3rem; }
   .lv-approved { color: #0a7d32; } .lv-rejected { color: #c62828; }
   .lv-pending { color: #d97706; }
+  /* メール (優先度・受信箱・返信モーダル) */
+  .pr-1 { color: #c62828; font-weight: 700; }
+  .pr-2 { color: #d97706; }
+  .pr-3 { color: #6b7280; }
+  .mail-row { cursor: pointer; }
+  .mail-row.done td { color: #9ca3af; }
+  #mail-modal .box { min-width: 320px; max-width: 680px; width: 92vw; overflow: auto; }
+  .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; }
+  .mail-body { white-space: pre-wrap; background: #f9fafb; border: 1px solid var(--line);
+               border-radius: 6px; padding: .7rem; max-height: 12rem; overflow: auto;
+               font-size: .92rem; color: #374151; }
+  #mail-m-draft { width: 100%; box-sizing: border-box; min-height: 11rem; padding: .6rem;
+                  border: 1px solid #ccc; border-radius: 6px; font-size: .95rem;
+                  font-family: inherit; margin-top: .3rem; }
+  #mail-m-inst { flex: 1; min-width: 180px; padding: .45rem; border: 1px solid #ccc;
+                 border-radius: 6px; font-size: .9rem; }
+  .set-card textarea { width: 100%; box-sizing: border-box; min-height: 3.6rem;
+                       padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
+                       font-size: .9rem; font-family: inherit; }
   /* 日報 */
   .jr-item { background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 6px;
              padding: .8rem 1.1rem; margin-bottom: .7rem; }
@@ -248,6 +267,7 @@
   <button id="nav-home">稼働状況</button>
   <button id="nav-journal">日報</button>
   <button id="nav-leave">申請<span id="leave-badge" class="ntf" hidden></span></button>
+  <button id="nav-mail">メール<span id="mail-badge" class="ntf" hidden></span></button>
   <button id="nav-users">メンバー管理</button>
   <button id="nav-report">月次レポート</button>
   <button id="nav-settings">設定</button>
@@ -301,6 +321,26 @@
     <span id="jr-summary" style="color:#6b7280;font-size:.9rem"></span>
   </div>
   <div id="journal-list"></div>
+</section>
+
+<section id="mail-view" hidden>
+  <h2>メール
+    <select id="mail-filter" style="margin-left:1rem;padding:.4rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem">
+      <option value="unhandled">未対応</option>
+      <option value="replied">返信済み</option>
+      <option value="archived">対応不要</option>
+      <option value="">すべて</option>
+    </select>
+    <button id="mail-fetch" class="ghost" style="margin-left:.6rem">今すぐ受信</button>
+    <span id="mail-msg" style="margin-left:.6rem;font-size:.85rem"></span>
+  </h2>
+  <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
+  行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
+  受信サーバ（IMAP）とAIの設定は「設定」画面で行ってください。</small></p>
+  <div class="table-wrap"><table id="mail-table">
+    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>下書き</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
 </section>
 
 <section id="leave-view" hidden>
@@ -473,6 +513,54 @@
       <p><small>「テスト送信」は設定済みの全チャネル（Slack/メール）へ。下のフォームは
       入力した1つのメールアドレス宛にだけ送って、SMTPと宛先の疎通を確認できます（保存後に実施）。</small></p>
     </div>
+    <div class="set-card">
+      <h3>メール受信（IMAP）</h3>
+      <label class="set-row"><span>自動受信する</span>
+        <input type="checkbox" id="set-mail-fetch-enabled"></label>
+      <label class="set-row"><span>IMAPサーバ</span>
+        <input type="text" id="set-imap-host" placeholder="imap.example.com"></label>
+      <label class="set-row"><span>IMAPポート</span>
+        <input type="text" id="set-imap-port" placeholder="993"></label>
+      <label class="set-row"><span>SSLで接続</span>
+        <input type="checkbox" id="set-imap-ssl"></label>
+      <label class="set-row"><span>IMAPユーザー</span>
+        <input type="text" id="set-imap-user"></label>
+      <label class="set-row"><span>IMAPパスワード</span>
+        <input type="password" id="set-imap-pass" placeholder="(変更時のみ入力)"></label>
+      <label class="set-row"><span>フォルダ</span>
+        <input type="text" id="set-imap-folder" placeholder="INBOX"></label>
+      <label class="set-row"><span>初回に遡る日数</span>
+        <input type="number" id="set-mail-fetch-days" min="1" max="365"></label>
+      <label class="set-row"><span>メール保存日数（0=削除なし）</span>
+        <input type="number" id="set-mail-retention" min="0" max="3650"></label>
+      <label class="set-row"><span>優先度[高]の受信を通知</span>
+        <input type="checkbox" id="set-notify-mail-high"></label>
+      <p><small>共有の受信箱（例: info@…）をIMAPで定期取得し、「メール」画面に優先度順で
+      表示します。受信箱のメールは変更しません（既読も付きません）。
+      返信の送信には左の通知欄のSMTP設定を使います。</small></p>
+      <button class="ghost" id="set-test-imap">IMAP接続テスト</button>
+      <span id="test-imap-msg" style="margin-left:.6rem;font-size:.85rem"></span>
+    </div>
+    <div class="set-card">
+      <h3>AI返信（Claude）</h3>
+      <label class="set-row"><span>受信時に下書きを自動生成</span>
+        <input type="checkbox" id="set-mail-auto-draft"></label>
+      <label class="set-row"><span>Claude APIキー</span>
+        <input type="password" id="set-anthropic-key" placeholder="(変更時のみ入力)"></label>
+      <label class="set-row"><span>モデル</span>
+        <input type="text" id="set-anthropic-model" placeholder="claude-opus-5"></label>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem">返信の署名（本文の末尾に付加）</label>
+      <textarea id="set-mail-signature" placeholder="――――――――&#10;株式会社◯◯ 総務部"></textarea>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem">生成時の追加指示（文体・注意事項など）</label>
+      <textarea id="set-mail-instructions" placeholder="例：文末は「よろしくお願いいたします。」で締める"></textarea>
+      <label class="set-row" style="margin-top:.5rem"><span>VIP差出人（カンマ区切り）</span>
+        <input type="text" id="set-mail-vip" placeholder="ceo@client.example.com"></label>
+      <label class="set-row"><span>優先度[高]キーワード</span>
+        <input type="text" id="set-mail-keywords"></label>
+      <p><small>APIキーを設定すると、優先度の判定と返信文の下書きをAI（Claude）が行います。
+      未設定でもキーワードによる分類と定型文の下書きで動作します。
+      <b style="color:#c62828">返信は必ず内容を確認してから送信してください。</b></small></p>
+    </div>
   </div>
   <p style="margin-top:1rem">
     <button id="set-save">保存</button>
@@ -549,6 +637,35 @@
       <span></span>
       <button id="sess-save">保存</button>
       <button id="sess-close" class="ghost">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<div id="mail-modal" class="modal" hidden>
+  <div class="box">
+    <h2 id="mail-m-subject" style="margin:.2rem 0"></h2>
+    <div class="mail-meta" id="mail-m-meta"></div>
+    <div class="mail-body" id="mail-m-body"></div>
+    <div style="display:flex;gap:.6rem;align-items:center;margin-top:.8rem;flex-wrap:wrap">
+      <label style="font-size:.85rem;color:#374151">優先度
+        <select id="mail-m-priority" style="padding:.35rem;border:1px solid #ccc;border-radius:6px">
+          <option value="1">高</option><option value="2">中</option><option value="3">低</option>
+        </select>
+      </label>
+      <span id="mail-m-reason" style="font-size:.8rem;color:#6b7280"></span>
+    </div>
+    <label style="font-size:.85rem;color:#374151;margin-top:.8rem;display:block">返信文（編集できます）
+      <span id="mail-m-draft-src" style="color:#9ca3af;font-size:.8rem"></span></label>
+    <textarea id="mail-m-draft" placeholder="「返信文を生成」を押すと下書きが入ります"></textarea>
+    <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem;flex-wrap:wrap">
+      <input type="text" id="mail-m-inst" placeholder="生成の方針（任意。例：金曜までに対応すると伝える）">
+      <button id="mail-m-gen" class="ghost">返信文を生成</button>
+    </div>
+    <div class="bar" style="margin-top:.8rem">
+      <button id="mail-m-archive" class="ghost">対応不要にする</button>
+      <span id="mail-m-status"></span>
+      <button id="mail-m-send">返信を送信</button>
+      <button id="mail-m-close" class="ghost">閉じる</button>
     </div>
   </div>
 </div>
@@ -700,7 +817,19 @@ async function showApp() {
   try { appSettings = await apiJson("/api/settings"); applyBranding(); } catch {}
   try { teams = await apiJson("/api/teams"); } catch {}
   refreshLeaveBadge();
+  refreshMailBadge();
   showHome(await r.json());
+}
+
+async function refreshMailBadge() {
+  try {
+    const r = await api("/api/mail?status=unhandled");
+    if (!r.ok) return;               // 失敗時は静かに諦める(アラートは出さない)
+    const n = (await r.json()).length;
+    const b = $("mail-badge");
+    b.hidden = n === 0;
+    b.textContent = n;
+  } catch {}
 }
 
 async function refreshLeaveBadge() {
@@ -718,14 +847,15 @@ async function refreshLeaveBadge() {
 
 function switchView(name) {
   view.name = name;
-  for (const id of ["home", "journal-view", "leave-view", "users-view", "report",
-                    "settings-view", "detail"])
+  for (const id of ["home", "journal-view", "leave-view", "mail-view",
+                    "users-view", "report", "settings-view", "detail"])
     $(id).hidden = true;
   $({ home: "home", journal: "journal-view", leave: "leave-view",
-      users: "users-view", report: "report", settings: "settings-view",
-      detail: "detail" }[name]).hidden = false;
+      mail: "mail-view", users: "users-view", report: "report",
+      settings: "settings-view", detail: "detail" }[name]).hidden = false;
   for (const [btn, v] of [["nav-home", "home"], ["nav-journal", "journal"],
-                          ["nav-leave", "leave"], ["nav-users", "users"],
+                          ["nav-leave", "leave"], ["nav-mail", "mail"],
+                          ["nav-users", "users"],
                           ["nav-report", "report"], ["nav-settings", "settings"]])
     $(btn).classList.toggle("active", v === name || (v === "home" && name === "detail"));
 }
@@ -1106,6 +1236,150 @@ async function showLeave() {
 }
 $("leave-filter").onchange = () => showLeave();
 
+/* ---------- メール (受信箱・AI返信) ---------- */
+const MAIL_PR = { 1: "高", 2: "中", 3: "低" };
+const MAIL_ST = { unhandled: "未対応", replied: "返信済み", archived: "対応不要" };
+let mailModal = { id: null, savedDraft: "" };
+
+async function showMail() {
+  switchView("mail");
+  const status = $("mail-filter").value;
+  const list = await apiJson("/api/mail" + (status ? `?status=${status}` : ""));
+  document.querySelector("#mail-table tbody").innerHTML = list.map(m => `
+    <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}" data-id="${m.id}">
+      <td data-label="優先度"><span class="pr-${m.priority}">${MAIL_PR[m.priority] || m.priority}</span></td>
+      <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong></td>
+      <td data-label="件名">${esc(m.subject) || "（件名なし）"}</td>
+      <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
+      <td data-label="状態" class="lv-${m.status === "replied" ? "approved" : m.status === "archived" ? "rejected" : "pending"}">${MAIL_ST[m.status] || m.status}</td>
+      <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
+    </tr>`).join("") ||
+    `<tr><td colspan="6"><small>メールはありません（「今すぐ受信」または設定画面のIMAP設定を確認してください）</small></td></tr>`;
+  document.querySelectorAll(".mail-row").forEach(tr =>
+    tr.onclick = () => openMail(+tr.dataset.id));
+}
+$("mail-filter").onchange = () => showMail();
+
+$("mail-fetch").onclick = async () => {
+  const b = $("mail-fetch");
+  b.disabled = true; b.textContent = "受信中…";
+  $("mail-msg").textContent = "";
+  try {
+    const r = await apiJson("/api/mail/fetch", { method: "POST" });
+    $("mail-msg").style.color = "#0a7d32";
+    $("mail-msg").textContent = `新着 ${r.fetched} 件`;
+    setTimeout(() => $("mail-msg").textContent = "", 4000);
+    showMail();
+    refreshMailBadge();
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  b.disabled = false; b.textContent = "今すぐ受信";
+};
+
+async function openMail(id) {
+  const m = await apiJson(`/api/mail/${id}`);
+  mailModal = { id, savedDraft: m.draft_reply || "" };
+  $("mail-m-subject").textContent = m.subject || "（件名なし）";
+  $("mail-m-meta").textContent =
+    `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}> ・ ` +
+    `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${MAIL_ST[m.status] || m.status}` +
+    (m.status === "replied" && m.replied_by ? `（${m.replied_by} が送信）` : "");
+  $("mail-m-body").textContent = m.body || "（本文なし）";
+  $("mail-m-priority").value = m.priority;
+  $("mail-m-reason").textContent = m.priority_reason
+    ? `判定理由: ${m.priority_reason}（${{ ai: "AI", rule: "ルール", manual: "手動" }[m.priority_source] || m.priority_source}）` : "";
+  $("mail-m-draft").value = m.status === "replied" ? m.reply_body : (m.draft_reply || "");
+  $("mail-m-draft").readOnly = m.status === "replied";
+  $("mail-m-draft-src").textContent =
+    m.status === "replied" ? "（送信済みの本文）"
+    : m.draft_source === "ai" ? "（AI生成の下書き）"
+    : m.draft_source === "template" ? "（定型文の下書き）" : "";
+  $("mail-m-status").textContent = "";
+  $("mail-m-inst").value = "";
+  $("mail-m-send").disabled = m.status === "replied";
+  $("mail-m-send").textContent = m.status === "replied" ? "返信済み" : "返信を送信";
+  $("mail-m-gen").disabled = m.status === "replied";
+  $("mail-m-archive").disabled = m.status !== "unhandled";
+  $("mail-modal").hidden = false;
+}
+
+$("mail-m-priority").onchange = async () => {
+  if (!mailModal.id) return;
+  try {
+    await apiJson(`/api/mail/${mailModal.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priority: +$("mail-m-priority").value }),
+    });
+    $("mail-m-reason").textContent = "判定理由: 手動変更（手動）";
+    showMail();
+  } catch {}
+};
+
+$("mail-m-gen").onclick = async () => {
+  const b = $("mail-m-gen");
+  b.disabled = true; b.textContent = "生成中…";
+  try {
+    const r = await apiJson(`/api/mail/${mailModal.id}/draft`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instructions: $("mail-m-inst").value }),
+    });
+    $("mail-m-draft").value = r.draft_reply;
+    mailModal.savedDraft = r.draft_reply;
+    $("mail-m-draft-src").textContent =
+      r.draft_source === "ai" ? "（AI生成の下書き）" : "（定型文の下書き・APIキー未設定）";
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  b.disabled = false; b.textContent = "返信文を生成";
+};
+
+$("mail-m-send").onclick = async () => {
+  const text = $("mail-m-draft").value.trim();
+  if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
+  if (!confirm("この内容で返信を送信しますか？")) return;
+  const b = $("mail-m-send");
+  b.disabled = true; b.textContent = "送信中…";
+  try {
+    const r = await apiJson(`/api/mail/${mailModal.id}/send`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: text }),
+    });
+    mailModal.savedDraft = text;
+    $("mail-m-status").textContent = `${r.sent} へ送信しました ✓`;
+    b.textContent = "返信済み";
+    showMail();
+    refreshMailBadge();
+  } catch {
+    b.disabled = false; b.textContent = "返信を送信";
+  }
+};
+
+$("mail-m-archive").onclick = async () => {
+  try {
+    await apiJson(`/api/mail/${mailModal.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "archived" }),
+    });
+    closeMailModal();
+    showMail();
+    refreshMailBadge();
+  } catch {}
+};
+
+async function closeMailModal() {
+  // 編集途中の下書きは閉じるときに自動保存する(送信済みは保存しない)
+  const draft = $("mail-m-draft").value;
+  if (mailModal.id && !$("mail-m-draft").readOnly && draft !== mailModal.savedDraft) {
+    try {
+      await api(`/api/mail/${mailModal.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draft_reply: draft }),
+      });
+    } catch {}
+  }
+  mailModal = { id: null, savedDraft: "" };
+  $("mail-modal").hidden = true;
+}
+$("mail-m-close").onclick = () => closeMailModal();
+$("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeMailModal(); };
+
 function showToken(name, token) {
   $("token-title").textContent = `${name} さんのトークン`;
   $("token-value").textContent = token;
@@ -1284,8 +1558,28 @@ async function showSettings() {
   $("set-smtp-pass").value = "";  // パスワードは表示しない(サーバも返さない)
   $("set-smtp-pass").placeholder = s.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
   $("set-mail-from").value = s.mail_from;
+  $("set-mail-fetch-enabled").checked = !!s.mail_fetch_enabled;
+  $("set-imap-host").value = s.imap_host;
+  $("set-imap-port").value = s.imap_port;
+  $("set-imap-ssl").checked = !!s.imap_use_ssl;
+  $("set-imap-user").value = s.imap_user;
+  $("set-imap-pass").value = "";
+  $("set-imap-pass").placeholder = s.imap_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-imap-folder").value = s.imap_folder;
+  $("set-mail-fetch-days").value = s.mail_fetch_days;
+  $("set-mail-retention").value = s.mail_retention_days;
+  $("set-notify-mail-high").checked = !!s.notify_mail_high;
+  $("set-mail-auto-draft").checked = !!s.mail_auto_draft;
+  $("set-anthropic-key").value = "";
+  $("set-anthropic-key").placeholder = s.anthropic_api_key_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-anthropic-model").value = s.anthropic_model;
+  $("set-mail-signature").value = s.mail_signature;
+  $("set-mail-instructions").value = s.mail_reply_instructions;
+  $("set-mail-vip").value = s.mail_vip_addresses;
+  $("set-mail-keywords").value = s.mail_urgent_keywords;
   $("set-msg").textContent = "";
   $("test-notify-msg").textContent = "";
+  $("test-imap-msg").textContent = "";
   freqHint();
 }
 $("set-min").oninput = freqHint;
@@ -1320,8 +1614,25 @@ $("set-save").onclick = async () => {
     smtp_port: $("set-smtp-port").value,
     smtp_user: $("set-smtp-user").value,
     mail_from: $("set-mail-from").value,
+    mail_fetch_enabled: $("set-mail-fetch-enabled").checked,
+    imap_host: $("set-imap-host").value,
+    imap_port: $("set-imap-port").value,
+    imap_use_ssl: $("set-imap-ssl").checked,
+    imap_user: $("set-imap-user").value,
+    imap_folder: $("set-imap-folder").value,
+    mail_fetch_days: +$("set-mail-fetch-days").value,
+    mail_retention_days: +$("set-mail-retention").value,
+    notify_mail_high: $("set-notify-mail-high").checked,
+    mail_auto_draft: $("set-mail-auto-draft").checked,
+    anthropic_model: $("set-anthropic-model").value,
+    mail_signature: $("set-mail-signature").value,
+    mail_reply_instructions: $("set-mail-instructions").value,
+    mail_vip_addresses: $("set-mail-vip").value,
+    mail_urgent_keywords: $("set-mail-keywords").value,
   };
   if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
+  if ($("set-imap-pass").value) body.imap_pass = $("set-imap-pass").value;
+  if ($("set-anthropic-key").value) body.anthropic_api_key = $("set-anthropic-key").value;
   appSettings = await apiJson("/api/settings", {
     method: "PATCH", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -1360,6 +1671,18 @@ $("set-test-email").onclick = async () => {
   } catch {
     $("test-email-msg").style.color = "#c62828";
     $("test-email-msg").textContent = "送信できませんでした（SMTP設定を保存後にお試しください）";
+  }
+};
+$("set-test-imap").onclick = async () => {
+  $("test-imap-msg").style.color = "#475569";
+  $("test-imap-msg").textContent = "接続中...";
+  try {
+    const r = await apiJson("/api/settings/test-imap", { method: "POST" });
+    $("test-imap-msg").style.color = "#0a7d32";
+    $("test-imap-msg").textContent = `接続できました ✓（フォルダ内 ${r.count} 通）`;
+  } catch {
+    $("test-imap-msg").style.color = "#c62828";
+    $("test-imap-msg").textContent = "接続できませんでした（設定を保存後にお試しください）";
   }
 };
 
@@ -1586,6 +1909,7 @@ $("nav-home").onclick = () => showHome();
 $("nav-users").onclick = () => showUsers();
 $("nav-journal").onclick = () => showJournal();
 $("nav-leave").onclick = () => showLeave();
+$("nav-mail").onclick = () => showMail();
 $("nav-report").onclick = () => showReport();
 $("nav-settings").onclick = () => showSettings();
 /* 管理者トークン(自分のログイン用)の表示・コピー */
