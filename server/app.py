@@ -1604,6 +1604,14 @@ def member_page():
     )
 
 
+@app.get("/mail", response_class=HTMLResponse)
+def mail_page():
+    """メール対応の専用画面 (勤怠管理とは別UI。サブドメインで出し分ける想定)."""
+    return (Path(__file__).parent / "templates" / "mail.html").read_text(
+        encoding="utf-8"
+    )
+
+
 CLIENT_EXE_NAME = "勤怠管理.exe"
 CLIENT_ZIP_NAME = "勤怠管理.zip"
 

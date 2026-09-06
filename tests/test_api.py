@@ -189,6 +189,28 @@ def test_admin_page(client, users):
     assert "ログイン" in r.text
 
 
+def test_mail_page_is_separate_from_admin(client):
+    """メール対応は勤怠とは別UI (/mail)。勤怠画面にメールUIは残っていない."""
+    r = client.get("/mail")
+    assert r.status_code == 200
+    assert "受信箱" in r.text
+    assert "ログイン" in r.text
+    # メールUIの中核 (一覧・返信モーダル・IMAP/AI設定) が揃っていること
+    for marker in ('id="mail-table"', 'id="mail-modal"', 'id="m-draft"',
+                   'id="set-imap-host"', 'id="set-anthropic-key"',
+                   'id="set-smtp-host"'):
+        assert marker in r.text, marker
+
+    admin_page = client.get("/admin").text
+    # 勤怠側からはメールUIが消えている (タブ・一覧・モーダル・受信/AI設定)
+    for gone in ('id="nav-mail"', 'id="mail-view"', 'id="mail-modal"',
+                 'id="mail-table"', 'id="set-imap-host"',
+                 'id="set-anthropic-key"', "refreshMailBadge"):
+        assert gone not in admin_page, gone
+    # 送信用の SMTP 設定は勤怠側の通知にも使うので残す
+    assert 'id="set-smtp-host"' in admin_page
+
+
 def test_healthz(client):
     r = client.get("/healthz")
     assert r.status_code == 200
@@ -2285,6 +2307,41 @@ def test_settings_mail_secrets_redacted(client, users, tmp_path):
         "/api/reports/audit.csv?month=" + _dt.datetime.now().strftime("%Y-%m"),
         headers=auth(admin)).text
     assert "imap-secret" not in csv_text and "sk-ant-secret" not in csv_text
+
+
+def test_mail_ui_save_keeps_attendance_settings(client, users):
+    """メール画面の保存はメール系キーだけを送る。勤怠側の設定を巻き込まないこと."""
+    _, admin = users
+    # 勤怠側を既定から動かしておく (巻き込まれたら気付けるように)
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"company_name": "テスト商会", "work_start": "08:30",
+                       "work_end": "17:30", "alert_hours": 5,
+                       "work_categories": "事務,現場", "notify_clock": True})
+    before = client.get("/api/settings", headers=auth(admin)).json()
+
+    # server/templates/mail.html の「保存」が送るのと同じ形
+    r = client.patch("/api/settings", headers=auth(admin), json={
+        "mail_fetch_enabled": True, "imap_host": "imap.example.com",
+        "imap_port": "993", "imap_use_ssl": True, "imap_user": "info",
+        "imap_folder": "INBOX", "mail_fetch_days": 7,
+        "mail_retention_days": 180, "notify_mail_high": True,
+        "mail_auto_draft": True, "anthropic_model": "claude-opus-5",
+        "mail_signature": "署名", "mail_reply_instructions": "丁寧に",
+        "mail_vip_addresses": "ceo@client.example", "mail_urgent_keywords": "至急",
+        "smtp_host": "smtp.example.com", "smtp_port": "587",
+        "smtp_user": "u", "mail_from": "info@example.com",
+    })
+    assert r.status_code == 200
+    after = r.json()
+    for key in ("company_name", "work_start", "work_end", "alert_hours",
+                "work_categories", "notify_clock", "capture_min_interval",
+                "capture_max_interval", "retention_days", "daily_target_minutes",
+                "idle_threshold", "slack_webhook_url", "mail_to"):
+        assert after[key] == before[key], key
+    # メール側はきちんと反映される
+    assert after["imap_host"] == "imap.example.com"
+    assert after["mail_signature"] == "署名"
+    assert after["smtp_host"] == "smtp.example.com"
 
 
 def test_imap_port_validation(client, users):
