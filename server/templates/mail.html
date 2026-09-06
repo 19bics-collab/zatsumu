@@ -479,7 +479,19 @@ $("m-close").onclick = () => closeModal();
 $("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
 
 /* ---------- 設定 ---------- */
+// 直近にサーバから読み込んだ設定。共有項目(SMTP)を古い表示値で
+// 上書きしないよう、保存時に「画面で実際に変えたか」の判定に使う。
+let loaded = {};
+
+async function openSettings() {
+  switchView("settings");
+  // SMTP は勤怠画面からも変更されうるので、開くたびに取り直す
+  try { appSettings = await apiJson("/api/settings"); } catch { return; }
+  fillSettings(appSettings);
+}
+
 function fillSettings(s) {
+  loaded = s;
   $("set-mail-fetch-enabled").checked = !!s.mail_fetch_enabled;
   $("set-imap-host").value = s.imap_host;
   $("set-imap-port").value = s.imap_port;
@@ -528,11 +540,16 @@ $("set-save").onclick = async () => {
     mail_reply_instructions: $("set-mail-instructions").value,
     mail_vip_addresses: $("set-mail-vip").value,
     mail_urgent_keywords: $("set-mail-keywords").value,
-    smtp_host: $("set-smtp-host").value,
-    smtp_port: $("set-smtp-port").value,
-    smtp_user: $("set-smtp-user").value,
-    mail_from: $("set-mail-from").value,
   };
+  // SMTP は勤怠画面と共通。この画面で実際に変えた項目だけ送り、
+  // 表示していた古い値で相手側の変更を消さないようにする
+  for (const [key, id] of [["smtp_host", "set-smtp-host"],
+                           ["smtp_port", "set-smtp-port"],
+                           ["smtp_user", "set-smtp-user"],
+                           ["mail_from", "set-mail-from"]]) {
+    const v = $(id).value;
+    if (v !== (loaded[key] ?? "")) body[key] = v;
+  }
   if ($("set-imap-pass").value) body.imap_pass = $("set-imap-pass").value;
   if ($("set-anthropic-key").value) body.anthropic_api_key = $("set-anthropic-key").value;
   if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
@@ -582,7 +599,7 @@ $("set-test-email").onclick = async () => {
 
 /* ---------- ナビ・ログイン ---------- */
 $("nav-inbox").onclick = () => showInbox();
-$("nav-settings").onclick = () => { switchView("settings"); fillSettings(appSettings); };
+$("nav-settings").onclick = () => openSettings();
 $("login-btn").onclick = () => {
   localStorage.setItem(KEY, $("token-input").value.trim());
   showApp();

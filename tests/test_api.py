@@ -2344,6 +2344,21 @@ def test_mail_ui_save_keeps_attendance_settings(client, users):
     assert after["smtp_host"] == "smtp.example.com"
 
 
+def test_mail_page_refetches_shared_smtp_settings(client):
+    """SMTP は勤怠と共通。開くたび再取得し、触った項目だけ送る作りを保つ.
+
+    これが外れると、メール画面を開いたままの古い表示値で勤怠側の SMTP 設定を
+    黙って上書き（最悪は空文字で消去）してしまい、両方の送信が止まる。
+    """
+    page = client.get("/mail").text
+    # 設定を開くたびにサーバから取り直す
+    assert "async function openSettings()" in page
+    assert 'await apiJson("/api/settings")' in page
+    assert '$("nav-settings").onclick = () => openSettings();' in page
+    # 共有の SMTP キーは、画面で変更したときだけ送る
+    assert 'if (v !== (loaded[key] ?? "")) body[key] = v;' in page
+
+
 def test_imap_port_validation(client, users):
     _, admin = users
     assert client.patch("/api/settings", headers=auth(admin),
