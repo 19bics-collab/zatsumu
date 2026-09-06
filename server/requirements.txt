@@ -3,3 +3,4 @@ uvicorn[standard]
 python-multipart
 pillow
 tzdata  # OSにIANA tzデータが無い環境(Windows/一部のslimイメージ)でも zoneinfo を動かす
+anthropic>=1.0  # メールの優先度判定・返信下書き生成 (Claude API)

@@ -461,7 +461,9 @@
       <label class="set-row"><span>差出人メール</span>
         <input type="text" id="set-mail-from"></label>
       <p><small>Slack は Incoming Webhook の URL を貼り付けるだけ。メールは SMTP の設定が必要です。
-      保存後に「テスト送信」で疎通確認できます。</small></p>
+      保存後に「テスト送信」で疎通確認できます。
+      この SMTP 設定は<b>メール対応画面</b>（メール用サブドメイン）の返信送信でも
+      使われます。受信（IMAP）・AI・署名の設定はそちらにあります。</small></p>
       <button class="ghost" id="set-test-notify">テスト送信</button>
       <span id="test-notify-msg" style="margin-left:.6rem;font-size:.85rem"></span>
       <div style="margin-top:.7rem;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
@@ -718,12 +720,12 @@ async function refreshLeaveBadge() {
 
 function switchView(name) {
   view.name = name;
-  for (const id of ["home", "journal-view", "leave-view", "users-view", "report",
-                    "settings-view", "detail"])
+  for (const id of ["home", "journal-view", "leave-view",
+                    "users-view", "report", "settings-view", "detail"])
     $(id).hidden = true;
   $({ home: "home", journal: "journal-view", leave: "leave-view",
-      users: "users-view", report: "report", settings: "settings-view",
-      detail: "detail" }[name]).hidden = false;
+      users: "users-view", report: "report",
+      settings: "settings-view", detail: "detail" }[name]).hidden = false;
   for (const [btn, v] of [["nav-home", "home"], ["nav-journal", "journal"],
                           ["nav-leave", "leave"], ["nav-users", "users"],
                           ["nav-report", "report"], ["nav-settings", "settings"]])
@@ -1106,6 +1108,7 @@ async function showLeave() {
 }
 $("leave-filter").onchange = () => showLeave();
 
+/* ---------- メール (受信箱・AI返信) ---------- */
 function showToken(name, token) {
   $("token-title").textContent = `${name} さんのトークン`;
   $("token-value").textContent = token;
@@ -1362,7 +1365,6 @@ $("set-test-email").onclick = async () => {
     $("test-email-msg").textContent = "送信できませんでした（SMTP設定を保存後にお試しください）";
   }
 };
-
 async function downloadCsv(path, filename) {
   // 認証ヘッダが必要なため <a href> ではなく fetch でダウンロードする
   const blob = await (await api(path)).blob();

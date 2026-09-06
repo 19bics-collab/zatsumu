@@ -139,6 +139,16 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   月次レポートに残業・不足を集計、個人ページの各日に過不足を表示します
 - **通知（Slack / メール）**: 着席・退席や長時間在席アラートを Slack の Incoming
   Webhook や SMTP メールへ通知できます（設定画面で「テスト送信」可）
+- **メール対応（受信箱の優先度分類・AI返信）**: 共有の受信箱（例: info@…）を IMAP で
+  定期取得し、**専用画面 `/mail`** に**優先度順（高→中→低）**で表示します。
+  Claude API キーを設定すると優先度判定と**返信文の下書き生成**を AI が行い
+  （未設定でもキーワード分類＋定型文で動作）、内容を編集して画面から
+  **そのまま返信を送信**できます（送信は SMTP 設定を使用、スレッドが繋がる
+  ヘッダ付き）。優先度[高]の受信は Slack/メールに通知でき、
+  送信操作は監査ログに記録されます。
+  勤怠管理とは**別のUI**で、同じサーバ・同じDB・同じ管理者トークンのまま
+  **サブドメインで出し分け**られます（`mail.example.com` → メール、
+  `kintai.example.com` → 勤怠。[DEPLOY.md](DEPLOY.md) 参照）
 - **連続在席アラート**: 閾値（既定 6 時間）を超えて着席し続けているメンバーに
   稼働状況で ⚠ を表示し、設定により Slack/メール通知も送ります
 - メンバー管理から**個人ごとの撮影停止/再開**も可能（本家 F-Chair+ と同様、
@@ -203,6 +213,17 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
+| GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority で絞り込み） |
+| GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き） |
+| POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み |
+| POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
+| PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態の変更 |
+| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人） |
+| POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認 |
+| POST | `/api/settings/test-email` | admin | 指定アドレスへメールのテスト送信 |
+| GET | `/admin` | — | 勤怠管理の画面（データ取得は Bearer 認証の API 経由） |
+| GET | `/me` | — | メンバー用の打刻ページ |
+| GET | `/mail` | — | メール対応の専用画面（勤怠とは別UI） |
 | GET | `/healthz` | なし | 死活監視用ヘルスチェック |
 
 ## テスト

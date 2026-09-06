@@ -59,7 +59,7 @@ curl -fsSL https://get.docker.com | sudo sh
 git clone https://github.com/19bics-collab/zatsumu.git
 cd zatsumu
 cp .env.example .env
-nano .env    # ZATSUMU_DOMAIN を実際のドメイン名に書き換える
+nano .env    # ZATSUMU_DOMAIN / ZATSUMU_MAIL_DOMAIN を実際のドメイン名に書き換える
 ```
 
 ### 3. 起動
@@ -169,11 +169,32 @@ C:\zatsumu\.venv\Scripts\uvicorn.exe server.app:app --host 127.0.0.1 --port 8000
 
 ## ドメインと DNS の設定
 
+勤怠管理とメール対応は **同じサーバ・同じDB** で動きますが、画面を分けるため
+**サブドメインを2つ**使います。
+
 1. 会社のドメイン管理画面（お名前.com、ムームードメインなど）を開く
-2. **A レコード**を追加: `kintai`（サブドメイン名）→ サーバのグローバルIP
+2. **A レコード**を2本追加。どちらも同じサーバのグローバルIPに向ける
+   - `kintai` → 勤怠管理（`.env` の `ZATSUMU_DOMAIN`）
+   - `mail` → メール対応（`.env` の `ZATSUMU_MAIL_DOMAIN`）
 3. サーバが社内にある場合は、ルーター/ファイアウォールで
    **80番・443番ポートをサーバに転送**する設定が必要（ネットワーク管理者に依頼）
 4. 設定後、`https://kintai.example.com/healthz` で `{"status":"ok"}` が出れば完了
+
+### 2つの画面
+
+| URL | 画面 | 用途 |
+|---|---|---|
+| `https://kintai.example.com/admin` | 勤怠管理 | 稼働状況・日報・申請・メンバー管理・レポート |
+| `https://kintai.example.com/me` | 打刻 | メンバーが自分で打刻・実績確認 |
+| `https://mail.example.com/` | メール対応 | 受信箱（優先度順）・返信文の生成/編集・送信 |
+
+- ログインは**どちらも同じ管理者トークン**です（メール画面は管理者のみ）。
+  ただしブラウザの保存先はドメインごとに分かれるため、**各サブドメインで1回ずつログイン**します。
+- 互いの画面はドメインをまたいで開けません（Caddy が 404 を返します）。
+- SMTP（送信）の設定は両画面で共通です。IMAP（受信）とAI・署名の設定はメール画面側にあります。
+
+メール対応を使わない場合は、`ZATSUMU_MAIL_DOMAIN` の A レコードを作らなければ
+そのサブドメインは公開されません（勤怠側の動作には影響しません）。
 
 ---
 

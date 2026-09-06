@@ -1,3 +1,38 @@
+# 2つのサブドメインを1台のサーバ(同じアプリ・同じDB)で出し分ける。
+#
+#   ZATSUMU_DOMAIN      = kintai.example.com  → 勤怠管理（打刻・稼働状況・レポート）
+#   ZATSUMU_MAIL_DOMAIN = mail.example.com    → メール対応（受信箱・返信）
+#
+# DNS は両方とも同じサーバの IP に向ける（A レコードを2本）。
+# 証明書は Caddy が各ドメインぶん自動で取得する。
+
+# 勤怠管理
 {$ZATSUMU_DOMAIN} {
-	reverse_proxy app:8000
+	# メール対応はメール用サブドメインで開く（この画面はここには出さない）
+	handle /mail {
+		respond "メール対応はメール用のサブドメインで開いてください" 404
+	}
+	handle {
+		reverse_proxy app:8000
+	}
+}
+
+# メール対応（勤怠とは別UI。サーバ・DB・管理者トークンは共通）
+{$ZATSUMU_MAIL_DOMAIN} {
+	# このドメインのトップはメール画面
+	redir / /mail
+
+	# 勤怠側の画面はこのドメインでは開かせない
+	handle /admin {
+		respond "勤怠管理は勤怠用のサブドメインで開いてください" 404
+	}
+	handle /me {
+		respond "勤怠管理は勤怠用のサブドメインで開いてください" 404
+	}
+	handle /download/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy app:8000
+	}
 }
