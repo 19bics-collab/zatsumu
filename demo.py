@@ -45,13 +45,20 @@ def open_browser_when_ready() -> None:
             time.sleep(0.5)
     print()
     print("=" * 56)
-    print(f"  デモサイトを起動しました: {URL}/admin")
-    print("  管理者トークン: demo-admin")
-    print("  メンバー打刻ページ: " + URL + "/me")
+    print("  デモサイトを起動しました")
+    print()
+    print(f"  勤怠管理(管理者): {URL}/admin")
+    print(f"  メール対応     : {URL}/mail")
+    print("  管理者トークン : demo-admin   (上の2画面で共通)")
+    print()
+    print(f"  メンバー打刻   : {URL}/me")
     print("  メンバートークン: demo-tanaka / demo-suzuki / demo-sato")
+    print()
     print("  終了するには Ctrl+C")
     print("=" * 56)
+    # 本番はサブドメインで出し分けるが、デモは1台なのでパスで両方開く
     webbrowser.open(f"{URL}/admin")
+    webbrowser.open(f"{URL}/mail")
 
 
 def main() -> None:
