@@ -143,5 +143,47 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
          now_utc.isoformat(), ids["管理者"]),
     )
 
+    # デモ用の受信メール (優先度分類・返信下書き画面の確認用)
+    def add_mail(mins_ago, from_name, from_addr, subject, body, prio, reason,
+                 draft="", status="unhandled"):
+        received = (now_utc - timedelta(minutes=mins_ago)).isoformat()
+        conn.execute(
+            "INSERT INTO mails (message_id, from_addr, from_name, to_addr,"
+            " subject, body, received_at, fetched_at, priority,"
+            " priority_reason, priority_source, status, draft_reply,"
+            " draft_source, draft_generated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"<demo-{mins_ago}@example.com>", from_addr, from_name,
+             "info@example.com", subject, body, received,
+             now_utc.isoformat(), prio, reason, "rule", status, draft,
+             "template" if draft else "",
+             now_utc.isoformat() if draft else None),
+        )
+
+    add_mail(20, "山本 商事", "yamamoto@example.com",
+             "【至急】納品物の不具合について",
+             "本日納品いただいた製品に不具合がありました。\n"
+             "至急ご確認のうえ、対応方法をご連絡ください。",
+             1, "「至急」を含む",
+             "山本 商事 様\n\nお世話になっております。\n"
+             "納品物の不具合の件、大変申し訳ございません。\n"
+             "至急状況を確認のうえ、本日中に対応方法をご連絡いたします。")
+    add_mail(90, "佐々木", "sasaki@example.com",
+             "お見積もりのご相談",
+             "新規案件についてお見積もりをお願いしたく、"
+             "ご都合の良い日程を教えてください。",
+             2, "通常",
+             "佐々木 様\n\nお世話になっております。\n"
+             "お見積もりのご相談ありがとうございます。\n"
+             "候補日程を確認のうえ、改めてご連絡差し上げます。")
+    add_mail(240, "業界ニュース配信", "no-reply@newsletter.example.com",
+             "【メルマガ】今週の業界トピックス",
+             "今週の業界ニュースをお届けします。配信停止はこちら。",
+             3, "自動配信・お知らせ")
+    add_mail(1500, "高橋", "takahashi@example.com",
+             "先日の打ち合わせのお礼",
+             "先日はお時間をいただきありがとうございました。",
+             2, "通常", status="replied")
+
     conn.commit()
     return True

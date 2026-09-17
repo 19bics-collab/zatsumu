@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>メール対応</title>
+<style>
+  :root { --hi: #c62828; --line: #e5e7eb; }
+  html { font-size: 17px; -webkit-text-size-adjust: 100%; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7;
+         overflow-x: hidden; }
+  header { background: #14532d; color: #fff; padding: .7rem 1.5rem;
+           display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  header h1 { font-size: 1.3rem; margin: 0; margin-right: 1rem; }
+  header .spacer { flex: 1; }
+  header button { background: #3f6b50; }
+  header button.active { background: #16a34a; }
+  main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+  h2 { font-size: 1.15rem; color: #374151; }
+  button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
+           background: #16a34a; color: #fff; cursor: pointer; font-size: .9rem; }
+  button.ghost { background: #e5e7eb; color: #374151; }
+  button:disabled { opacity: .55; cursor: default; }
+  table { border-collapse: collapse; background: #fff; width: 100%;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); font-size: 1rem; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch;
+                padding: 3px 3px 6px; }
+  th, td { padding: .7rem 1rem; border-bottom: 1px solid var(--line); text-align: left; }
+  th { background: #f9fafb; font-size: .85rem; color: #6b7280; }
+  /* ログイン */
+  #login { max-width: 360px; margin: 12vh auto; background: #fff; padding: 2rem;
+           border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  #login input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
+                 border: 1px solid #ccc; border-radius: 4px; }
+  .error { color: var(--hi); }
+  .ntf { background: var(--hi); color: #fff; border-radius: 99px; font-size: .7rem;
+         padding: .05rem .4rem; margin-left: .3rem; }
+  /* 優先度・一覧 */
+  .pr-1 { color: var(--hi); font-weight: 700; }
+  .pr-2 { color: #d97706; }
+  .pr-3 { color: #6b7280; }
+  .st-replied { color: #0a7d32; } .st-archived { color: #6b7280; }
+  .st-unhandled { color: #d97706; }
+  .mail-row { cursor: pointer; }
+  .mail-row.done td { color: #9ca3af; }
+  .mail-row:hover { background: #f0fdf4; }
+  /* 設定 */
+  .settings-grid { display: grid; gap: 1rem;
+                   grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
+  .set-card { background: #fff; padding: 1.2rem 1.5rem; border-radius: 8px;
+              box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .set-card h3 { font-size: 1rem; margin: 0 0 .8rem; color: #374151; }
+  .set-row { display: flex; align-items: center; justify-content: space-between;
+             gap: 1rem; margin: .7rem 0; font-size: .95rem; }
+  .set-row input[type=number] { width: 7rem; padding: .45rem; border: 1px solid #ccc;
+                                border-radius: 6px; font-size: 1rem; }
+  .set-row input[type=text], .set-row input[type=password] { width: 9rem; padding: .45rem;
+                                border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+  .set-row input[type=checkbox] { width: 1.3rem; height: 1.3rem; }
+  .set-card textarea { width: 100%; box-sizing: border-box; min-height: 3.6rem;
+                       padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
+                       font-size: .9rem; font-family: inherit; }
+  /* 返信モーダル */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+           align-items: center; justify-content: center; z-index: 10; }
+  .modal[hidden] { display: none; }
+  .modal .box { background: #fff; padding: 1.2rem; border-radius: 8px;
+                max-width: 94vw; max-height: 94vh; display: flex; flex-direction: column;
+                min-width: 320px; width: 680px; overflow: auto; }
+  .modal .bar { display: flex; gap: .6rem; align-items: center; }
+  .modal .bar span { flex: 1; color: #374151; font-size: .9rem; }
+  .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; }
+  .mail-body { white-space: pre-wrap; background: #f9fafb; border: 1px solid var(--line);
+               border-radius: 6px; padding: .7rem; max-height: 12rem; overflow: auto;
+               font-size: .92rem; color: #374151; }
+  #m-draft { width: 100%; box-sizing: border-box; min-height: 11rem; padding: .6rem;
+             border: 1px solid #ccc; border-radius: 6px; font-size: .95rem;
+             font-family: inherit; margin-top: .3rem; }
+  #m-inst { flex: 1; min-width: 180px; padding: .45rem; border: 1px solid #ccc;
+            border-radius: 6px; font-size: .9rem; }
+  @media (max-width: 720px) {
+    html { font-size: 15px; }
+    main { padding: .8rem; }
+    header { padding: .6rem .8rem; gap: .4rem; }
+    header h1 { font-size: 1.1rem; margin-right: 0; flex-basis: 100%; }
+    header .spacer { display: none; }
+    header button { padding: .45rem .7rem; font-size: .82rem; }
+    .table-wrap table { white-space: nowrap; }
+    .table-wrap th, .table-wrap td { padding: .5rem .6rem; }
+  }
+  /* スマホは1行=1カードに縦積みして横スクロールを無くす */
+  @media (max-width: 640px) {
+    .table-wrap { overflow-x: visible; padding: 0; }
+    .table-wrap table { width: 100%; box-shadow: none; white-space: normal; }
+    .table-wrap thead { display: none; }
+    .table-wrap tbody { display: block; }
+    .table-wrap tr { display: block; background: #fff; border: 1px solid var(--line);
+                     border-radius: 8px; margin: 0 0 .6rem; padding: .3rem .8rem;
+                     box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .table-wrap td { display: block; border: none; border-bottom: 1px solid #f1f5f9;
+                     padding: .5rem 0; text-align: left; }
+    .table-wrap tr td:last-child { border-bottom: none; }
+    .table-wrap td[data-label]::before { content: attr(data-label); display: block;
+                     font-weight: 600; color: #6b7280; font-size: .72rem; margin-bottom: .15rem; }
+  }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <h1>📨 メール対応</h1>
+  <p>管理者トークンを入力してください</p>
+  <input type="password" id="token-input" placeholder="管理者トークン" autocomplete="current-password">
+  <button id="login-btn">ログイン</button>
+  <p id="login-error" class="error" hidden>トークンが正しくないか、管理者権限がありません</p>
+</div>
+
+<div id="app" hidden>
+<header>
+  <h1>📨 <span id="brand">メール対応</span></h1>
+  <button id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span></button>
+  <button id="nav-settings">設定</button>
+  <span class="spacer"></span>
+  <button id="logout">ログアウト</button>
+</header>
+<main>
+
+<section id="inbox" hidden>
+  <h2>受信箱
+    <select id="filter" style="margin-left:1rem;padding:.4rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem">
+      <option value="unhandled">未対応</option>
+      <option value="replied">返信済み</option>
+      <option value="archived">対応不要</option>
+      <option value="">すべて</option>
+    </select>
+    <button id="fetch-now" class="ghost" style="margin-left:.6rem">今すぐ受信</button>
+    <span id="fetch-msg" style="margin-left:.6rem;font-size:.85rem"></span>
+  </h2>
+  <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
+  行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
+  受信サーバ（IMAP）とAIの設定は「設定」画面で行ってください。</small></p>
+  <div class="table-wrap"><table id="mail-table">
+    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>下書き</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</section>
+
+<section id="settings-view" hidden>
+  <h2>設定</h2>
+  <div class="settings-grid">
+    <div class="set-card">
+      <h3>メール受信（IMAP）</h3>
+      <label class="set-row"><span>自動受信する</span>
+        <input type="checkbox" id="set-mail-fetch-enabled"></label>
+      <label class="set-row"><span>IMAPサーバ</span>
+        <input type="text" id="set-imap-host" placeholder="imap.example.com"></label>
+      <label class="set-row"><span>IMAPポート</span>
+        <input type="text" id="set-imap-port" placeholder="993"></label>
+      <label class="set-row"><span>SSLで接続</span>
+        <input type="checkbox" id="set-imap-ssl"></label>
+      <label class="set-row"><span>IMAPユーザー</span>
+        <input type="text" id="set-imap-user"></label>
+      <label class="set-row"><span>IMAPパスワード</span>
+        <input type="password" id="set-imap-pass" placeholder="(変更時のみ入力)"></label>
+      <label class="set-row"><span>フォルダ</span>
+        <input type="text" id="set-imap-folder" placeholder="INBOX"></label>
+      <label class="set-row"><span>初回に遡る日数</span>
+        <input type="number" id="set-mail-fetch-days" min="1" max="365"></label>
+      <label class="set-row"><span>メール保存日数（0=削除なし）</span>
+        <input type="number" id="set-mail-retention" min="0" max="3650"></label>
+      <label class="set-row"><span>優先度[高]の受信を通知</span>
+        <input type="checkbox" id="set-notify-mail-high"></label>
+      <p><small>共有の受信箱（例: info@…）をIMAPで定期取得し、「受信箱」に優先度順で
+      表示します。受信箱のメールは変更しません（既読も付きません）。</small></p>
+      <button class="ghost" id="set-test-imap">IMAP接続テスト</button>
+      <span id="test-imap-msg" style="margin-left:.6rem;font-size:.85rem"></span>
+    </div>
+    <div class="set-card">
+      <h3>AI返信（Claude）</h3>
+      <label class="set-row"><span>受信時に下書きを自動生成</span>
+        <input type="checkbox" id="set-mail-auto-draft"></label>
+      <label class="set-row"><span>Claude APIキー</span>
+        <input type="password" id="set-anthropic-key" placeholder="(変更時のみ入力)"></label>
+      <label class="set-row"><span>モデル</span>
+        <input type="text" id="set-anthropic-model" placeholder="claude-opus-5"></label>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem">返信の署名（本文の末尾に付加）</label>
+      <textarea id="set-mail-signature" placeholder="――――――――&#10;株式会社◯◯ 総務部"></textarea>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem">生成時の追加指示（文体・注意事項など）</label>
+      <textarea id="set-mail-instructions" placeholder="例：文末は「よろしくお願いいたします。」で締める"></textarea>
+      <label class="set-row" style="margin-top:.5rem"><span>VIP差出人（カンマ区切り）</span>
+        <input type="text" id="set-mail-vip" placeholder="ceo@client.example.com"></label>
+      <label class="set-row"><span>優先度[高]キーワード</span>
+        <input type="text" id="set-mail-keywords"></label>
+      <p><small>APIキーを設定すると、優先度の判定と返信文の下書きをAI（Claude）が行います。
+      未設定でもキーワードによる分類と定型文の下書きで動作します。
+      <b style="color:#c62828">返信は必ず内容を確認してから送信してください。</b></small></p>
+    </div>
+    <div class="set-card">
+      <h3>返信の送信（SMTP）</h3>
+      <label class="set-row"><span>SMTPサーバ</span>
+        <input type="text" id="set-smtp-host" placeholder="smtp.example.com"></label>
+      <label class="set-row"><span>SMTPポート</span>
+        <input type="text" id="set-smtp-port" placeholder="587"></label>
+      <label class="set-row"><span>SMTPユーザー</span>
+        <input type="text" id="set-smtp-user"></label>
+      <label class="set-row"><span>SMTPパスワード</span>
+        <input type="password" id="set-smtp-pass" placeholder="(変更時のみ入力)"></label>
+      <label class="set-row"><span>差出人メール</span>
+        <input type="text" id="set-mail-from"></label>
+      <p><small>返信の送信に使います。この設定は勤怠管理の通知メールと共通です
+      （どちらの画面で変更しても同じ設定が変わります）。</small></p>
+      <div style="margin-top:.7rem;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <input type="email" id="set-test-email-to" placeholder="送信先メール（例 you@example.com）"
+          style="flex:1;min-width:180px;padding:.4rem;border:1px solid #ccc;border-radius:6px">
+        <button class="ghost" id="set-test-email">テスト送信</button>
+      </div>
+      <span id="test-email-msg" style="font-size:.85rem"></span>
+    </div>
+  </div>
+  <p style="margin-top:1rem">
+    <button id="set-save">保存</button>
+    <span id="set-msg" style="margin-left:.8rem;color:#0a7d32"></span>
+  </p>
+</section>
+
+</main>
+</div>
+
+<div id="mail-modal" class="modal" hidden>
+  <div class="box">
+    <h2 id="m-subject" style="margin:.2rem 0"></h2>
+    <div class="mail-meta" id="m-meta"></div>
+    <div class="mail-body" id="m-body"></div>
+    <div style="display:flex;gap:.6rem;align-items:center;margin-top:.8rem;flex-wrap:wrap">
+      <label style="font-size:.85rem;color:#374151">優先度
+        <select id="m-priority" style="padding:.35rem;border:1px solid #ccc;border-radius:6px">
+          <option value="1">高</option><option value="2">中</option><option value="3">低</option>
+        </select>
+      </label>
+      <span id="m-reason" style="font-size:.8rem;color:#6b7280"></span>
+    </div>
+    <label style="font-size:.85rem;color:#374151;margin-top:.8rem;display:block">返信文（編集できます）
+      <span id="m-draft-src" style="color:#9ca3af;font-size:.8rem"></span></label>
+    <textarea id="m-draft" placeholder="「返信文を生成」を押すと下書きが入ります"></textarea>
+    <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem;flex-wrap:wrap">
+      <input type="text" id="m-inst" placeholder="生成の方針（任意。例：金曜までに対応すると伝える）">
+      <button id="m-gen" class="ghost">返信文を生成</button>
+    </div>
+    <div class="bar" style="margin-top:.8rem">
+      <button id="m-archive" class="ghost">対応不要にする</button>
+      <span id="m-status"></span>
+      <button id="m-send">返信を送信</button>
+      <button id="m-close" class="ghost">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// 勤怠画面と同じトークンキー。ただしサブドメインが別なら localStorage も別なので、
+// メール画面では改めてログインが必要（意図的な分離）。
+const KEY = "zatsumu_token";
+const $ = id => document.getElementById(id);
+const PR = { 1: "高", 2: "中", 3: "低" };
+const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応不要" };
+let modal = { id: null, savedDraft: "" };
+let viewName = "inbox";
+
+// ?token= / #token= からの移行: 保存して URL から即座に消す(#はアクセスログに残らない)
+const url = new URL(location);
+const _tok = (url.hash && new URLSearchParams(url.hash.slice(1)).get("token"))
+  || url.searchParams.get("token");
+if (_tok) {
+  localStorage.setItem(KEY, _tok);
+  url.searchParams.delete("token");
+  url.hash = "";
+  history.replaceState(null, "", url);
+}
+
+const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+  if (r.status === 401) { showLogin(true); throw new Error("auth"); }
+  return r;
+}
+async function apiJson(path, opts = {}) {
+  const r = await api(path, opts);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    alert(e.detail || "エラーが発生しました");
+    throw new Error(e.detail || "api error");
+  }
+  return r.json();
+}
+// innerHTML に入れる外部由来の文字列(差出人・件名など)は必ずこれを通す
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function showLogin(withError) {
+  $("app").hidden = true;
+  $("login").hidden = false;
+  $("login-error").hidden = !withError;
+}
+
+let appSettings = {};
+async function showApp() {
+  // 管理者専用APIで認証確認をかねて設定を取得する(非管理者は403で弾かれる)
+  const r = await fetch("/api/settings", { headers: headers() });
+  if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
+  appSettings = await r.json();
+  const name = appSettings.company_name || "";
+  $("brand").textContent = name ? name + " メール" : "メール対応";
+  document.title = (name ? name + " " : "") + "メール対応";
+  $("login").hidden = true;
+  $("app").hidden = false;
+  fillSettings(appSettings);
+  showInbox();
+}
+
+function switchView(name) {
+  viewName = name;
+  $("inbox").hidden = name !== "inbox";
+  $("settings-view").hidden = name !== "settings";
+  $("nav-inbox").classList.toggle("active", name === "inbox");
+  $("nav-settings").classList.toggle("active", name === "settings");
+}
+
+async function refreshBadge() {
+  try {
+    const r = await api("/api/mail?status=unhandled");
+    if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
+    const n = (await r.json()).length;
+    const b = $("inbox-badge");
+    b.hidden = n === 0;
+    b.textContent = n;
+  } catch {}
+}
+
+/* ---------- 受信箱 ---------- */
+async function showInbox() {
+  switchView("inbox");
+  const status = $("filter").value;
+  const list = await apiJson("/api/mail" + (status ? `?status=${status}` : ""));
+  document.querySelector("#mail-table tbody").innerHTML = list.map(m => `
+    <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}" data-id="${m.id}">
+      <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
+      <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong></td>
+      <td data-label="件名">${esc(m.subject) || "（件名なし）"}</td>
+      <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
+      <td data-label="状態" class="st-${m.status}">${ST[m.status] || m.status}</td>
+      <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
+    </tr>`).join("") ||
+    `<tr><td colspan="6"><small>メールはありません（「今すぐ受信」または設定画面のIMAP設定を確認してください）</small></td></tr>`;
+  document.querySelectorAll(".mail-row").forEach(tr =>
+    tr.onclick = () => openMail(+tr.dataset.id));
+  refreshBadge();
+}
+$("filter").onchange = () => showInbox();
+
+$("fetch-now").onclick = async () => {
+  const b = $("fetch-now");
+  b.disabled = true; b.textContent = "受信中…";
+  $("fetch-msg").textContent = "";
+  try {
+    const r = await apiJson("/api/mail/fetch", { method: "POST" });
+    $("fetch-msg").style.color = "#0a7d32";
+    $("fetch-msg").textContent = `新着 ${r.fetched} 件`;
+    setTimeout(() => $("fetch-msg").textContent = "", 4000);
+    if (viewName === "inbox") showInbox();   // 受信が遅くても他画面を奪わない
+    else refreshBadge();
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  b.disabled = false; b.textContent = "今すぐ受信";
+};
+
+/* ---------- 返信モーダル ---------- */
+async function openMail(id) {
+  const m = await apiJson(`/api/mail/${id}`);
+  modal = { id, savedDraft: m.draft_reply || "" };
+  $("m-subject").textContent = m.subject || "（件名なし）";
+  $("m-meta").textContent =
+    `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}> ・ ` +
+    `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${ST[m.status] || m.status}` +
+    (m.status === "replied" && m.replied_by ? `（${m.replied_by} が送信）` : "");
+  $("m-body").textContent = m.body || "（本文なし）";
+  $("m-priority").value = m.priority;
+  $("m-reason").textContent = m.priority_reason
+    ? `判定理由: ${m.priority_reason}（${{ ai: "AI", rule: "ルール", manual: "手動" }[m.priority_source] || m.priority_source}）` : "";
+  $("m-draft").value = m.status === "replied" ? m.reply_body : (m.draft_reply || "");
+  $("m-draft").readOnly = m.status === "replied";
+  $("m-draft-src").textContent =
+    m.status === "replied" ? "（送信済みの本文）"
+    : m.draft_source === "ai" ? "（AI生成の下書き）"
+    : m.draft_source === "template" ? "（定型文の下書き）" : "";
+  $("m-status").textContent = "";
+  $("m-inst").value = "";
+  $("m-send").disabled = m.status === "replied";
+  $("m-send").textContent = m.status === "replied" ? "返信済み" : "返信を送信";
+  $("m-gen").disabled = m.status === "replied";
+  $("m-archive").disabled = m.status !== "unhandled";
+  $("mail-modal").hidden = false;
+}
+
+$("m-priority").onchange = async () => {
+  if (!modal.id) return;
+  try {
+    await apiJson(`/api/mail/${modal.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priority: +$("m-priority").value }),
+    });
+    $("m-reason").textContent = "判定理由: 手動変更（手動）";
+    showInbox();
+  } catch {}
+};
+
+$("m-gen").onclick = async () => {
+  const b = $("m-gen");
+  b.disabled = true; b.textContent = "生成中…";
+  try {
+    const r = await apiJson(`/api/mail/${modal.id}/draft`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instructions: $("m-inst").value }),
+    });
+    $("m-draft").value = r.draft_reply;
+    modal.savedDraft = r.draft_reply;
+    $("m-draft-src").textContent =
+      r.draft_source === "ai" ? "（AI生成の下書き）" : "（定型文の下書き・APIキー未設定）";
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  b.disabled = false; b.textContent = "返信文を生成";
+};
+
+$("m-send").onclick = async () => {
+  const text = $("m-draft").value.trim();
+  if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
+  if (!confirm("この内容で返信を送信しますか？")) return;
+  const b = $("m-send");
+  b.disabled = true; b.textContent = "送信中…";
+  try {
+    const r = await apiJson(`/api/mail/${modal.id}/send`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: text }),
+    });
+    modal.savedDraft = text;
+    $("m-status").textContent = `${r.sent} へ送信しました ✓`;
+    b.textContent = "返信済み";
+    // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)
+    $("m-draft").readOnly = true;
+    $("m-gen").disabled = true;
+    $("m-archive").disabled = true;
+    showInbox();
+  } catch {
+    b.disabled = false; b.textContent = "返信を送信";
+  }
+};
+
+$("m-archive").onclick = async () => {
+  try {
+    await apiJson(`/api/mail/${modal.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "archived" }),
+    });
+    await closeModal();
+    showInbox();
+  } catch {}
+};
+
+async function closeModal() {
+  // 編集途中の下書きは閉じるときに自動保存する(送信済みは保存しない)
+  const draft = $("m-draft").value;
+  if (modal.id && !$("m-draft").readOnly && draft !== modal.savedDraft) {
+    try {
+      await api(`/api/mail/${modal.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draft_reply: draft }),
+      });
+    } catch {}
+  }
+  modal = { id: null, savedDraft: "" };
+  $("mail-modal").hidden = true;
+}
+$("m-close").onclick = () => closeModal();
+$("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
+
+/* ---------- 設定 ---------- */
+// 直近にサーバから読み込んだ設定。共有項目(SMTP)を古い表示値で
+// 上書きしないよう、保存時に「画面で実際に変えたか」の判定に使う。
+let loaded = {};
+
+async function openSettings() {
+  switchView("settings");
+  // SMTP は勤怠画面からも変更されうるので、開くたびに取り直す
+  try { appSettings = await apiJson("/api/settings"); } catch { return; }
+  fillSettings(appSettings);
+}
+
+function fillSettings(s) {
+  loaded = s;
+  $("set-mail-fetch-enabled").checked = !!s.mail_fetch_enabled;
+  $("set-imap-host").value = s.imap_host;
+  $("set-imap-port").value = s.imap_port;
+  $("set-imap-ssl").checked = !!s.imap_use_ssl;
+  $("set-imap-user").value = s.imap_user;
+  $("set-imap-pass").value = "";   // パスワードは表示しない(サーバも返さない)
+  $("set-imap-pass").placeholder = s.imap_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-imap-folder").value = s.imap_folder;
+  $("set-mail-fetch-days").value = s.mail_fetch_days;
+  $("set-mail-retention").value = s.mail_retention_days;
+  $("set-notify-mail-high").checked = !!s.notify_mail_high;
+  $("set-mail-auto-draft").checked = !!s.mail_auto_draft;
+  $("set-anthropic-key").value = "";
+  $("set-anthropic-key").placeholder = s.anthropic_api_key_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-anthropic-model").value = s.anthropic_model;
+  $("set-mail-signature").value = s.mail_signature;
+  $("set-mail-instructions").value = s.mail_reply_instructions;
+  $("set-mail-vip").value = s.mail_vip_addresses;
+  $("set-mail-keywords").value = s.mail_urgent_keywords;
+  $("set-smtp-host").value = s.smtp_host;
+  $("set-smtp-port").value = s.smtp_port;
+  $("set-smtp-user").value = s.smtp_user;
+  $("set-smtp-pass").value = "";
+  $("set-smtp-pass").placeholder = s.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-mail-from").value = s.mail_from;
+  $("set-msg").textContent = "";
+  $("test-imap-msg").textContent = "";
+  $("test-email-msg").textContent = "";
+}
+
+$("set-save").onclick = async () => {
+  // メール関連のキーだけ送る。PATCH は部分更新なので勤怠側の設定は変わらない
+  const body = {
+    mail_fetch_enabled: $("set-mail-fetch-enabled").checked,
+    imap_host: $("set-imap-host").value,
+    imap_port: $("set-imap-port").value,
+    imap_use_ssl: $("set-imap-ssl").checked,
+    imap_user: $("set-imap-user").value,
+    imap_folder: $("set-imap-folder").value,
+    mail_fetch_days: +$("set-mail-fetch-days").value,
+    mail_retention_days: +$("set-mail-retention").value,
+    notify_mail_high: $("set-notify-mail-high").checked,
+    mail_auto_draft: $("set-mail-auto-draft").checked,
+    anthropic_model: $("set-anthropic-model").value,
+    mail_signature: $("set-mail-signature").value,
+    mail_reply_instructions: $("set-mail-instructions").value,
+    mail_vip_addresses: $("set-mail-vip").value,
+    mail_urgent_keywords: $("set-mail-keywords").value,
+  };
+  // SMTP は勤怠画面と共通。この画面で実際に変えた項目だけ送り、
+  // 表示していた古い値で相手側の変更を消さないようにする
+  for (const [key, id] of [["smtp_host", "set-smtp-host"],
+                           ["smtp_port", "set-smtp-port"],
+                           ["smtp_user", "set-smtp-user"],
+                           ["mail_from", "set-mail-from"]]) {
+    const v = $(id).value;
+    if (v !== (loaded[key] ?? "")) body[key] = v;
+  }
+  if ($("set-imap-pass").value) body.imap_pass = $("set-imap-pass").value;
+  if ($("set-anthropic-key").value) body.anthropic_api_key = $("set-anthropic-key").value;
+  if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  fillSettings(appSettings);
+  $("set-msg").textContent = "保存しました ✓";
+  setTimeout(() => $("set-msg").textContent = "", 2500);
+};
+
+$("set-test-imap").onclick = async () => {
+  $("test-imap-msg").style.color = "#475569";
+  $("test-imap-msg").textContent = "接続中...";
+  try {
+    const r = await apiJson("/api/settings/test-imap", { method: "POST" });
+    $("test-imap-msg").style.color = "#0a7d32";
+    $("test-imap-msg").textContent = `接続できました ✓（フォルダ内 ${r.count} 通）`;
+  } catch {
+    $("test-imap-msg").style.color = "#c62828";
+    $("test-imap-msg").textContent = "接続できませんでした（設定を保存後にお試しください）";
+  }
+};
+
+$("set-test-email").onclick = async () => {
+  const to = $("set-test-email-to").value.trim();
+  if (!to) {
+    $("test-email-msg").style.color = "#c62828";
+    $("test-email-msg").textContent = "送信先メールを入力してください";
+    return;
+  }
+  $("test-email-msg").style.color = "#475569";
+  $("test-email-msg").textContent = "送信中...";
+  try {
+    await apiJson("/api/settings/test-email", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to }),
+    });
+    $("test-email-msg").style.color = "#0a7d32";
+    $("test-email-msg").textContent = to + " に送信しました ✓";
+  } catch {
+    $("test-email-msg").style.color = "#c62828";
+    $("test-email-msg").textContent = "送信できませんでした（SMTP設定を保存後にお試しください）";
+  }
+};
+
+/* ---------- ナビ・ログイン ---------- */
+$("nav-inbox").onclick = () => showInbox();
+$("nav-settings").onclick = () => openSettings();
+$("login-btn").onclick = () => {
+  localStorage.setItem(KEY, $("token-input").value.trim());
+  showApp();
+};
+$("token-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("login-btn").click();
+});
+$("logout").onclick = () => {
+  localStorage.removeItem(KEY);
+  $("token-input").value = "";
+  showLogin(false);
+};
+
+if (localStorage.getItem(KEY)) showApp(); else showLogin(false);
+</script>
+</body>
+</html>
