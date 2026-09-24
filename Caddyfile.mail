@@ -1,0 +1,30 @@
+# メール対応「だけ」を1台のサーバで動かす場合の設定（勤怠は別サーバで運用）。
+#
+#   .env に次の2行を書くとこの設定が使われる:
+#     ZATSUMU_CADDYFILE=Caddyfile.mail
+#     ZATSUMU_MAIL_DOMAIN=inbox.example.com
+#
+# DNS は ZATSUMU_MAIL_DOMAIN の A レコードをこのサーバの IP に向ける。
+# 証明書(HTTPS)は Caddy が自動で取得する。
+#
+# ⚠️ mail.<会社のドメイン> は使わないこと。多くのレンタルサーバで会社のメールの
+#    受信・送信用に既に使われており、ここに向けるとメールが止まる。
+
+{$ZATSUMU_MAIL_DOMAIN} {
+	# トップはメール画面
+	redir / /mail
+
+	# このサーバはメール対応専用。勤怠の画面は開かせない
+	handle /admin {
+		respond "このサーバはメール対応専用です" 404
+	}
+	handle /me {
+		respond "このサーバはメール対応専用です" 404
+	}
+	handle /download/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy app:8000
+	}
+}

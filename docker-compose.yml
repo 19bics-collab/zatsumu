@@ -21,7 +21,9 @@ services:
       # DNS は ZATSUMU_DOMAIN と同じ IP に向ける
       ZATSUMU_MAIL_DOMAIN: ${ZATSUMU_MAIL_DOMAIN:-mail.localhost}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 既定は勤怠+メールの2サイト。メール専用サーバでは .env で
+      # ZATSUMU_CADDYFILE=Caddyfile.mail にする
+      - ./${ZATSUMU_CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
 
