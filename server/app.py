@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -144,6 +144,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="zatsumu", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _no_search_index(request: Request, call_next):
+    """社内ツールなので検索エンジンに載せない.
+
+    公開サービス(例: 自社プロダクト)と同じドメイン配下や同じサーバに置かれても、
+    ログイン画面が検索結果に出てブランドを損ねないようにする。
+    robots.txt で Disallow すると noindex が読まれず逆効果なので、ヘッダで伝える。
+    """
+    response = await call_next(request)
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
 
 
 def now_iso() -> str:

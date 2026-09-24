@@ -2491,3 +2491,37 @@ def test_mail_send_reply_strips_header_newlines(monkeypatch):
     assert parsed["X-Evil"] is None                    # ヘッダは注入されない
     assert parsed["In-Reply-To"] == "<id @e.com>"
     assert to == ["to@e.com"]
+
+
+def test_every_response_is_hidden_from_search_engines(client, users):
+    """社内ツールなので、どの画面・APIも検索エンジンに載せない.
+
+    公開中の自社サービスと同じドメイン配下・同じサーバに置かれることがあり、
+    ログイン画面が検索結果に出るとそのサービスのブランドを損ねるため。
+    """
+    _, admin = users
+    responses = {
+        "/admin": client.get("/admin"),
+        "/me": client.get("/me"),
+        "/mail": client.get("/mail"),
+        "/healthz": client.get("/healthz"),
+        "/api/settings (認証あり)": client.get("/api/settings", headers=auth(admin)),
+        "/api/settings (認証なし 401)": client.get("/api/settings"),
+        "/download/client (未配置 404)": client.get("/download/client"),
+        "存在しないURL (404)": client.get("/no-such-page"),
+    }
+    for name, r in responses.items():
+        assert r.headers.get("x-robots-tag") == "noindex, nofollow", name
+
+    # ヘッダを落とす中継が挟まっても効くよう、画面側にも入れておく
+    for path in ("/admin", "/me", "/mail"):
+        assert '<meta name="robots" content="noindex, nofollow">' in client.get(path).text, path
+
+
+def test_robots_txt_does_not_block_crawling(client):
+    """robots.txt で塞ぐと noindex が読まれず、URL だけ検索結果に残りうる.
+
+    Google の仕様上、noindex を効かせるにはクロールを許す必要がある。
+    """
+    r = client.get("/robots.txt")
+    assert "Disallow: /" not in r.text
