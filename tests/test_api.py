@@ -1438,7 +1438,7 @@ def test_send_email_builds_mime(monkeypatch):
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def ehlo(self): pass
-        def starttls(self): self.tls = True
+        def starttls(self, context=None): self.tls = True
         def login(self, u, p): self.logged = (u, p)
         def sendmail(self, frm, to, msg): self.sent = (frm, to, msg)
 
@@ -2480,7 +2480,7 @@ def test_mail_fetch_incremental_uid_and_failure(tmp_path, monkeypatch):
 def test_mail_send_reply_strips_header_newlines(monkeypatch):
     """デコード済みヘッダに CRLF が含まれても、送信ヘッダは1行に無害化される."""
     import email as email_mod
-    from server import mail
+    from server import mail, notify
 
     class FakeSMTP:
         last = None
@@ -2498,7 +2498,7 @@ def test_mail_send_reply_strips_header_newlines(monkeypatch):
         def ehlo(self):
             pass
 
-        def starttls(self):
+        def starttls(self, context=None):
             pass
 
         def login(self, u, p):
@@ -2507,7 +2507,7 @@ def test_mail_send_reply_strips_header_newlines(monkeypatch):
         def sendmail(self, frm, to, msg):
             self.sent = (frm, to, msg)
 
-    monkeypatch.setattr(mail.smtplib, "SMTP", FakeSMTP)
+    monkeypatch.setattr(notify.smtplib, "SMTP", FakeSMTP)
     cfg = {"smtp_host": "smtp.e", "smtp_port": "587", "smtp_user": "u@e",
            "smtp_pass": "", "mail_from": "from@e"}
     mail.send_reply(cfg, "to@e.com", "Re: hello\r\nX-Evil: 1", "本文",

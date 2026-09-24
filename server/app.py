@@ -850,7 +850,7 @@ def test_email(
             f"届いていればメール通知の設定は正常です。",
         )
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
-        raise HTTPException(502, f"送信に失敗しました: {e}")
+        raise HTTPException(502, f"送信に失敗しました: {notify.safe_error(e, s)}")
     return {"sent": to}
 
 
@@ -863,7 +863,7 @@ def test_imap(_admin=Depends(require_admin), conn=Depends(get_conn)):
     try:
         count = mail.test_imap(s)
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
-        raise HTTPException(502, f"接続に失敗しました: {e}")
+        raise HTTPException(502, f"接続に失敗しました: {notify.safe_error(e, s)}")
     return {"ok": True, "count": count}
 
 
@@ -1943,7 +1943,7 @@ def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
     try:
         added = mail.fetch_new_mail(conn, s)
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
-        raise HTTPException(502, f"受信に失敗しました: {e}")
+        raise HTTPException(502, f"受信に失敗しました: {notify.safe_error(e, s)}")
     return {"fetched": len(added)}
 
 
@@ -2060,7 +2060,7 @@ def mail_send(
             (mail_id,),
         )
         conn.commit()
-        raise HTTPException(502, f"送信に失敗しました: {e}")
+        raise HTTPException(502, f"送信に失敗しました: {notify.safe_error(e, s)}")
     _audit(conn, admin, "mail_send",
            detail=f"to={r['from_addr']} subject={subject}")
     return {"sent": r["from_addr"], "subject": subject}

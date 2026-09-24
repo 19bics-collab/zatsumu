@@ -3,8 +3,9 @@
 IMAP で受信箱を取り込み、優先度 (1=高 2=中 3=低) に自動分類し、
 Claude API で返信の下書きを生成する。API キー未設定でも動くように、
 分類はキーワードルール、下書きは定型文へフォールバックする。
-返信の送信は SMTP (notify.py と同じ設定) を使い、スレッドが繋がるよう
-In-Reply-To / References ヘッダを付ける。
+返信の送信は SMTP (notify.py と同じ設定・同じ接続処理) を使い、スレッドが
+繋がるよう In-Reply-To / References ヘッダを付ける。
+IMAP・SMTP ともサーバ証明書を検証し、暗号化できない接続ではパスワードを送らない。
 """
 import email
 import email.policy
@@ -13,7 +14,7 @@ import html as html_
 import imaplib
 import json
 import re
-import smtplib
+import ssl
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.utils import parseaddr, parsedate_to_datetime
@@ -275,31 +276,40 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
         # 受信側のメーラーで元メールと同じスレッドに繋がるようにする
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = _header_text(f"{references} {in_reply_to}")
-    port = int(settings.get("smtp_port") or 587)
-    with smtplib.SMTP(settings["smtp_host"], port, timeout=15) as s:
-        s.ehlo()
-        try:
-            s.starttls()
-            s.ehlo()
-        except smtplib.SMTPException:
-            pass  # TLS 非対応サーバはそのまま続行 (notify.py と同じ方針)
-        if settings.get("smtp_user"):
-            s.login(settings["smtp_user"], settings.get("smtp_pass", ""))
-        s.sendmail(sender, [to_addr], msg.as_string())
+    from . import notify  # 循環を避けるため遅延インポート
+
+    # 接続・暗号化・ログインは通知メールと同じ1か所の処理を使う
+    notify.smtp_send(settings, sender, [to_addr], msg.as_string())
 
 
 # ---------- IMAP 受信 ----------
 
 def _imap_connect(settings: dict) -> imaplib.IMAP4:
+    """IMAP に暗号化して接続・ログインする.
+
+    サーバ証明書を検証する (既定の IMAP4_SSL / starttls() は検証しないため
+    ssl.create_default_context() を渡す)。IMAP は必ずパスワードでログインするので、
+    STARTTLS で暗号化できない場合はパスワードを送らずに中止する。
+    """
     port = int(settings.get("imap_port") or 993)
+    ctx = ssl.create_default_context()
     if settings.get("imap_use_ssl"):
-        m = imaplib.IMAP4_SSL(settings["imap_host"], port, timeout=20)
+        m = imaplib.IMAP4_SSL(settings["imap_host"], port, ssl_context=ctx,
+                              timeout=20)
     else:
         m = imaplib.IMAP4(settings["imap_host"], port, timeout=20)
         try:
-            m.starttls()
-        except Exception:  # noqa: BLE001  STARTTLS 非対応はそのまま続行
-            pass
+            m.starttls(ssl_context=ctx)
+        except Exception:  # noqa: BLE001  非対応・証明書エラーなど
+            try:
+                m.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                "IMAPサーバと暗号化(STARTTLS)した接続ができないため、"
+                "パスワードを送らずに中止しました"
+                "（「SSLで接続」をONにするか、サーバの設定を確認してください）"
+            ) from None
     m.login(settings["imap_user"], settings.get("imap_pass", ""))
     return m
 
