@@ -59,7 +59,7 @@ curl -fsSL https://get.docker.com | sudo sh
 git clone https://github.com/19bics-collab/zatsumu.git
 cd zatsumu
 cp .env.example .env
-nano .env    # ZATSUMU_DOMAIN / ZATSUMU_MAIL_DOMAIN を実際のドメイン名に書き換える
+nano .env    # ZATSUMU_DOMAIN を実際のドメイン名に書き換える
 ```
 
 ### 3. 起動
@@ -217,12 +217,9 @@ caddy.exe run --config C:\zatsumu\caddy\Caddyfile
 - ユーザー作成は Render ダッシュボードの「Shell」タブから
   `python manage.py add-user 管理者 --admin`
 
-> ⚠️ **パターンDだけは、下の「ドメインと DNS の設定」が当てはまりません。**
-> Render 構成には振り分け役（Caddy）が入っていないため、**サブドメインでの
-> 出し分けはできません。** A レコードを2本引く必要もありません
-> （Render は固定IPを出さないため、そもそも A レコードでは向けられません）。
->
-> 画面は**1つのドメインのパス違い**で開きます。
+> パターンDでは A レコードを引く必要はありません（Render が発行するドメインを
+> そのまま使うか、Render 側で独自ドメインを設定します）。画面の開き方は
+> 下の「ドメインと DNS の設定」と同じで、**1つのドメインのパス違い**です。
 >
 > | URL | 画面 |
 > |---|---|
@@ -230,39 +227,75 @@ caddy.exe run --config C:\zatsumu\caddy\Caddyfile
 > | `https://xxx.onrender.com/me` | 打刻 |
 > | `https://xxx.onrender.com/mail` | メール対応 |
 >
-> どちらの画面も同じドメインで開けてしまうので、URLを知っている管理者以外に
-> 教えない運用にしてください。
+> ただし下の「メール画面を別のドメインにしたい場合」は、振り分け役（Caddy）が
+> 入っていないため Render では行えません。
 
 ---
 
 ## ドメインと DNS の設定
 
-勤怠管理とメール対応は **同じサーバ・同じDB** で動きますが、画面を分けるため
-**サブドメインを2つ**使います。
+勤怠管理もメール対応も **同じサーバ・同じDB・同じドメイン**で動きます。
+用意するドメインは **1つだけ**です。
 
 1. 会社のドメイン管理画面（お名前.com、ムームードメインなど）を開く
-2. **A レコード**を2本追加。どちらも同じサーバのグローバルIPに向ける
-   - `kintai` → 勤怠管理（`.env` の `ZATSUMU_DOMAIN`）
-   - `mail` → メール対応（`.env` の `ZATSUMU_MAIL_DOMAIN`）
+2. **A レコード**を1本追加し、このサーバのグローバルIPに向ける
+   （例: `kintai` → `.env` の `ZATSUMU_DOMAIN`）
 3. サーバが社内にある場合は、ルーター/ファイアウォールで
    **80番・443番ポートをサーバに転送**する設定が必要（ネットワーク管理者に依頼）
 4. 設定後、`https://kintai.example.com/healthz` で `{"status":"ok"}` が出れば完了
 
-### 2つの画面
+### 3つの画面
 
 | URL | 画面 | 用途 |
 |---|---|---|
 | `https://kintai.example.com/admin` | 勤怠管理 | 稼働状況・日報・申請・メンバー管理・レポート |
 | `https://kintai.example.com/me` | 打刻 | メンバーが自分で打刻・実績確認 |
-| `https://mail.example.com/` | メール対応 | 受信箱（優先度順）・返信文の生成/編集・送信 |
+| `https://kintai.example.com/mail` | メール対応 | 受信箱（優先度順）・返信文の生成/編集・送信 |
 
-- ログインは**どちらも同じ管理者トークン**です（メール画面は管理者のみ）。
-  ただしブラウザの保存先はドメインごとに分かれるため、**各サブドメインで1回ずつログイン**します。
-- 互いの画面はドメインをまたいで開けません（Caddy が 404 を返します）。
-- SMTP（送信）の設定は両画面で共通です。IMAP（受信）とAI・署名の設定はメール画面側にあります。
+- ログインは**3画面とも同じ管理者トークン**です（`/admin` と `/mail` は管理者のみ）。
+  同じドメインなので、**一度ログインすれば入り直す必要はありません**。
+- `/mail` は管理者トークンが無いと中身を出しませんが、管理画面と同じ扱いです。
+  メンバーには `/me` だけを案内してください。
+- SMTP（送信）の設定は勤怠の通知とメール返信で共通です。
+  IMAP（受信）とAI・署名の設定はメール画面側にあります。
 
-メール対応を使わない場合は、`ZATSUMU_MAIL_DOMAIN` の A レコードを作らなければ
-そのサブドメインは公開されません（勤怠側の動作には影響しません）。
+### メール画面を別のドメインにしたい場合
+
+メール対応だけ `mail.example.com` のような別ドメインで開きたい場合は、
+A レコードをもう1本追加したうえで、Caddy の設定を2サイトに分けます。
+`deploy/Caddyfile.host`（Docker なし）の例:
+
+```
+# 勤怠管理（メール画面はこちらには出さない）
+kintai.example.com {
+	handle /mail {
+		respond "メール対応はメール用のドメインで開いてください" 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8000
+	}
+}
+
+# メール対応
+mail.example.com {
+	redir / /mail
+	handle /admin { respond "勤怠管理は勤怠用のドメインで開いてください" 404 }
+	handle /me    { respond "勤怠管理は勤怠用のドメインで開いてください" 404 }
+	handle /download/* { respond 404 }
+	handle {
+		reverse_proxy 127.0.0.1:8000
+	}
+}
+```
+
+Docker 構成（`Caddyfile`）なら転送先を `app:8000` にし、ドメイン名を
+`{$ZATSUMU_DOMAIN}` / `{$ZATSUMU_MAIL_DOMAIN}` と書いて `docker-compose.yml` の
+`caddy` に両方の環境変数を渡してください。
+
+この構成にすると次の2点が変わります。
+
+- ドメインごとにブラウザの保存先が分かれるため、**各ドメインで1回ずつログイン**が必要
+- 管理画面の設定にある「メール対応画面」へのリンクは 404 になります
 
 ---
 

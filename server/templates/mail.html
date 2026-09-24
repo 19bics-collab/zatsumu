@@ -256,7 +256,7 @@
 </div>
 
 <script>
-// 勤怠画面と同じトークンキー。ただしサブドメインが別なら localStorage も別なので、
+// 勤怠画面と同じトークンキー。別ドメインで開いた場合は localStorage も別になるので、
 // メール画面では改めてログインが必要（意図的な分離）。
 const KEY = "zatsumu_token";
 const $ = id => document.getElementById(id);
