@@ -15,3 +15,5 @@ dist/
 
 # サーバごとの設定（秘密を入れることがある）。ひな形の *.example は管理する
 .env
+.env.*
+!.env*.example
