@@ -2552,3 +2552,53 @@ def test_robots_txt_does_not_block_crawling(client):
     """
     r = client.get("/robots.txt")
     assert "Disallow: /" not in r.text
+
+
+def test_api_docs_pages_are_disabled(client):
+    """自動の API 説明ページは出さない（全 API の一覧と試せる画面を外に見せない）."""
+    for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_mail_only_caddyfile_allows_only_mail_paths():
+    """メール専用サーバの Caddy 設定は、メール画面が使う道だけを通す許可リストであること.
+
+    - メール画面(mail.html)が呼ぶ API はすべて通ること（通らないと画面が壊れる）
+    - 勤怠の画面・勤怠の API・配布ファイル・API 説明ページは通さないこと
+    - 許可リスト以外は転送せず 404 を返すこと
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    lines = [
+        ln.strip()
+        for ln in (root / "Caddyfile.mail").read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    matcher = next(ln for ln in lines if ln.startswith("@mail path "))
+    patterns = matcher.split()[2:]
+
+    def allowed(path):
+        # Caddy の path マッチ: 末尾 * は前方一致、それ以外は完全一致
+        return any(
+            path.startswith(p[:-1]) if p.endswith("*") else path == p for p in patterns
+        )
+
+    # メール画面が呼ぶ API をテンプレートから拾い、全部通ること
+    html = (root / "server/templates/mail.html").read_text(encoding="utf-8")
+    used = set(re.findall(r"""(?:fetch|api|apiJson)\(\s*[`"'](/api/[^`"'$?]*)""", html))
+    assert used, "mail.html から API の呼び出しを見つけられない"
+    for path in used | {"/mail", "/healthz", "/api/mail/1", "/api/mail/1/send"}:
+        assert allowed(path), f"メール画面が使う {path} が塞がれている"
+
+    # 勤怠・配布・説明ページは通さない
+    for path in ("/admin", "/me", "/download/client", "/api/clock-in", "/api/users",
+                 "/api/screenshots", "/api/reports/payroll.csv", "/docs", "/openapi.json"):
+        assert not allowed(path), f"{path} が通ってしまう"
+
+    # 許可リスト以外の受け皿は転送せず 404
+    text = "\n".join(lines)
+    catch_all = text[text.rindex("handle {"):]
+    assert "respond" in catch_all and "404" in catch_all
+    assert "reverse_proxy" not in catch_all

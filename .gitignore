@@ -12,3 +12,6 @@ improve.diff
 build/
 dist/
 *.spec
+
+# サーバごとの設定（秘密を入れることがある）。ひな形の *.example は管理する
+.env

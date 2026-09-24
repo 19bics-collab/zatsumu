@@ -143,7 +143,17 @@ async def lifespan(app: FastAPI):
     mail_task.cancel()
 
 
-app = FastAPI(title="zatsumu", version="0.1.0", lifespan=lifespan)
+# 自動の API 説明ページ(/docs, /redoc, /openapi.json)は出さない。社内ツールで
+# 外部に API を公開していないので不要で、出すと全 API の一覧(トークン再発行など
+# 狙われやすい経路を含む)とその場で試せる画面を誰にでも見せることになる
+app = FastAPI(
+    title="zatsumu",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 @app.middleware("http")

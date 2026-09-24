@@ -14,17 +14,15 @@
 	# トップはメール画面
 	redir / /mail
 
-	# このサーバはメール対応専用。勤怠の画面は開かせない
-	handle /admin {
-		respond "このサーバはメール対応専用です" 404
-	}
-	handle /me {
-		respond "このサーバはメール対応専用です" 404
-	}
-	handle /download/* {
-		respond 404
+	# このサーバはメール対応専用。メール画面が使う道だけを通し(許可リスト)、
+	# それ以外(勤怠の画面・勤怠の API・配布ファイルなど)はすべて 404 にする。
+	# 塞ぐ道を列挙する方式だと、アプリに道が増えたとき素通しになるため。
+	# メール画面が呼ぶ API: /api/mail* と /api/settings*（ログイン確認も /api/settings）
+	@mail path /mail /api/mail /api/mail/* /api/settings /api/settings/* /healthz
+	handle @mail {
+		reverse_proxy app:8000
 	}
 	handle {
-		reverse_proxy app:8000
+		respond "このサーバはメール対応専用です" 404
 	}
 }
