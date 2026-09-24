@@ -17,9 +17,11 @@ services:
       # .env で ZATSUMU_DOMAIN=kintai.example.com を設定すると
       # Let's Encrypt の証明書を自動取得して HTTPS で公開する
       ZATSUMU_DOMAIN: ${ZATSUMU_DOMAIN:-localhost}
+      # メール対応「だけ」を別サーバで動かす場合の公開ドメイン (Caddyfile.mail が使う)
+      ZATSUMU_MAIL_DOMAIN: ${ZATSUMU_MAIL_DOMAIN:-mail.localhost}
     volumes:
-      # 既定は勤怠+メールの2サイト。メール専用サーバでは .env で
-      # ZATSUMU_CADDYFILE=Caddyfile.mail にする
+      # 既定は1ドメインで勤怠(/admin,/me)とメール(/mail)を出す。
+      # メール専用サーバでは .env で ZATSUMU_CADDYFILE=Caddyfile.mail にする
       - ./${ZATSUMU_CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
