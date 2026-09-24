@@ -20,6 +20,7 @@ import ipaddress
 import os
 import re
 import secrets
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
@@ -291,6 +292,16 @@ class VerifyError(Exception):
     """コードが違う・期限切れなど (画面向けの文言を持つ)."""
 
 
+def normalize_code(code) -> str:
+    """入力されたコードを照合用にそろえる.
+
+    日本語入力のまま打つと数字が全角 (１２３４５６) になるので半角に直し (NFKC)、
+    貼り付けで入りがちな空白・ハイフン ("123 456" "123-456") を取り除く。
+    """
+    s = unicodedata.normalize("NFKC", str(code or ""))
+    return re.sub(r"[\s\-]", "", s)
+
+
 def verify_challenge(conn, user, request_id: str, code: str) -> None:
     """確認コードを照合する。合わなければ VerifyError (試行回数は必ず記録される).
 
@@ -316,7 +327,7 @@ def verify_challenge(conn, user, request_id: str, code: str) -> None:
     if not cur.rowcount:
         raise VerifyError("このコードはもう使えません。もう一度コードを送ってください")
     ok = hmac.compare_digest(row["code_hash"],
-                             _code_hash(row["request_id"], str(code or "").strip()))
+                             _code_hash(row["request_id"], normalize_code(code)))
     if not ok:
         left = MAX_ATTEMPTS - row["attempts"] - 1
         if left <= 0:

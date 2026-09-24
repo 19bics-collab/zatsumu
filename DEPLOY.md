@@ -84,7 +84,14 @@ sudo docker compose exec app python manage.py add-user 田中
 
 ```bash
 git pull && sudo docker compose up -d --build
+sudo docker compose up -d --force-recreate caddy
 ```
+
+2行目は **Caddy（入口の門番。HTTPS と通してよい道を決める）の作り直し**です。
+`Caddyfile` / `Caddyfile.mail`（門番の設定ファイル）は1行目では読み直されないため、
+更新で通してよい道が増えても、作り直すまでは古い設定のまま 404（見つからない）を返します。
+（`caddy reload` や設定の再読み込みでは足りません。`git pull` でファイルが別物に置き換わり、
+動いている Caddy は古いファイルを見続けるためです。作り直しても証明書は消えません）
 
 ---
 
@@ -471,16 +478,29 @@ cron などで毎日実行し、別の場所に保管してください。
 
 1. メールを送れるようにしておく（メール画面の「設定 → 返信の送信（SMTP）」を保存し、
    「テスト送信」で届くことを確認）。確認コードはこの送信設定で送られます。
-2. サーバの `.env` に、確認コードの送り先を1行足す:
+2. **Caddy（入口の門番）を作り直して、確認用の道が通るか確かめる**（パターンA）。
+   更新（`git pull`）のあと Caddy を作り直していないと、確認用の道（`/api/device`）が
+   404（見つからない）のままになり、有効にした途端に**誰もログインできなくなります**:
+
+   ```bash
+   sudo docker compose up -d --force-recreate caddy
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST https://desk.example.com/api/device/start
+   ```
+
+   2行目の `desk.example.com` は自分のメール画面のドメインに置き換えます。
+   **`401` と出れば準備できています**（合言葉なしで呼んだので断られた＝道は通っている）。
+   `404` と出たら Caddy がまだ古い設定なので、ここで止めて 1行目をやり直してください。
+3. サーバの `.env` に、確認コードの送り先を1行足す:
 
    ```
    ZATSUMU_LOGIN_VERIFY_EMAIL=you@example.com
    ```
 
-3. 反映する: `sudo docker compose up -d`（パターンA）。
+4. 反映する: `sudo docker compose up -d`（パターンA）。
    Docker を使わない場合は、サービスの環境変数に同じ値を設定して再起動します。
-4. 画面を開き直すと「新しい端末の確認」画面になり、`yo***@example.com に確認コードを
+5. 画面を開き直すと「新しい端末の確認」画面になり、`yo***@example.com に確認コードを
    送りました` と出ます。届いたメールの 6 桁を入れて「確認」を押します。
+   （「サーバの設定（Caddy）が古い可能性があります」と出たら、2 をやり直してください）
 
 - コードの有効時間は **10 分**、間違えてよいのは **5 回**まで。送信は **1 分に 1 回・
   1 時間に 5 回**までです（届かないときは少し待って「再送」）。

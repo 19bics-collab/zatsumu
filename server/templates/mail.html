@@ -128,7 +128,7 @@
   <h1>🔐 新しい端末の確認</h1>
   <p id="dv-sent">確認コードを送っています…</p>
   <input type="text" id="dv-code" inputmode="numeric" autocomplete="one-time-code"
-         maxlength="6" placeholder="6桁のコード">
+         maxlength="20" placeholder="6桁のコード">
   <div style="display:flex;gap:.5rem;flex-wrap:wrap">
     <button id="dv-ok">確認</button>
     <button id="dv-resend" class="ghost">再送</button>
@@ -672,6 +672,8 @@ $("logout").onclick = () => {
 // 送ったコードの request_id はタブを閉じるまで覚えておく (再読み込みで送り直さない)
 const DV_PENDING = "zatsumu_device_pending";
 let dvSending = false;
+const DV_NOT_FOUND = "確認コードの仕組みにつながりません。サーバの設定（Caddy）が古い可能性があります。"
+  + "サーバの担当者に DEPLOY.md の「更新するとき」の手順（Caddy の作り直し）をお願いしてください";
 function dvPending() {
   try {
     const p = JSON.parse(sessionStorage.getItem(DV_PENDING) || "null");
@@ -713,7 +715,8 @@ async function sendDeviceCode() {
     if (r.status === 401) { showLogin(true); return; }
     if (!r.ok) {
       if (!dvPending()) $("dv-sent").textContent = "確認コードはまだ送れていません";
-      dvError(e.detail || "確認コードを送れませんでした");
+      // 404 = 途中の Caddy が /api/device を通していない (更新後に Caddy を作り直していない)
+      dvError(r.status === 404 ? DV_NOT_FOUND : e.detail || "確認コードを送れませんでした");
       return;
     }
     dvSetPending({ request_id: e.request_id, sent_to: e.sent_to, at: Date.now() });
@@ -728,7 +731,9 @@ async function sendDeviceCode() {
   }
 }
 async function verifyDeviceCode() {
-  const code = $("dv-code").value.replace(/\D/g, "");
+  // 日本語入力のままだと全角 (１２３４５６) になるので半角に直してから数字だけにする
+  // (貼り付けの "123 456" なども通す。サーバ側でも同じように直して照合する)
+  const code = $("dv-code").value.normalize("NFKC").replace(/\D/g, "");
   if (code.length !== 6) { dvError("6桁の数字を入力してください"); return; }
   const p = dvPending();
   if (!p) { dvError("コードの有効期限が切れました。「再送」を押してください"); return; }
@@ -742,7 +747,7 @@ async function verifyDeviceCode() {
     });
     const e = await r.json().catch(() => ({}));
     if (r.status === 401) { showLogin(true); return; }
-    if (!r.ok) { dvError(e.detail || "確認できませんでした"); return; }
+    if (!r.ok) { dvError(r.status === 404 ? DV_NOT_FOUND : e.detail || "確認できませんでした"); return; }
     localStorage.setItem(DKEY, e.device_token);
     dvSetPending(null);
     $("device-verify").hidden = true;
@@ -755,7 +760,8 @@ async function verifyDeviceCode() {
 }
 $("dv-ok").onclick = () => verifyDeviceCode();
 $("dv-code").addEventListener("keydown", e => {
-  if (e.key === "Enter") verifyDeviceCode();
+  // 日本語入力の確定に使った Enter では送らない (確定前の値で確認してしまうため)
+  if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) verifyDeviceCode();
 });
 $("dv-resend").onclick = () => sendDeviceCode();
 $("dv-back").onclick = () => {

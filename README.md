@@ -243,6 +243,9 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
   になります（画面はこれを見て確認コードの入力画面を出します）。
 - メールが届かないときの復旧は `python manage.py issue-device <管理者の名前>`。
   一覧・取り消しは `devices` / `device-revoke <番号|all>`。詳しくは [DEPLOY.md](DEPLOY.md)。
+- メール専用サーバでは、更新のあと `docker compose up -d --force-recreate caddy` で
+  Caddy（入口の門番）を作り直してから有効にしてください。作り直さないと確認用の道
+  （`/api/device`）が 404 のままで、確認コードの画面から先へ進めません。
 
 ## テスト
 

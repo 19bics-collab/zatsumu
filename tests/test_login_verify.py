@@ -464,3 +464,71 @@ def test_templates_handle_device_verification():
         assert "X-Device-Token" in html, name
         assert "/api/device/start" in html and "/api/device/verify" in html, name
         assert 'get("device")' in html, name   # #device=<token> を受け取る
+
+
+# ---------- 全角・貼り付けのコード ----------
+
+@pytest.mark.parametrize("typed", [
+    lambda c: c.translate(str.maketrans("0123456789", "０１２３４５６７８９")),  # 日本語入力のまま
+    lambda c: f" {c[:3]} {c[3:]} ",                                              # 空白入りの貼り付け
+    lambda c: f"{c[:3]}-{c[3:]}",
+])
+def test_verify_accepts_fullwidth_and_spaced_code(client, users, enabled, smtp, typed):
+    """全角数字や空白入りでも、同じコードとして確認できる (日本語入力オンのまま打った場合)."""
+    _, admin, _ = users
+    r = start(client, admin)
+    _, _, body = last_mail(smtp)
+    r = client.post("/api/device/verify", headers=auth(admin),
+                    json={"request_id": r.json()["request_id"], "code": typed(code_of(body))})
+    assert r.status_code == 200, r.text
+    assert client.get("/api/settings",
+                      headers=auth(admin, r.json()["device_token"])).status_code == 200
+
+
+def test_normalize_code():
+    from server.devices import normalize_code
+    assert normalize_code("０７１７８４") == "071784"
+    assert normalize_code("071 784") == "071784"
+    assert normalize_code(None) == ""
+    assert normalize_code("071785") != normalize_code("071784")
+
+
+def test_templates_normalize_code_input():
+    """画面側も全角を半角に直してから送る・日本語入力の確定の Enter で送らない."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "server" / "templates"
+    for name in ("mail.html", "admin.html"):
+        html = (root / name).read_text(encoding="utf-8")
+        assert '$("dv-code").value.normalize("NFKC")' in html, name
+        assert "isComposing" in html, name
+        # maxlength=6 だと "123 456" の貼り付けが切れる
+        tag = re.search(r'<input[^>]*id="dv-code"[^>]*>', html).group(0)
+        assert 'maxlength="6"' not in tag, name
+        # Caddy が /api/device を通していない (404) ときの案内がある
+        assert "r.status === 404 ? DV_NOT_FOUND" in html, name
+
+
+# ---------- 更新手順 (Caddy の作り直し) ----------
+
+def test_device_start_without_token_is_401_not_404(client, users, monkeypatch):
+    """DEPLOY.md の確認手順 (curl で 401 なら道が通っている) の前提.
+
+    合言葉なしの POST /api/device/start は、機能の有効・無効にかかわらず 401。
+    Caddy が古いと 404 になるので、見分けられる。
+    """
+    assert client.post("/api/device/start").status_code == 401
+    monkeypatch.setenv("ZATSUMU_LOGIN_VERIFY_EMAIL", VERIFY_TO)
+    assert client.post("/api/device/start").status_code == 401
+
+
+def test_deploy_doc_recreates_caddy_on_update():
+    """更新手順で Caddy を作り直す (Caddyfile は1ファイルの bind mount なので
+    git pull で置き換わったファイルを、動いている Caddy は読まない)."""
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parent.parent / "DEPLOY.md").read_text(encoding="utf-8")
+    update = doc.split("### 5. 更新するとき", 1)[1].split("---", 1)[0]
+    assert "--force-recreate caddy" in update
+    enable = doc.split("**有効にする手順**", 1)[1].split("**確認済みの端末", 1)[0]
+    assert "--force-recreate caddy" in enable and "/api/device/start" in enable
