@@ -56,7 +56,7 @@ def open_browser_when_ready() -> None:
     print()
     print("  終了するには Ctrl+C")
     print("=" * 56)
-    # 本番はサブドメインで出し分けるが、デモは1台なのでパスで両方開く
+    # 勤怠もメールも同じドメインのパス違い。両方開く
     webbrowser.open(f"{URL}/admin")
     webbrowser.open(f"{URL}/mail")
 

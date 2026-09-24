@@ -17,9 +17,6 @@ services:
       # .env で ZATSUMU_DOMAIN=kintai.example.com を設定すると
       # Let's Encrypt の証明書を自動取得して HTTPS で公開する
       ZATSUMU_DOMAIN: ${ZATSUMU_DOMAIN:-localhost}
-      # メール対応の画面を出すサブドメイン（勤怠とは別UI・同じサーバ/DB）。
-      # DNS は ZATSUMU_DOMAIN と同じ IP に向ける
-      ZATSUMU_MAIL_DOMAIN: ${ZATSUMU_MAIL_DOMAIN:-mail.localhost}
     volumes:
       # 既定は勤怠+メールの2サイト。メール専用サーバでは .env で
       # ZATSUMU_CADDYFILE=Caddyfile.mail にする

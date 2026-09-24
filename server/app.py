@@ -1619,7 +1619,7 @@ def member_page():
 
 @app.get("/mail", response_class=HTMLResponse)
 def mail_page():
-    """メール対応の専用画面 (勤怠管理とは別UI。サブドメインで出し分ける想定)."""
+    """メール対応の専用画面 (勤怠管理とは別UI・同じサーバ/DB/管理者トークン)."""
     return (Path(__file__).parent / "templates" / "mail.html").read_text(
         encoding="utf-8"
     )

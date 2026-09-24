@@ -211,6 +211,33 @@ def test_mail_page_is_separate_from_admin(client):
     assert 'id="set-smtp-host"' in admin_page
 
 
+def test_mail_opens_on_the_same_domain_as_attendance(client):
+    """メール画面は勤怠と同じドメインの /mail で開く (この前提を固定する)。
+
+    同梱の Caddy 設定で /mail を 404 に塞ぐと、アプリを更新しても画面に
+    辿り着けなくなる (勤怠の管理画面からのリンクも必ず失敗する)。
+    メールだけ別ドメインにする構成は DEPLOY.md に手順として載せてあり、
+    同梱の既定設定はあくまで1ドメインであることを保つ。
+    """
+    from pathlib import Path
+
+    # 勤怠の管理画面からメール画面へ辿れること
+    assert 'href="/mail"' in client.get("/admin").text
+
+    # 同梱の Caddy 設定が /mail を特別扱いしていないこと (コメント行は除いて判定)
+    root = Path(__file__).resolve().parent.parent
+    for name in ("Caddyfile", "deploy/Caddyfile.host"):
+        lines = [
+            line
+            for line in (root / name).read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        assert not any("handle /mail" in ln for ln in lines), (
+            f"{name}: /mail を特別扱いしている"
+        )
+        assert any("reverse_proxy" in ln for ln in lines), f"{name}: 転送設定が無い"
+
+
 def test_healthz(client):
     r = client.get("/healthz")
     assert r.status_code == 200
