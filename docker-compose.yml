@@ -4,6 +4,9 @@ services:
     restart: unless-stopped
     environment:
       ZATSUMU_RETENTION_DAYS: ${ZATSUMU_RETENTION_DAYS:-30}
+      # 新しい端末からの管理者ログインにメールの確認コードを必須にする (任意)。
+      # .env に ZATSUMU_LOGIN_VERIFY_EMAIL=宛先 を書くと有効。空なら無効 (従来どおり)
+      ZATSUMU_LOGIN_VERIFY_EMAIL: ${ZATSUMU_LOGIN_VERIFY_EMAIL:-}
     volumes:
       - app-data:/data
 

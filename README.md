@@ -18,7 +18,7 @@
 |---|---|
 | `server/` | FastAPI サーバ（打刻 API・スクショ受信・管理画面・月次レポート・保存期間管理） |
 | `client/` | 常駐エージェント（`agent.py` CLI 版 / `tray.py` トレイ常駐版 / `widget.py` 常時表示バー版） |
-| `manage.py` | ユーザー作成・スクショ削除 CLI |
+| `manage.py` | ユーザー作成・スクショ削除・確認済み端末の管理 CLI |
 | `tests/` | API テスト |
 | `deploy/` + `Dockerfile` 等 | 本番デプロイ用（**[DEPLOY.md](DEPLOY.md)** 参照） |
 
@@ -221,10 +221,28 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人） |
 | POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認 |
 | POST | `/api/settings/test-email` | admin | 指定アドレスへメールのテスト送信 |
+| POST | `/api/device/start` | admin（端末確認は不要） | 新しい端末の確認コードをメールで送る（機能が有効なときだけ） |
+| POST | `/api/device/verify` | admin（端末確認は不要） | 確認コードが合えば端末トークンを返す |
+| GET | `/api/devices` | admin | 確認済みの端末の一覧 |
+| DELETE | `/api/devices/{id}` | admin | 確認済みの端末を取り消す |
 | GET | `/admin` | — | 勤怠管理の画面（データ取得は Bearer 認証の API 経由） |
 | GET | `/me` | — | メンバー用の打刻ページ |
 | GET | `/mail` | — | メール対応の専用画面（勤怠とは別UI） |
 | GET | `/healthz` | なし | 死活監視用ヘルスチェック |
+
+### 新しい端末のメール確認（任意）
+
+サーバの `.env` に `ZATSUMU_LOGIN_VERIFY_EMAIL=you@example.com` を書くと、管理者が
+初めて使う端末（パソコン・スマホ）からログインしたとき、そのアドレスに 6 桁の確認コードを
+メールで送り、入力するまで使えなくなります（2段階認証）。空なら無効で、今までどおりです。
+メンバーの打刻は対象外です。
+
+- 確認できた端末には「端末トークン」（端末用の合言葉）を渡し、画面はそれを
+  `X-Device-Token` ヘッダで毎回送ります。90 日使わなければ失効します。
+- 端末トークンが無い管理者のリクエストは `401` `{"detail": "device_verification_required"}`
+  になります（画面はこれを見て確認コードの入力画面を出します）。
+- メールが届かないときの復旧は `python manage.py issue-device <管理者の名前>`。
+  一覧・取り消しは `devices` / `device-revoke <番号|all>`。詳しくは [DEPLOY.md](DEPLOY.md)。
 
 ## テスト
 

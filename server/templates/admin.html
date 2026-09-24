@@ -112,6 +112,15 @@
            border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
   #login input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
                  border: 1px solid #ccc; border-radius: 4px; }
+  /* 新しい端末の確認 (確認コードの入力) */
+  #device-verify { max-width: 380px; margin: 12vh auto; background: #fff; padding: 2rem;
+                   border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  #dv-code { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
+             border: 1px solid #ccc; border-radius: 4px; font-size: 1.4rem;
+             letter-spacing: .3em; text-align: center; }
+  .dev-row { display: flex; gap: .6rem; align-items: center; justify-content: space-between;
+             border-bottom: 1px solid #e5e7eb; padding: .5rem 0; font-size: .9rem; }
+  .dev-row div { min-width: 0; overflow-wrap: anywhere; }
   .error { color: var(--away); }
   /* タイムライン */
   .month-nav { display: flex; align-items: center; gap: .8rem; margin: 1rem 0;
@@ -243,6 +252,21 @@
   <p id="login-error" class="error" hidden>トークンが正しくないか、管理者権限がありません</p>
 </div>
 
+<div id="device-verify" hidden>
+  <h1>🔐 新しい端末の確認</h1>
+  <p id="dv-sent">確認コードを送っています…</p>
+  <input type="text" id="dv-code" inputmode="numeric" autocomplete="one-time-code"
+         maxlength="6" placeholder="6桁のコード">
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+    <button id="dv-ok">確認</button>
+    <button id="dv-resend" class="ghost">再送</button>
+    <button id="dv-back" class="ghost">ログイン画面に戻る</button>
+  </div>
+  <p id="dv-error" class="error" hidden></p>
+  <p><small>この端末で初めてログインするため、登録されたメールアドレスに届いた
+  確認コードの入力が必要です（一度確認した端末では、次からは不要です）。</small></p>
+</div>
+
 <div id="app" hidden>
 <header>
   <h1>🪑 <span id="brand">zatsumu</span></h1>
@@ -357,6 +381,13 @@
 <section id="settings-view" hidden>
   <h2>設定 <small>（撮影設定はクライアントの次の撮影サイクルから自動反映されます）</small></h2>
   <div class="settings-grid">
+    <div class="set-card" id="dev-card" hidden>
+      <h3>確認済みの端末（新しい端末のメール確認）</h3>
+      <div id="dev-list"></div>
+      <p><small>メールの確認コードで確認した端末の一覧です。心当たりの無い端末や、
+      なくした端末は「取り消し」を押してください（その端末では次の操作から
+      確認コードが必要になります）。</small></p>
+    </div>
     <div class="set-card">
       <h3>管理者トークン（あなたのログイン用）</h3>
       <p style="margin:.2rem 0 .6rem"><small>この端末でログイン中の<b>あなた自身</b>のトークンです。
@@ -565,21 +596,40 @@ let repMonth = null;
 let homeShotUrls = [];   // 稼働状況サムネのblob URL(再描画時に解放してリーク防止)
 let modalUrl = null;     // 拡大モーダル画像のblob URL
 
+// 新しい端末の確認 (サーバで ZATSUMU_LOGIN_VERIFY_EMAIL が有効なときだけ使われる)。
+// 確認済みの端末トークンはログアウトしても消さない (次回また確認コードが要らないように)
+const DKEY = "zatsumu_device";
+const DEVICE_REQUIRED = "device_verification_required";
+
 // ?token= / #token= からの移行: 保存して URL から即座に消す(#はアクセスログに残らない)
+// #device=<端末トークン> (サーバで manage.py issue-device が表示) も同じ扱い。両方同時も可
 const url = new URL(location);
-const _tok = (url.hash && new URLSearchParams(url.hash.slice(1)).get("token"))
-  || url.searchParams.get("token");
-if (_tok) {
-  localStorage.setItem(KEY, _tok);
+const _hash = new URLSearchParams(url.hash.slice(1));
+const _tok = _hash.get("token") || url.searchParams.get("token");
+const _dev = _hash.get("device");
+if (_tok) localStorage.setItem(KEY, _tok);
+if (_dev) localStorage.setItem(DKEY, _dev);
+if (_tok || _dev) {
   url.searchParams.delete("token");
   url.hash = "";
   history.replaceState(null, "", url);
 }
 
-const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
+const headers = () => {
+  const h = { Authorization: "Bearer " + localStorage.getItem(KEY) };
+  const dev = localStorage.getItem(DKEY);
+  if (dev) h["X-Device-Token"] = dev;
+  return h;
+};
+// 401 が「この端末はまだ確認していない」なのか (管理者トークン自体は正しい)
+const needsDevice = async r =>
+  r.status === 401 && (await r.clone().json().catch(() => ({}))).detail === DEVICE_REQUIRED;
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
-  if (r.status === 401) { showLogin(true); throw new Error("auth"); }
+  if (r.status === 401) {
+    if (await needsDevice(r)) showDeviceVerify(); else showLogin(true);
+    throw new Error("auth");
+  }
   return r;
 }
 async function apiJson(path, opts = {}) {
@@ -684,6 +734,7 @@ const workBandHtml = () => {
 function showLogin(withError) {
   clearInterval(timer);
   $("app").hidden = true;
+  $("device-verify").hidden = true;
   $("login").hidden = false;
   $("login-error").hidden = !withError;
 }
@@ -697,6 +748,7 @@ function applyBranding() {
 }
 async function showApp() {
   const r = await fetch("/api/status", { headers: headers() });
+  if (await needsDevice(r)) { showDeviceVerify(); return; }
   if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
   $("login").hidden = true;
   $("app").hidden = false;
@@ -1253,6 +1305,7 @@ function freqHint() {
 }
 async function showSettings() {
   switchView("settings");
+  loadDevices();
   // 管理者トークンは開くたびに伏せ字に戻す(肩越しの覗き見対策)
   $("my-token").textContent = "••••••••";
   $("my-token").dataset.shown = "0";
@@ -1613,9 +1666,130 @@ $("token-input").addEventListener("keydown", e => {
   if (e.key === "Enter") $("login-btn").click();
 });
 $("logout").onclick = () => {
-  localStorage.removeItem(KEY);
+  localStorage.removeItem(KEY);   // 端末トークン (DKEY) は消さない
+  dvSetPending(null);
   $("token-input").value = "";
   showLogin(false);
+};
+
+/* ---------- 新しい端末の確認 (メールの確認コード) ---------- */
+// 送ったコードの request_id はタブを閉じるまで覚えておく (再読み込みで送り直さない)
+const DV_PENDING = "zatsumu_device_pending";
+let dvSending = false;
+function dvPending() {
+  try {
+    const p = JSON.parse(sessionStorage.getItem(DV_PENDING) || "null");
+    return p && Date.now() - p.at < 10 * 60 * 1000 ? p : null;   // コードの有効は10分
+  } catch { return null; }
+}
+function dvSetPending(p) {
+  try {
+    if (p) sessionStorage.setItem(DV_PENDING, JSON.stringify(p));
+    else sessionStorage.removeItem(DV_PENDING);
+  } catch {}
+}
+function dvError(msg) {
+  $("dv-error").textContent = msg || "";
+  $("dv-error").hidden = !msg;
+}
+function showDeviceVerify() {
+  clearInterval(timer);
+  $("app").hidden = true;
+  $("login").hidden = true;
+  if (!$("device-verify").hidden) return;   // 表示中 (同時に複数の API が 401 になった)
+  $("device-verify").hidden = false;
+  $("dv-code").value = "";
+  dvError("");
+  const p = dvPending();
+  if (p) $("dv-sent").innerHTML = `<b>${esc(p.sent_to)}</b> に送った確認コードを入力してください`;
+  else sendDeviceCode();
+  $("dv-code").focus();
+}
+async function sendDeviceCode() {
+  if (dvSending) return;
+  dvSending = true;
+  $("dv-resend").disabled = true;
+  dvError("");
+  try {
+    const r = await fetch("/api/device/start", {
+      method: "POST", headers: { Authorization: "Bearer " + localStorage.getItem(KEY) },
+    });
+    const e = await r.json().catch(() => ({}));
+    if (r.status === 401) { showLogin(true); return; }
+    if (!r.ok) {
+      if (!dvPending()) $("dv-sent").textContent = "確認コードはまだ送れていません";
+      dvError(e.detail || "確認コードを送れませんでした");
+      return;
+    }
+    dvSetPending({ request_id: e.request_id, sent_to: e.sent_to, at: Date.now() });
+    $("dv-sent").innerHTML =
+      `<b>${esc(e.sent_to)}</b> に確認コードを送りました（10分以内に入力してください）`;
+    $("dv-code").value = "";
+  } catch {
+    dvError("通信に失敗しました。もう一度お試しください");
+  } finally {
+    dvSending = false;
+    $("dv-resend").disabled = false;
+  }
+}
+async function verifyDeviceCode() {
+  const code = $("dv-code").value.replace(/\D/g, "");
+  if (code.length !== 6) { dvError("6桁の数字を入力してください"); return; }
+  const p = dvPending();
+  if (!p) { dvError("コードの有効期限が切れました。「再送」を押してください"); return; }
+  $("dv-ok").disabled = true;
+  try {
+    const r = await fetch("/api/device/verify", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + localStorage.getItem(KEY),
+                 "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: p.request_id, code }),
+    });
+    const e = await r.json().catch(() => ({}));
+    if (r.status === 401) { showLogin(true); return; }
+    if (!r.ok) { dvError(e.detail || "確認できませんでした"); return; }
+    localStorage.setItem(DKEY, e.device_token);
+    dvSetPending(null);
+    $("device-verify").hidden = true;
+    showApp();
+  } catch {
+    dvError("通信に失敗しました。もう一度お試しください");
+  } finally {
+    $("dv-ok").disabled = false;
+  }
+}
+$("dv-ok").onclick = () => verifyDeviceCode();
+$("dv-code").addEventListener("keydown", e => {
+  if (e.key === "Enter") verifyDeviceCode();
+});
+$("dv-resend").onclick = () => sendDeviceCode();
+$("dv-back").onclick = () => {
+  localStorage.removeItem(KEY);   // 別の管理者トークンで入り直す (端末トークンは残す)
+  dvSetPending(null);
+  $("token-input").value = "";
+  showLogin(false);
+};
+
+/* 確認済みの端末の一覧・取り消し (設定画面。機能が無効なら出さない) */
+async function loadDevices() {
+  let d;
+  try { d = await apiJson("/api/devices"); } catch { return; }
+  $("dev-card").hidden = !d.enabled;
+  if (!d.enabled) return;
+  $("dev-list").innerHTML = d.devices.length ? d.devices.map(x => `
+    <div class="dev-row"><div>
+      <b>${esc(x.user_name)}</b>${x.current ? " <small>（この端末）</small>" : ""}<br>
+      <small>${esc(x.label || "不明な端末")}</small><br>
+      <small>最終利用 ${esc(new Date(x.last_used_at).toLocaleString("ja-JP"))}・IP ${esc(x.ip || "-")}</small>
+    </div><button class="ghost" data-dev="${Number(x.id)}">取り消し</button></div>`).join("")
+    : "<small>確認済みの端末はありません</small>";
+}
+$("dev-list").onclick = async e => {
+  const id = e.target.dataset && e.target.dataset.dev;
+  if (!id) return;
+  if (!confirm("この端末を取り消しますか？\n（その端末では次の操作から確認コードが必要になります）")) return;
+  try { await apiJson(`/api/devices/${id}`, { method: "DELETE" }); } catch { return; }
+  loadDevices();
 };
 
 if (localStorage.getItem(KEY)) showApp(); else showLogin(false);

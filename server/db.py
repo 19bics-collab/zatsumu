@@ -106,7 +106,32 @@ CREATE TABLE IF NOT EXISTS mails (
     replied_by TEXT NOT NULL DEFAULT '',      -- 送信した管理者名(スナップショット)
     references_hdr TEXT NOT NULL DEFAULT ''   -- スレッド返信用 References ヘッダ
 );
+-- 新しい端末からの管理者ログインのメール確認 (server/devices.py)。
+-- 秘密 (端末トークン・確認コード) は sha256 のハッシュだけを保存する
+CREATE TABLE IF NOT EXISTS device_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',   -- User-Agent の先頭 (どの端末か見分ける用)
+    ip TEXT NOT NULL DEFAULT '',      -- 確認したときのアクセス元 IP
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,       -- 最後に使った時刻 (90日使わなければ失効)
+    revoked_at TEXT                   -- 取り消した時刻 (NULL=有効)
+);
+CREATE TABLE IF NOT EXISTS device_challenges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    code_hash TEXT NOT NULL,
+    ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,  -- 間違えた回数も含む試行回数
+    used_at TEXT                          -- 使い切った/無効にした時刻
+);
 -- 集計・参照でよく使う列のインデックス(IF NOT EXISTS で冪等)
+CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_device_challenges_user ON device_challenges(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_mails_status ON mails(status);
 CREATE INDEX IF NOT EXISTS idx_mails_received ON mails(received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_open ON sessions(user_id, clock_out);

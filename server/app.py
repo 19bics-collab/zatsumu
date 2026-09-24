@@ -15,7 +15,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import db, imaging, mail, notify, reports, retention, tz
+from . import db, devices, imaging, mail, notify, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
@@ -182,7 +182,8 @@ def get_conn():
         conn.close()
 
 
-def auth_user(authorization: str = Header(None), conn=Depends(get_conn)):
+def token_user(authorization: str = Header(None), conn=Depends(get_conn)):
+    """Bearer トークンだけで本人確認する (端末の確認はしない)."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Bearer token required")
     user = db.user_by_token(conn, authorization.removeprefix("Bearer "))
@@ -191,7 +192,27 @@ def auth_user(authorization: str = Header(None), conn=Depends(get_conn)):
     return user
 
 
+def auth_user(
+    user=Depends(token_user),
+    x_device_token: str = Header(None),
+    conn=Depends(get_conn),
+):
+    # 新しい端末のメール確認 (ZATSUMU_LOGIN_VERIFY_EMAIL 設定時のみ)。
+    # 管理者は確認済みの端末トークン (X-Device-Token) も必要。一般メンバーは対象外
+    if user["is_admin"] and devices.enabled():
+        if not devices.check_device(conn, user["id"], x_device_token):
+            raise HTTPException(401, devices.REQUIRED_DETAIL)
+    return user
+
+
 def require_admin(user=Depends(auth_user)):
+    if not user["is_admin"]:
+        raise HTTPException(403, "Admin only")
+    return user
+
+
+def require_admin_token(user=Depends(token_user)):
+    """管理者トークンだけを確かめる (端末の確認コードを受け取る API 用)."""
     if not user["is_admin"]:
         raise HTTPException(403, "Admin only")
     return user
@@ -867,6 +888,89 @@ def test_imap(_admin=Depends(require_admin), conn=Depends(get_conn)):
     return {"ok": True, "count": count}
 
 
+# ---------- 新しい端末のメール確認 (ZATSUMU_LOGIN_VERIFY_EMAIL 設定時のみ) ----------
+
+class DeviceVerifyBody(BaseModel):
+    request_id: str
+    code: str
+
+
+def _require_device_feature() -> None:
+    if not devices.enabled():
+        raise HTTPException(400, "新しい端末の確認は有効になっていません")
+
+
+@app.post("/api/device/start")
+def device_start(
+    request: Request, admin=Depends(require_admin_token), conn=Depends(get_conn)
+):
+    """確認コードを宛先へメールする (管理者トークンのみで呼べる・端末トークン不要)."""
+    _require_device_feature()
+    ip = devices.client_ip(request)
+    ua = request.headers.get("user-agent")
+    try:
+        out = devices.start_challenge(conn, admin, ip, ua)
+    except devices.RateLimited as e:
+        raise HTTPException(429, str(e))
+    except devices.SendUnavailable:
+        _audit(conn, admin, "device_code_send_fail", admin["id"], detail=f"ip={ip}")
+        conn.commit()
+        # 中身の例外や設定値は出さない (原因はサーバのログに残している)
+        raise HTTPException(
+            503, "確認コードのメールを送れませんでした。サーバの担当者に連絡してください"
+        )
+    _audit(conn, admin, "device_code_sent", admin["id"], detail=f"ip={ip}")
+    return out
+
+
+@app.post("/api/device/verify")
+def device_verify(
+    body: DeviceVerifyBody,
+    request: Request,
+    admin=Depends(require_admin_token),
+    conn=Depends(get_conn),
+):
+    """確認コードが合えば端末トークンを返す (平文を返すのはこの1回だけ)."""
+    _require_device_feature()
+    ip = devices.client_ip(request)
+    try:
+        devices.verify_challenge(conn, admin, body.request_id, body.code)
+    except devices.VerifyError as e:
+        _audit(conn, admin, "device_verify_fail", admin["id"], detail=f"ip={ip}")
+        conn.commit()  # 試行回数を残す (例外で巻き戻らないように)
+        raise HTTPException(400, str(e))
+    label = request.headers.get("user-agent") or ""
+    token = devices.issue_device(conn, admin["id"], label, ip)
+    _audit(conn, admin, "device_verify_ok", admin["id"],
+           detail=f"ip={ip} {devices.clean_label(label)}")
+    return {"device_token": token}
+
+
+@app.get("/api/devices")
+def list_devices_api(
+    request: Request, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """確認済みの端末の一覧 (有効なものだけ)。current=いま使っている端末."""
+    cur = devices.check_device(conn, admin["id"], request.headers.get("x-device-token"))
+    rows = devices.list_devices(conn)
+    for r in rows:
+        r["current"] = bool(cur) and r["id"] == cur["id"]
+    return {"enabled": devices.enabled(), "devices": rows}
+
+
+@app.delete("/api/devices/{device_id}")
+def revoke_device_api(
+    device_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """端末を取り消す (その端末では次の操作から確認コードが必要になる)."""
+    row = devices.revoke_device(conn, device_id)
+    if not row:
+        raise HTTPException(404, "Not found")
+    _audit(conn, admin, "device_revoke", row["user_id"],
+           detail=f"id={device_id} {row['label']}")
+    return {"revoked": device_id}
+
+
 @app.get("/api/config")
 def public_config(conn=Depends(get_conn)):
     """ログイン前でも使う表示用の公開設定 (会社名・勤務時間帯)."""
@@ -1049,7 +1153,8 @@ def delete_user(
     for r in conn.execute("SELECT path FROM screenshots WHERE user_id = ?", (user_id,)):
         (SCREENSHOT_DIR / r["path"]).unlink(missing_ok=True)
     # 関連データ → 本体の順に削除 (FK制約に沿う)
-    for tbl in ("screenshots", "sessions", "journals", "leave_requests", "corrections"):
+    for tbl in ("screenshots", "sessions", "journals", "leave_requests", "corrections",
+                "device_tokens", "device_challenges"):
         conn.execute(f"DELETE FROM {tbl} WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     _audit(conn, admin, "user_delete", detail=target["name"])
@@ -1067,6 +1172,8 @@ def regenerate_token(
         raise HTTPException(404, "User not found")
     token = secrets.token_urlsafe(24)
     conn.execute("UPDATE users SET token = ? WHERE id = ?", (token, user_id))
+    # 古いトークンで確認した端末も使えなくする (漏れた疑いで作り直すことが多いため)
+    devices.revoke_all(conn, user_id)
     _audit(conn, admin, "token_regen", user_id)
     return {"id": user_id, "name": target["name"], "token": token}
 
@@ -1853,6 +1960,13 @@ def audit_csv(
         "correction_rejected": "修正申請を却下",
         "mail_send": "メール返信送信",
         "mail_update": "メール状態変更",
+        "device_code_sent": "端末確認コード送信",
+        "device_code_send_fail": "端末確認コード送信失敗",
+        "device_verify_ok": "端末確認成功",
+        "device_verify_fail": "端末確認失敗",
+        "device_revoke": "端末取り消し",
+        "device_issue": "端末トークン発行(サーバ)",
+        "device_revoke_all": "端末を全て取り消し(サーバ)",
     }
     buf = io.StringIO()
     writer = csv.writer(buf)

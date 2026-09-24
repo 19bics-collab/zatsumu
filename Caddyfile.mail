@@ -18,7 +18,8 @@
 	# それ以外(勤怠の画面・勤怠の API・配布ファイルなど)はすべて 404 にする。
 	# 塞ぐ道を列挙する方式だと、アプリに道が増えたとき素通しになるため。
 	# メール画面が呼ぶ API: /api/mail* と /api/settings*（ログイン確認も /api/settings）
-	@mail path /mail /api/mail /api/mail/* /api/settings /api/settings/* /healthz
+	# と、新しい端末のメール確認 /api/device/* /api/devices*（ZATSUMU_LOGIN_VERIFY_EMAIL 設定時）
+	@mail path /mail /api/mail /api/mail/* /api/settings /api/settings/* /api/device /api/device/* /api/devices /api/devices/* /healthz
 	handle @mail {
 		reverse_proxy app:8000
 	}
