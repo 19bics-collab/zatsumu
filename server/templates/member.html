@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
 <title>zatsumu 打刻</title>
 <style>
   :root { --seated: #1565c0; --away: #c62828; --line: #e5e7eb; }
@@ -222,7 +223,13 @@ let timer = null;
 const _n = new Date();
 let month = `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, "0")}`;
 
-const headers = () => ({ Authorization: "Bearer " + localStorage.getItem(KEY) });
+const headers = () => {
+  const h = { Authorization: "Bearer " + localStorage.getItem(KEY) };
+  // 管理者のトークンで開いた場合、管理画面で確認済みの端末トークンも付ける
+  const dev = localStorage.getItem("zatsumu_device");
+  if (dev) h["X-Device-Token"] = dev;
+  return h;
+};
 
 // ?token= / #token= での自動ログイン。#はサーバのアクセスログに残らないので推奨。保存後URLから即削除
 const _url = new URL(location);

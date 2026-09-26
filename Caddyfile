@@ -1,3 +1,14 @@
+# 勤怠管理とメール対応を1つのドメインで公開する。
+#
+#   ZATSUMU_DOMAIN = kintai.example.com
+#     /admin → 勤怠管理   /me → 各自の打刻   /mail → メール対応
+#
+# 画面は別々だが、サーバ・DB・管理者トークンは共通。
+# DNS の A レコードをこのサーバの IP に向ければ、証明書は Caddy が自動取得する。
+#
+# メール画面だけ別のドメインで開きたい場合は、DEPLOY.md の
+# 「メール画面を別のドメインにしたい場合」を参照。
+
 {$ZATSUMU_DOMAIN} {
 	reverse_proxy app:8000
 }

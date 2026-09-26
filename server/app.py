@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -15,7 +15,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import db, imaging, notify, reports, retention, tz
+from . import db, devices, imaging, mail, notify, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
@@ -82,6 +82,16 @@ def check_clockout_reminders(conn) -> int:
     return len(rows)
 
 
+def _mail_tick() -> None:
+    """メールの定期受信と保存期間パージ (ネットワークI/Oを含むため別スレッドで実行)."""
+    conn = db.connect(DATA_DIR / "zatsumu.db")
+    try:
+        mail.check_mail(conn)
+        mail.purge_old_mails(conn, db.get_settings(conn)["mail_retention_days"])
+    finally:
+        conn.close()
+
+
 async def _background_loop() -> None:
     while True:
         await asyncio.sleep(ALERT_CHECK_INTERVAL_MIN * 60)
@@ -101,6 +111,18 @@ async def _background_loop() -> None:
             print(f"バックグラウンド処理でエラー: {e}")
 
 
+async def _mail_loop() -> None:
+    # メール受信は IMAP/Claude API で数分かかることがあるため、パージや
+    # アラートを遅らせないよう独立ループにする。ブロッキングI/Oは
+    # to_thread でイベントループの外に逃がす。
+    while True:
+        await asyncio.sleep(ALERT_CHECK_INTERVAL_MIN * 60)
+        try:
+            await asyncio.to_thread(_mail_tick)
+        except Exception as e:  # noqa: BLE001
+            print(f"メール受信処理でエラー: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     conn = db.connect(DATA_DIR / "zatsumu.db")
@@ -115,11 +137,36 @@ async def lifespan(app: FastAPI):
     finally:
         conn.close()
     task = asyncio.create_task(_background_loop())
+    mail_task = asyncio.create_task(_mail_loop())
     yield
     task.cancel()
+    mail_task.cancel()
 
 
-app = FastAPI(title="zatsumu", version="0.1.0", lifespan=lifespan)
+# 自動の API 説明ページ(/docs, /redoc, /openapi.json)は出さない。社内ツールで
+# 外部に API を公開していないので不要で、出すと全 API の一覧(トークン再発行など
+# 狙われやすい経路を含む)とその場で試せる画面を誰にでも見せることになる
+app = FastAPI(
+    title="zatsumu",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+
+
+@app.middleware("http")
+async def _no_search_index(request: Request, call_next):
+    """社内ツールなので検索エンジンに載せない.
+
+    公開サービス(例: 自社プロダクト)と同じドメイン配下や同じサーバに置かれても、
+    ログイン画面が検索結果に出てブランドを損ねないようにする。
+    robots.txt で Disallow すると noindex が読まれず逆効果なので、ヘッダで伝える。
+    """
+    response = await call_next(request)
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
 
 
 def now_iso() -> str:
@@ -135,7 +182,8 @@ def get_conn():
         conn.close()
 
 
-def auth_user(authorization: str = Header(None), conn=Depends(get_conn)):
+def token_user(authorization: str = Header(None), conn=Depends(get_conn)):
+    """Bearer トークンだけで本人確認する (端末の確認はしない)."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Bearer token required")
     user = db.user_by_token(conn, authorization.removeprefix("Bearer "))
@@ -144,7 +192,27 @@ def auth_user(authorization: str = Header(None), conn=Depends(get_conn)):
     return user
 
 
+def auth_user(
+    user=Depends(token_user),
+    x_device_token: str = Header(None),
+    conn=Depends(get_conn),
+):
+    # 新しい端末のメール確認 (ZATSUMU_LOGIN_VERIFY_EMAIL 設定時のみ)。
+    # 管理者は確認済みの端末トークン (X-Device-Token) も必要。一般メンバーは対象外
+    if user["is_admin"] and devices.enabled():
+        if not devices.check_device(conn, user["id"], x_device_token):
+            raise HTTPException(401, devices.REQUIRED_DETAIL)
+    return user
+
+
 def require_admin(user=Depends(auth_user)):
+    if not user["is_admin"]:
+        raise HTTPException(403, "Admin only")
+    return user
+
+
+def require_admin_token(user=Depends(token_user)):
+    """管理者トークンだけを確かめる (端末の確認コードを受け取る API 用)."""
     if not user["is_admin"]:
         raise HTTPException(403, "Admin only")
     return user
@@ -261,6 +329,40 @@ class SettingsPatch(BaseModel):
     smtp_user: str | None = None
     smtp_pass: str | None = None
     mail_from: str | None = None
+    imap_host: str | None = None
+    imap_port: str | None = None
+    imap_user: str | None = None
+    imap_pass: str | None = None
+    imap_folder: str | None = None
+    imap_sent_folder: str | None = None
+    imap_use_ssl: bool | None = None
+    mail_save_sent: bool | None = None
+    mail_fetch_enabled: bool | None = None
+    mail_auto_draft: bool | None = None
+    mail_retention_days: int | None = None
+    mail_fetch_days: int | None = None
+    notify_mail_high: bool | None = None
+    anthropic_api_key: str | None = None
+    anthropic_model: str | None = None
+    mail_signature: str | None = None
+    mail_reply_instructions: str | None = None
+    mail_vip_addresses: str | None = None
+    mail_urgent_keywords: str | None = None
+
+
+class MailPatch(BaseModel):
+    draft_reply: str | None = None
+    priority: int | None = None
+    status: str | None = None
+
+
+class MailDraftBody(BaseModel):
+    instructions: str = ""    # 返信の方針 (例: 「金曜までに対応すると伝える」)
+
+
+class MailSendBody(BaseModel):
+    body: str
+    subject: str | None = None  # 省略時は「Re: 元の件名」
 
 
 class SessionBody(BaseModel):
@@ -649,13 +751,17 @@ def _monthly_detail(conn, user, month: str) -> dict:
     }
 
 
+def _mask_settings(s: dict) -> dict:
+    """秘密情報 (パスワード・APIキー) はレスポンスに含めない(設定済みかだけ返す)."""
+    for key in ("smtp_pass", "imap_pass", "anthropic_api_key"):
+        s[f"{key}_set"] = bool(s.get(key))
+        s[key] = ""
+    return s
+
+
 @app.get("/api/settings")
 def get_settings_api(_admin=Depends(require_admin), conn=Depends(get_conn)):
-    s = db.get_settings(conn)
-    # SMTPパスワードはレスポンスに含めない(設定済みかだけ返す)
-    s["smtp_pass_set"] = bool(s.get("smtp_pass"))
-    s["smtp_pass"] = ""
-    return s
+    return _mask_settings(db.get_settings(conn))
 
 
 @app.patch("/api/settings")
@@ -680,6 +786,13 @@ def patch_settings(
         "stall_alert_count": (1, 100),
         "clockout_reminder": (0, 1),
         "idle_threshold": (10, 86400),
+        "imap_use_ssl": (0, 1),
+        "mail_fetch_enabled": (0, 1),
+        "mail_auto_draft": (0, 1),
+        "mail_retention_days": (0, 3650),
+        "mail_fetch_days": (1, 365),
+        "notify_mail_high": (0, 1),
+        "mail_save_sent": (0, 1),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -703,11 +816,14 @@ def patch_settings(
                 raise HTTPException(400, f"{key} は HH:MM 形式で入力してください")
     if "timezone" in changes and not tz.set_tz(changes["timezone"]):
         raise HTTPException(400, "不明なタイムゾーンです (例: Asia/Tokyo)")
-    if "smtp_port" in changes and str(changes["smtp_port"]).strip():
-        port = str(changes["smtp_port"]).strip()
-        if not (port.isdigit() and 1 <= int(port) <= 65535):
-            raise HTTPException(400, "SMTPポートは1〜65535の数値で指定してください")
-        changes["smtp_port"] = port
+    for pkey, plabel in (("smtp_port", "SMTP"), ("imap_port", "IMAP")):
+        if pkey in changes and str(changes[pkey]).strip():
+            port = str(changes[pkey]).strip()
+            if not (port.isdigit() and 1 <= int(port) <= 65535):
+                raise HTTPException(
+                    400, f"{plabel}ポートは1〜65535の数値で指定してください"
+                )
+            changes[pkey] = port
     if "work_categories" in changes:
         cats = [c.strip() for c in changes["work_categories"].split(",") if c.strip()]
         if not cats:
@@ -716,10 +832,11 @@ def patch_settings(
 
     for key, val in changes.items():
         db.set_setting(conn, key, val)
-    secret = {"slack_webhook_url", "smtp_pass", "smtp_user"}
+    secret = {"slack_webhook_url", "smtp_pass", "smtp_user",
+              "imap_pass", "imap_user", "anthropic_api_key"}
     _audit(conn, admin, "settings_update", detail=", ".join(
         f"{k}=***" if k in secret else f"{k}={v}" for k, v in changes.items()))
-    return db.get_settings(conn)
+    return _mask_settings(db.get_settings(conn))
 
 
 @app.post("/api/settings/test-notify")
@@ -757,8 +874,108 @@ def test_email(
             f"届いていればメール通知の設定は正常です。",
         )
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
-        raise HTTPException(502, f"送信に失敗しました: {e}")
+        raise HTTPException(502, f"送信に失敗しました: {notify.safe_error(e, s)}")
     return {"sent": to}
+
+
+@app.post("/api/settings/test-imap")
+def test_imap(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """IMAP設定の疎通確認 (接続・ログイン・フォルダ選択まで試す)."""
+    s = db.get_settings(conn)
+    if not str(s.get("imap_host", "")).strip():
+        raise HTTPException(400, "IMAPが未設定です。受信サーバ等を保存してください")
+    try:
+        result = mail.test_imap(s)
+    except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+        raise HTTPException(502, f"接続に失敗しました: {notify.safe_error(e, s)}")
+    return {"ok": True, "count": result["count"],
+            "sent_folder": result["sent_folder"],
+            "sent_folder_error": notify.safe_error(
+                RuntimeError(result["sent_folder_error"]), s)
+            if result["sent_folder_error"] else ""}
+
+
+# ---------- 新しい端末のメール確認 (ZATSUMU_LOGIN_VERIFY_EMAIL 設定時のみ) ----------
+
+class DeviceVerifyBody(BaseModel):
+    request_id: str
+    code: str
+
+
+def _require_device_feature() -> None:
+    if not devices.enabled():
+        raise HTTPException(400, "新しい端末の確認は有効になっていません")
+
+
+@app.post("/api/device/start")
+def device_start(
+    request: Request, admin=Depends(require_admin_token), conn=Depends(get_conn)
+):
+    """確認コードを宛先へメールする (管理者トークンのみで呼べる・端末トークン不要)."""
+    _require_device_feature()
+    ip = devices.client_ip(request)
+    ua = request.headers.get("user-agent")
+    try:
+        out = devices.start_challenge(conn, admin, ip, ua)
+    except devices.RateLimited as e:
+        raise HTTPException(429, str(e))
+    except devices.SendUnavailable:
+        _audit(conn, admin, "device_code_send_fail", admin["id"], detail=f"ip={ip}")
+        conn.commit()
+        # 中身の例外や設定値は出さない (原因はサーバのログに残している)
+        raise HTTPException(
+            503, "確認コードのメールを送れませんでした。サーバの担当者に連絡してください"
+        )
+    _audit(conn, admin, "device_code_sent", admin["id"], detail=f"ip={ip}")
+    return out
+
+
+@app.post("/api/device/verify")
+def device_verify(
+    body: DeviceVerifyBody,
+    request: Request,
+    admin=Depends(require_admin_token),
+    conn=Depends(get_conn),
+):
+    """確認コードが合えば端末トークンを返す (平文を返すのはこの1回だけ)."""
+    _require_device_feature()
+    ip = devices.client_ip(request)
+    try:
+        devices.verify_challenge(conn, admin, body.request_id, body.code)
+    except devices.VerifyError as e:
+        _audit(conn, admin, "device_verify_fail", admin["id"], detail=f"ip={ip}")
+        conn.commit()  # 試行回数を残す (例外で巻き戻らないように)
+        raise HTTPException(400, str(e))
+    label = request.headers.get("user-agent") or ""
+    token = devices.issue_device(conn, admin["id"], label, ip)
+    _audit(conn, admin, "device_verify_ok", admin["id"],
+           detail=f"ip={ip} {devices.clean_label(label)}")
+    return {"device_token": token}
+
+
+@app.get("/api/devices")
+def list_devices_api(
+    request: Request, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """確認済みの端末の一覧 (有効なものだけ)。current=いま使っている端末."""
+    cur = devices.check_device(conn, admin["id"], request.headers.get("x-device-token"))
+    rows = devices.list_devices(conn)
+    for r in rows:
+        r["current"] = bool(cur) and r["id"] == cur["id"]
+    return {"enabled": devices.enabled(), "devices": rows}
+
+
+@app.delete("/api/devices/{device_id}")
+def revoke_device_api(
+    device_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """端末を取り消す (その端末では次の操作から確認コードが必要になる)."""
+    row = devices.revoke_device(conn, device_id)
+    if not row:
+        raise HTTPException(404, "Not found")
+    _audit(conn, admin, "device_revoke", row["user_id"],
+           detail=f"id={device_id} {row['label']}")
+    return {"revoked": device_id}
 
 
 @app.get("/api/config")
@@ -943,7 +1160,8 @@ def delete_user(
     for r in conn.execute("SELECT path FROM screenshots WHERE user_id = ?", (user_id,)):
         (SCREENSHOT_DIR / r["path"]).unlink(missing_ok=True)
     # 関連データ → 本体の順に削除 (FK制約に沿う)
-    for tbl in ("screenshots", "sessions", "journals", "leave_requests", "corrections"):
+    for tbl in ("screenshots", "sessions", "journals", "leave_requests", "corrections",
+                "device_tokens", "device_challenges"):
         conn.execute(f"DELETE FROM {tbl} WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     _audit(conn, admin, "user_delete", detail=target["name"])
@@ -961,6 +1179,8 @@ def regenerate_token(
         raise HTTPException(404, "User not found")
     token = secrets.token_urlsafe(24)
     conn.execute("UPDATE users SET token = ? WHERE id = ?", (token, user_id))
+    # 古いトークンで確認した端末も使えなくする (漏れた疑いで作り直すことが多いため)
+    devices.revoke_all(conn, user_id)
     _audit(conn, admin, "token_regen", user_id)
     return {"id": user_id, "name": target["name"], "token": token}
 
@@ -1521,6 +1741,14 @@ def member_page():
     )
 
 
+@app.get("/mail", response_class=HTMLResponse)
+def mail_page():
+    """メール対応の専用画面 (勤怠管理とは別UI・同じサーバ/DB/管理者トークン)."""
+    return (Path(__file__).parent / "templates" / "mail.html").read_text(
+        encoding="utf-8"
+    )
+
+
 CLIENT_EXE_NAME = "勤怠管理.exe"
 CLIENT_ZIP_NAME = "勤怠管理.zip"
 
@@ -1737,6 +1965,15 @@ def audit_csv(
         "correction_apply_out": "修正申請(退席)を反映",
         "correction_approved": "修正申請を承認",
         "correction_rejected": "修正申請を却下",
+        "mail_send": "メール返信送信",
+        "mail_update": "メール状態変更",
+        "device_code_sent": "端末確認コード送信",
+        "device_code_send_fail": "端末確認コード送信失敗",
+        "device_verify_ok": "端末確認成功",
+        "device_verify_fail": "端末確認失敗",
+        "device_revoke": "端末取り消し",
+        "device_issue": "端末トークン発行(サーバ)",
+        "device_revoke_all": "端末を全て取り消し(サーバ)",
     }
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -1765,3 +2002,201 @@ def purge_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
     days = db.get_settings(conn)["retention_days"]
     deleted = retention.purge_old_screenshots(conn, SCREENSHOT_DIR, days)
     return {"deleted": deleted, "retention_days": days}
+
+
+# ===================== メール (受信箱・優先度・AI返信) =====================
+
+def _mail_summary(r) -> dict:
+    return {
+        "id": r["id"],
+        "from_addr": r["from_addr"],
+        "from_name": r["from_name"],
+        "subject": r["subject"],
+        "received_at": r["received_at"],
+        "priority": r["priority"],
+        "priority_reason": r["priority_reason"],
+        "priority_source": r["priority_source"],
+        "status": r["status"],
+        "has_draft": bool(r["draft_reply"]),
+        "replied_at": r["replied_at"],
+    }
+
+
+def _mail_or_404(conn, mail_id: int):
+    row = conn.execute("SELECT * FROM mails WHERE id = ?", (mail_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    return row
+
+
+@app.get("/api/mail")
+def list_mail(
+    status: str | None = None,
+    priority: int | None = None,
+    _admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """受信メール一覧 (優先度[高]が上・同一優先度は新しい順)."""
+    where, params = [], []
+    if status:
+        if status not in mail.MAIL_STATUSES:
+            raise HTTPException(400, f"不明な状態です: {status}")
+        where.append("status = ?")
+        params.append(status)
+    if priority is not None:
+        if priority not in (1, 2, 3):
+            raise HTTPException(400, "priority は 1〜3 で指定してください")
+        where.append("priority = ?")
+        params.append(priority)
+    sql = "SELECT * FROM mails"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY priority, received_at DESC LIMIT 500"
+    return [_mail_summary(r) for r in conn.execute(sql, params)]
+
+
+@app.post("/api/mail/fetch")
+def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """今すぐ IMAP から新着を取り込む (メール画面の「今すぐ受信」用)."""
+    s = db.get_settings(conn)
+    if not str(s.get("imap_host", "")).strip():
+        raise HTTPException(400, "IMAPが未設定です。設定画面で受信サーバを保存してください")
+    try:
+        added = mail.fetch_new_mail(conn, s)
+    except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+        raise HTTPException(502, f"受信に失敗しました: {notify.safe_error(e, s)}")
+    return {"fetched": len(added)}
+
+
+@app.get("/api/mail/{mail_id}")
+def mail_detail(mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)):
+    r = _mail_or_404(conn, mail_id)
+    return {
+        **_mail_summary(r),
+        "to_addr": r["to_addr"],
+        "body": r["body"],
+        "draft_reply": r["draft_reply"],
+        "draft_source": r["draft_source"],
+        "draft_generated_at": r["draft_generated_at"],
+        "reply_subject": r["reply_subject"],
+        "reply_body": r["reply_body"],
+        "replied_by": r["replied_by"],
+    }
+
+
+@app.post("/api/mail/{mail_id}/draft")
+def mail_generate_draft(
+    mail_id: int,
+    body: MailDraftBody,
+    _admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """返信の下書きを(再)生成する。APIキー未設定時は定型文になる."""
+    r = _mail_or_404(conn, mail_id)
+    text, source = mail.generate_reply(
+        db.get_settings(conn), dict(r), body.instructions
+    )
+    conn.execute(
+        "UPDATE mails SET draft_reply = ?, draft_source = ?,"
+        " draft_generated_at = ? WHERE id = ?",
+        (text, source, now_iso(), mail_id),
+    )
+    return {"draft_reply": text, "draft_source": source}
+
+
+@app.patch("/api/mail/{mail_id}")
+def mail_patch(
+    mail_id: int, body: MailPatch, admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """下書きの保存・優先度の手動変更・状態変更 (対応不要など)."""
+    _mail_or_404(conn, mail_id)
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not changes:
+        raise HTTPException(400, "変更内容がありません")
+    if "priority" in changes:
+        if changes["priority"] not in (1, 2, 3):
+            raise HTTPException(400, "priority は 1〜3 で指定してください")
+        conn.execute(
+            "UPDATE mails SET priority = ?, priority_reason = ?,"
+            " priority_source = 'manual' WHERE id = ?",
+            (changes["priority"], "手動変更", mail_id),
+        )
+    if "status" in changes:
+        if changes["status"] not in mail.MAIL_STATUSES:
+            raise HTTPException(400, f"不明な状態です: {changes['status']}")
+        conn.execute(
+            "UPDATE mails SET status = ? WHERE id = ?",
+            (changes["status"], mail_id),
+        )
+    if "draft_reply" in changes:
+        conn.execute(
+            "UPDATE mails SET draft_reply = ? WHERE id = ?",
+            (changes["draft_reply"], mail_id),
+        )
+    if "priority" in changes or "status" in changes:
+        _audit(conn, admin, "mail_update", detail=f"mail={mail_id} " + ", ".join(
+            f"{k}={v}" for k, v in changes.items() if k != "draft_reply"))
+    return {"updated": mail_id}
+
+
+@app.post("/api/mail/{mail_id}/send")
+def mail_send(
+    mail_id: int, body: MailSendBody, admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """返信を送信する。宛先は元メールの差出人・スレッドが繋がるヘッダ付き."""
+    r = _mail_or_404(conn, mail_id)
+    if r["status"] == "replied":
+        raise HTTPException(409, "このメールには返信済みです")
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(400, "返信本文を入力してください")
+    if "@" not in (r["from_addr"] or ""):
+        raise HTTPException(400, "差出人アドレスが不明なため返信できません")
+    s = db.get_settings(conn)
+    if not s.get("smtp_host"):
+        raise HTTPException(400, "SMTPが未設定です。設定画面で送信サーバを保存してください")
+    subject = (body.subject or "").strip() or mail.reply_subject(r["subject"])
+    # 先に「返信済み」へ原子的に更新・コミットしてから送信する (二重送信防止:
+    # 同じメールへ同時に送信した場合、後の方は rowcount=0 になり 409 で止まる)
+    cur = conn.execute(
+        "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
+        " replied_at = ?, replied_by = ? WHERE id = ? AND status != 'replied'",
+        (subject, text, now_iso(), admin["name"], mail_id),
+    )
+    if not cur.rowcount:
+        raise HTTPException(409, "このメールには返信済みです")
+    conn.commit()
+    try:
+        raw = mail.send_reply(
+            s, r["from_addr"], subject, text,
+            in_reply_to=r["message_id"], references=r["references_hdr"],
+        )
+    except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+        # 送信できなかったら未対応に戻し、画面から再試行できるようにする
+        conn.execute(
+            "UPDATE mails SET status = 'unhandled', reply_subject = '',"
+            " reply_body = '', replied_at = NULL, replied_by = '' WHERE id = ?",
+            (mail_id,),
+        )
+        conn.commit()
+        raise HTTPException(502, f"送信に失敗しました: {notify.safe_error(e, s)}")
+    # 控えを送信済みフォルダへ保存する (Webメールの「送信済み」にも出るように)。
+    # 相手には届いているので、ここで失敗しても送信は成功として扱う
+    # (失敗扱いにすると画面から再送され、相手に二重に届いてしまう)
+    sent_folder, save_error = "", ""
+    if raw and mail.should_save_sent(s):
+        try:
+            sent_folder = mail.save_to_sent(s, raw)
+        except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+            save_error = notify.safe_error(e, s)
+    detail = f"to={r['from_addr']} subject={subject}"
+    if sent_folder:
+        detail += f" saved={sent_folder}"
+    elif save_error:
+        detail += " saved=failed"
+    _audit(conn, admin, "mail_send", detail=detail)
+    return {"sent": r["from_addr"], "subject": subject,
+            "saved_to_sent": bool(sent_folder), "sent_folder": sent_folder,
+            "sent_save_error": save_error}

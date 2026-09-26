@@ -4,6 +4,9 @@ services:
     restart: unless-stopped
     environment:
       ZATSUMU_RETENTION_DAYS: ${ZATSUMU_RETENTION_DAYS:-30}
+      # 新しい端末からの管理者ログインにメールの確認コードを必須にする (任意)。
+      # .env に ZATSUMU_LOGIN_VERIFY_EMAIL=宛先 を書くと有効。空なら無効 (従来どおり)
+      ZATSUMU_LOGIN_VERIFY_EMAIL: ${ZATSUMU_LOGIN_VERIFY_EMAIL:-}
     volumes:
       - app-data:/data
 
@@ -17,8 +20,12 @@ services:
       # .env で ZATSUMU_DOMAIN=kintai.example.com を設定すると
       # Let's Encrypt の証明書を自動取得して HTTPS で公開する
       ZATSUMU_DOMAIN: ${ZATSUMU_DOMAIN:-localhost}
+      # メール対応「だけ」を別サーバで動かす場合の公開ドメイン (Caddyfile.mail が使う)
+      ZATSUMU_MAIL_DOMAIN: ${ZATSUMU_MAIL_DOMAIN:-mail.localhost}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 既定は1ドメインで勤怠(/admin,/me)とメール(/mail)を出す。
+      # メール専用サーバでは .env で ZATSUMU_CADDYFILE=Caddyfile.mail にする
+      - ./${ZATSUMU_CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
 

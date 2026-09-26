@@ -18,7 +18,7 @@
 |---|---|
 | `server/` | FastAPI サーバ（打刻 API・スクショ受信・管理画面・月次レポート・保存期間管理） |
 | `client/` | 常駐エージェント（`agent.py` CLI 版 / `tray.py` トレイ常駐版 / `widget.py` 常時表示バー版） |
-| `manage.py` | ユーザー作成・スクショ削除 CLI |
+| `manage.py` | ユーザー作成・スクショ削除・確認済み端末の管理 CLI |
 | `tests/` | API テスト |
 | `deploy/` + `Dockerfile` 等 | 本番デプロイ用（**[DEPLOY.md](DEPLOY.md)** 参照） |
 
@@ -139,6 +139,16 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   月次レポートに残業・不足を集計、個人ページの各日に過不足を表示します
 - **通知（Slack / メール）**: 着席・退席や長時間在席アラートを Slack の Incoming
   Webhook や SMTP メールへ通知できます（設定画面で「テスト送信」可）
+- **メール対応（受信箱の優先度分類・AI返信）**: 共有の受信箱（例: info@…）を IMAP で
+  定期取得し、**専用画面 `/mail`** に**優先度順（高→中→低）**で表示します。
+  Claude API キーを設定すると優先度判定と**返信文の下書き生成**を AI が行い
+  （未設定でもキーワード分類＋定型文で動作）、内容を編集して画面から
+  **そのまま返信を送信**できます（送信は SMTP 設定を使用、スレッドが繋がる
+  ヘッダ付き）。優先度[高]の受信は Slack/メールに通知でき、
+  送信操作は監査ログに記録されます。
+  勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
+  **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
+  メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
 - **連続在席アラート**: 閾値（既定 6 時間）を超えて着席し続けているメンバーに
   稼働状況で ⚠ を表示し、設定により Slack/メール通知も送ります
 - メンバー管理から**個人ごとの撮影停止/再開**も可能（本家 F-Chair+ と同様、
@@ -203,7 +213,39 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
+| GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority で絞り込み） |
+| GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き） |
+| POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み |
+| POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
+| PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態の変更 |
+| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人） |
+| POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認 |
+| POST | `/api/settings/test-email` | admin | 指定アドレスへメールのテスト送信 |
+| POST | `/api/device/start` | admin（端末確認は不要） | 新しい端末の確認コードをメールで送る（機能が有効なときだけ） |
+| POST | `/api/device/verify` | admin（端末確認は不要） | 確認コードが合えば端末トークンを返す |
+| GET | `/api/devices` | admin | 確認済みの端末の一覧 |
+| DELETE | `/api/devices/{id}` | admin | 確認済みの端末を取り消す |
+| GET | `/admin` | — | 勤怠管理の画面（データ取得は Bearer 認証の API 経由） |
+| GET | `/me` | — | メンバー用の打刻ページ |
+| GET | `/mail` | — | メール対応の専用画面（勤怠とは別UI） |
 | GET | `/healthz` | なし | 死活監視用ヘルスチェック |
+
+### 新しい端末のメール確認（任意）
+
+サーバの `.env` に `ZATSUMU_LOGIN_VERIFY_EMAIL=you@example.com` を書くと、管理者が
+初めて使う端末（パソコン・スマホ）からログインしたとき、そのアドレスに 6 桁の確認コードを
+メールで送り、入力するまで使えなくなります（2段階認証）。空なら無効で、今までどおりです。
+メンバーの打刻は対象外です。
+
+- 確認できた端末には「端末トークン」（端末用の合言葉）を渡し、画面はそれを
+  `X-Device-Token` ヘッダで毎回送ります。90 日使わなければ失効します。
+- 端末トークンが無い管理者のリクエストは `401` `{"detail": "device_verification_required"}`
+  になります（画面はこれを見て確認コードの入力画面を出します）。
+- メールが届かないときの復旧は `python manage.py issue-device <管理者の名前>`。
+  一覧・取り消しは `devices` / `device-revoke <番号|all>`。詳しくは [DEPLOY.md](DEPLOY.md)。
+- メール専用サーバでは、更新のあと `docker compose up -d --force-recreate caddy` で
+  Caddy（入口の門番）を作り直してから有効にしてください。作り直さないと確認用の道
+  （`/api/device`）が 404 のままで、確認コードの画面から先へ進めません。
 
 ## テスト
 

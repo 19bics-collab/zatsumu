@@ -82,7 +82,58 @@ CREATE TABLE IF NOT EXISTS corrections (
     decided_at TEXT,
     decided_by INTEGER
 );
+CREATE TABLE IF NOT EXISTS mails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL UNIQUE, -- 重複取り込み防止 (Message-ID ヘッダ)
+    imap_uid INTEGER,
+    from_addr TEXT NOT NULL DEFAULT '',
+    from_name TEXT NOT NULL DEFAULT '',
+    to_addr TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL,       -- UTC ISO
+    fetched_at TEXT NOT NULL,        -- UTC ISO
+    priority INTEGER NOT NULL DEFAULT 2,      -- 1=高 2=中 3=低
+    priority_reason TEXT NOT NULL DEFAULT '',
+    priority_source TEXT NOT NULL DEFAULT '', -- 'ai' / 'rule'
+    status TEXT NOT NULL DEFAULT 'unhandled', -- unhandled/replied/archived
+    draft_reply TEXT NOT NULL DEFAULT '',
+    draft_source TEXT NOT NULL DEFAULT '',    -- 'ai' / 'template'
+    draft_generated_at TEXT,
+    reply_subject TEXT NOT NULL DEFAULT '',
+    reply_body TEXT NOT NULL DEFAULT '',      -- 実際に送信した本文
+    replied_at TEXT,
+    replied_by TEXT NOT NULL DEFAULT '',      -- 送信した管理者名(スナップショット)
+    references_hdr TEXT NOT NULL DEFAULT ''   -- スレッド返信用 References ヘッダ
+);
+-- 新しい端末からの管理者ログインのメール確認 (server/devices.py)。
+-- 秘密 (端末トークン・確認コード) は sha256 のハッシュだけを保存する
+CREATE TABLE IF NOT EXISTS device_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',   -- User-Agent の先頭 (どの端末か見分ける用)
+    ip TEXT NOT NULL DEFAULT '',      -- 確認したときのアクセス元 IP
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,       -- 最後に使った時刻 (90日使わなければ失効)
+    revoked_at TEXT                   -- 取り消した時刻 (NULL=有効)
+);
+CREATE TABLE IF NOT EXISTS device_challenges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    code_hash TEXT NOT NULL,
+    ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,  -- 間違えた回数も含む試行回数
+    used_at TEXT                          -- 使い切った/無効にした時刻
+);
 -- 集計・参照でよく使う列のインデックス(IF NOT EXISTS で冪等)
+CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_device_challenges_user ON device_challenges(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mails_status ON mails(status);
+CREATE INDEX IF NOT EXISTS idx_mails_received ON mails(received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_open ON sessions(user_id, clock_out);
 CREATE INDEX IF NOT EXISTS idx_sessions_clock_in ON sessions(clock_in);
 CREATE INDEX IF NOT EXISTS idx_screenshots_user_taken ON screenshots(user_id, taken_at);
@@ -114,6 +165,13 @@ INT_SETTINGS = {
     "stall_alert_count": 3,        # 同じ画面が連続でこの回数続いたら通知
     "clockout_reminder": 1,        # 終業時刻を過ぎても未退勤の本人へリマインドするか
     "idle_threshold": 120,         # 無操作がこの秒数以上なら「離席/非稼働」とみなす(稼働率計算用)
+    "imap_use_ssl": 1,             # IMAP接続にSSLを使う (993番ポートなど)
+    "mail_fetch_enabled": 1,       # メールの自動受信ON/OFF (imap_host設定時のみ動作)
+    "mail_auto_draft": 1,          # 受信時にAIで返信下書きを自動生成するか
+    "mail_retention_days": 180,    # 受信メールの保存日数 (0=自動削除なし)
+    "mail_fetch_days": 7,          # 初回取り込み時に遡る日数
+    "notify_mail_high": 1,         # 優先度[高]のメール受信を通知するか
+    "mail_save_sent": 1,           # 送信した返信を IMAP の送信済みフォルダにも保存するか
 }
 
 # 全社設定の既定値 (文字列)
@@ -131,6 +189,19 @@ STR_SETTINGS = {
     "smtp_user": "",
     "smtp_pass": "",
     "mail_from": "",               # 差出人 (空なら smtp_user を使用)
+    "imap_host": "",               # IMAPサーバ (空ならメール受信無効)
+    "imap_port": "993",
+    "imap_user": "",
+    "imap_pass": "",
+    "imap_folder": "INBOX",
+    "imap_sent_folder": "",        # 返信の控えを保存するフォルダ (空なら自動で探す)
+    "anthropic_api_key": "",       # Claude APIキー (空ならルール分類+定型文で動作)
+    "anthropic_model": "claude-opus-5",
+    "mail_signature": "",          # 返信メール末尾に付ける署名
+    "mail_reply_instructions": "", # AI返信文生成時の追加指示 (社の文体・注意事項など)
+    "mail_vip_addresses": "",      # 常に優先度[高]にする差出人 (カンマ区切り)
+    # 件名/本文に含まれると優先度[高]にするキーワード (カンマ区切り)
+    "mail_urgent_keywords": "至急,緊急,大至急,クレーム,苦情,障害,トラブル,重要,締切,期限,本日中,urgent,asap",
 }
 
 # 後方互換: 旧名を参照しているコード向け

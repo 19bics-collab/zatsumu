@@ -1,0 +1,35 @@
+# m2m清掃管理 → ヤドツギ の読み取り係 (メール専用サーバ desk で使う追加設定)。
+# 有効にするには .env に次の1行を足す (以後は普段どおり docker compose up -d で一緒に動く):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.m2m.yml
+# 詳細は m2m_sync/README.md
+services:
+  m2m:
+    build:
+      context: .
+      dockerfile: m2m_sync/Dockerfile
+    restart: unless-stopped
+    init: true
+    # ブラウザがメモリを使いすぎても、止まるのはこのコンテナだけ (メール・勤怠は巻き込まない)
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    environment:
+      # 値は .env に書く (.env は git に入らない)。ここに直接書かないこと: リポジトリは公開
+      M2M_EMAIL: ${M2M_EMAIL:-}
+      M2M_PASSWORD: ${M2M_PASSWORD:-}
+      M2M_INGEST_URL: ${M2M_INGEST_URL:-}
+      M2M_INGEST_KEY: ${M2M_INGEST_KEY:-}
+      M2M_RUN_AT: ${M2M_RUN_AT:-06:00}
+      M2M_DAYS_BACK: ${M2M_DAYS_BACK:-1}
+      M2M_DAYS_AHEAD: ${M2M_DAYS_AHEAD:-60}
+      M2M_DRY_RUN: ${M2M_DRY_RUN:-false}
+    volumes:
+      - m2m-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  m2m-data:
