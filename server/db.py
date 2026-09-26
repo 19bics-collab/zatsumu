@@ -171,6 +171,7 @@ INT_SETTINGS = {
     "mail_retention_days": 180,    # 受信メールの保存日数 (0=自動削除なし)
     "mail_fetch_days": 7,          # 初回取り込み時に遡る日数
     "notify_mail_high": 1,         # 優先度[高]のメール受信を通知するか
+    "mail_save_sent": 1,           # 送信した返信を IMAP の送信済みフォルダにも保存するか
 }
 
 # 全社設定の既定値 (文字列)
@@ -193,6 +194,7 @@ STR_SETTINGS = {
     "imap_user": "",
     "imap_pass": "",
     "imap_folder": "INBOX",
+    "imap_sent_folder": "",        # 返信の控えを保存するフォルダ (空なら自動で探す)
     "anthropic_api_key": "",       # Claude APIキー (空ならルール分類+定型文で動作)
     "anthropic_model": "claude-opus-5",
     "mail_signature": "",          # 返信メール末尾に付ける署名

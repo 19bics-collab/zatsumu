@@ -195,6 +195,10 @@
         <input type="password" id="set-imap-pass" placeholder="(変更時のみ入力)"></label>
       <label class="set-row"><span>フォルダ</span>
         <input type="text" id="set-imap-folder" placeholder="INBOX"></label>
+      <label class="set-row"><span>送った返信を送信済みフォルダに残す</span>
+        <input type="checkbox" id="set-mail-save-sent"></label>
+      <label class="set-row"><span>送信済みフォルダ（空なら自動）</span>
+        <input type="text" id="set-imap-sent-folder" placeholder="自動（例: Sent / INBOX.Sent）"></label>
       <label class="set-row"><span>初回に遡る日数</span>
         <input type="number" id="set-mail-fetch-days" min="1" max="365"></label>
       <label class="set-row"><span>メール保存日数（0=削除なし）</span>
@@ -202,7 +206,10 @@
       <label class="set-row"><span>優先度[高]の受信を通知</span>
         <input type="checkbox" id="set-notify-mail-high"></label>
       <p><small>共有の受信箱（例: info@…）をIMAPで定期取得し、「受信箱」に優先度順で
-      表示します。受信箱のメールは変更しません（既読も付きません）。</small></p>
+      表示します。受信箱のメールは変更しません（既読も付きません）。
+      この画面から送った返信は、同じメールボックスの送信済みフォルダにも控えを残すので、
+      Webメールの「送信済み」からも見られます。フォルダが見つからないときは
+      「IMAP接続テスト」の結果を見て、Webメールで使っているフォルダ名を入れてください。</small></p>
       <button class="ghost" id="set-test-imap">IMAP接続テスト</button>
       <span id="test-imap-msg" style="margin-left:.6rem;font-size:.85rem"></span>
     </div>
@@ -492,6 +499,10 @@ $("m-send").onclick = async () => {
     });
     modal.savedDraft = text;
     $("m-status").textContent = `${r.sent} へ送信しました ✓`;
+    if (r.sent_save_error) {
+      // 相手には届いている。控えが残らなかったことだけ知らせる
+      $("m-status").textContent += `（送信済みフォルダへの保存はできませんでした: ${r.sent_save_error}）`;
+    }
     b.textContent = "返信済み";
     // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)
     $("m-draft").readOnly = true;
@@ -554,6 +565,8 @@ function fillSettings(s) {
   $("set-imap-pass").value = "";   // パスワードは表示しない(サーバも返さない)
   $("set-imap-pass").placeholder = s.imap_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
   $("set-imap-folder").value = s.imap_folder;
+  $("set-mail-save-sent").checked = !!s.mail_save_sent;
+  $("set-imap-sent-folder").value = s.imap_sent_folder || "";
   $("set-mail-fetch-days").value = s.mail_fetch_days;
   $("set-mail-retention").value = s.mail_retention_days;
   $("set-notify-mail-high").checked = !!s.notify_mail_high;
@@ -585,6 +598,8 @@ $("set-save").onclick = async () => {
     imap_use_ssl: $("set-imap-ssl").checked,
     imap_user: $("set-imap-user").value,
     imap_folder: $("set-imap-folder").value,
+    mail_save_sent: $("set-mail-save-sent").checked,
+    imap_sent_folder: $("set-imap-sent-folder").value,
     mail_fetch_days: +$("set-mail-fetch-days").value,
     mail_retention_days: +$("set-mail-retention").value,
     notify_mail_high: $("set-notify-mail-high").checked,
@@ -622,7 +637,9 @@ $("set-test-imap").onclick = async () => {
   try {
     const r = await apiJson("/api/settings/test-imap", { method: "POST" });
     $("test-imap-msg").style.color = "#0a7d32";
-    $("test-imap-msg").textContent = `接続できました ✓（フォルダ内 ${r.count} 通）`;
+    $("test-imap-msg").textContent = `接続できました ✓（フォルダ内 ${r.count} 通）` +
+      (r.sent_folder ? `／送信済みフォルダ: ${r.sent_folder}`
+        : `／送信済みフォルダ: 見つかりません（${r.sent_folder_error}）`);
   } catch {
     $("test-imap-msg").style.color = "#c62828";
     $("test-imap-msg").textContent = "接続できませんでした（設定を保存後にお試しください）";

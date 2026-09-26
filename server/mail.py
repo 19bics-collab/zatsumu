@@ -4,9 +4,12 @@ IMAP で受信箱を取り込み、優先度 (1=高 2=中 3=低) に自動分類
 Claude API で返信の下書きを生成する。API キー未設定でも動くように、
 分類はキーワードルール、下書きは定型文へフォールバックする。
 返信の送信は SMTP (notify.py と同じ設定・同じ接続処理) を使い、スレッドが
-繋がるよう In-Reply-To / References ヘッダを付ける。
+繋がるよう In-Reply-To / References ヘッダを付ける。SMTP で送っただけでは
+メールサーバの「送信済み」フォルダに残らないため、送信後に同じメールを
+IMAP の送信済みフォルダへ保存する (Webメール等からも送った返信が見える)。
 IMAP・SMTP ともサーバ証明書を検証し、暗号化できない接続ではパスワードを送らない。
 """
+import base64
 import email
 import email.policy
 import hashlib
@@ -15,9 +18,10 @@ import imaplib
 import json
 import re
 import ssl
+import time
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
-from email.utils import parseaddr, parsedate_to_datetime
+from email.utils import format_datetime, make_msgid, parseaddr, parsedate_to_datetime
 
 from . import db, tz
 
@@ -263,8 +267,11 @@ def _header_text(value) -> str:
 
 
 def send_reply(settings: dict, to_addr: str, subject: str, body: str,
-               in_reply_to: str = "", references: str = "") -> None:
-    """返信メールを1通送信する (失敗時は例外を送出)."""
+               in_reply_to: str = "", references: str = "") -> bytes:
+    """返信メールを1通送信し、送ったメールそのもの (bytes) を返す (失敗時は例外).
+
+    戻り値は送信済みフォルダへの保存 (save_to_sent) に使う。
+    """
     to_addr = _header_text(to_addr)
     in_reply_to = _header_text(in_reply_to)
     msg = MIMEText(body, "plain", "utf-8")
@@ -272,14 +279,21 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
     sender = settings.get("mail_from") or settings.get("smtp_user")
     msg["From"] = sender
     msg["To"] = to_addr
+    # 送信済みフォルダに保存する控えと相手に届くメールを同じ内容にするため、
+    # 日時と Message-ID はサーバ任せにせずここで付ける
+    msg["Date"] = format_datetime(datetime.now(tz.TZ))
+    domain = parseaddr(str(sender or ""))[1].rpartition("@")[2]
+    msg["Message-ID"] = make_msgid(domain=_header_text(domain) or None)
     if in_reply_to:
         # 受信側のメーラーで元メールと同じスレッドに繋がるようにする
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = _header_text(f"{references} {in_reply_to}")
     from . import notify  # 循環を避けるため遅延インポート
 
+    raw = msg.as_string()
     # 接続・暗号化・ログインは通知メールと同じ1か所の処理を使う
-    notify.smtp_send(settings, sender, [to_addr], msg.as_string())
+    notify.smtp_send(settings, sender, [to_addr], raw)
+    return raw.encode("utf-8")
 
 
 # ---------- IMAP 受信 ----------
@@ -320,20 +334,190 @@ def _since_date(days: int) -> str:
     return f"{d.day:02d}-{_MONTHS[d.month - 1]}-{d.year}"
 
 
-def test_imap(settings: dict) -> int:
-    """IMAP に接続してフォルダのメール数を返す (疎通確認用・失敗時は例外)."""
+def test_imap(settings: dict) -> dict:
+    """IMAP に接続して疎通を確認する (失敗時は例外).
+
+    受信フォルダのメール数と、返信の控えを保存する送信済みフォルダの名前を返す。
+    送信済みフォルダが見つからなくても接続自体は成功として扱う。
+    """
     m = _imap_connect(settings)
     try:
         folder = settings.get("imap_folder") or "INBOX"
-        typ, data = m.select(f'"{folder}"', readonly=True)
+        typ, data = m.select(_quote_mailbox(folder), readonly=True)
         if typ != "OK":
             raise RuntimeError(f"フォルダを開けません: {folder}")
-        return int(data[0] or 0)
+        result = {"count": int(data[0] or 0), "sent_folder": "",
+                  "sent_folder_error": ""}
+        try:
+            result["sent_folder"] = _mutf7_decode(find_sent_folder(m, settings))
+        except Exception as e:  # noqa: BLE001  見つからない等は案内だけ出す
+            result["sent_folder_error"] = str(e)
+        return result
     finally:
         try:
             m.logout()
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------- 送信済みフォルダへの保存 ----------
+
+# 送信済みフォルダの目印 (RFC 6154) が無いサーバ向けに、名前で探す候補 (優先順)
+SENT_FOLDER_NAMES = ("sent", "sent items", "sent messages", "sent mail",
+                     "送信済み", "送信済みアイテム", "送信済みメール", "送信箱")
+
+
+def _quote_mailbox(name: str) -> str:
+    """IMAP コマンドに渡すフォルダ名を引用符で囲む (空白・記号入りの名前対策)."""
+    name = str(name)
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        return name
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _mutf7_decode(name: str) -> str:
+    """IMAP のフォルダ名 (modified UTF-7, RFC 3501) を普通の文字列に直す.
+
+    例: "&kAFP4W4IMH8wojCkMMYw4A-" → "送信済みアイテム"
+    """
+    out, i = [], 0
+    while i < len(name):
+        if name[i] != "&":
+            out.append(name[i])
+            i += 1
+            continue
+        j = name.find("-", i)
+        if j < 0:
+            out.append(name[i:])
+            break
+        chunk = name[i + 1:j]
+        if not chunk:
+            out.append("&")
+        else:
+            b64 = chunk.replace(",", "/")
+            try:
+                out.append(base64.b64decode(b64 + "=" * (-len(b64) % 4))
+                           .decode("utf-16-be"))
+            except Exception:  # noqa: BLE001  壊れた名前はそのまま
+                out.append(name[i:j + 1])
+        i = j + 1
+    return "".join(out)
+
+
+def _mutf7_encode(text: str) -> str:
+    """普通の文字列を IMAP のフォルダ名 (modified UTF-7) にする."""
+    out, buf = [], []
+
+    def flush():
+        if buf:
+            b64 = base64.b64encode("".join(buf).encode("utf-16-be")).decode()
+            out.append("&" + b64.rstrip("=").replace("/", ",") + "-")
+            buf.clear()
+
+    for ch in text:
+        if 0x20 <= ord(ch) <= 0x7E:
+            flush()
+            out.append("&-" if ch == "&" else ch)
+        else:
+            buf.append(ch)
+    flush()
+    return "".join(out)
+
+
+_LIST_RE = re.compile(
+    r'^\((?P<flags>[^)]*)\)\s+(?P<delim>"(?:[^"\\]|\\.)*"|NIL)\s*(?P<name>.*)$',
+    re.IGNORECASE,
+)
+
+
+def _parse_list(data) -> list[tuple[set, str, str]]:
+    """LIST の応答を (目印の集合, 区切り文字, フォルダ名) の一覧にする."""
+    folders = []
+    for item in data or []:
+        if item is None:
+            continue
+        literal = None
+        if isinstance(item, tuple):  # 名前がリテラル {n} で届いた場合
+            item, literal = item[0], item[1]
+        line = item.decode("utf-8", "replace") if isinstance(item, bytes) else str(item)
+        mt = _LIST_RE.match(line.strip())
+        if not mt:
+            continue
+        flags = {f.lower() for f in mt["flags"].split()}
+        delim = mt["delim"]
+        delim = "" if delim.upper() == "NIL" else delim[1:-1].replace("\\\\", "\\")
+        if literal is not None:
+            name = literal.decode("utf-8", "replace") if isinstance(literal, bytes) \
+                else str(literal)
+        else:
+            name = mt["name"].strip()
+            if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+                name = re.sub(r'\\(.)', r"\1", name[1:-1])
+        if name:
+            folders.append((flags, delim, name))
+    return folders
+
+
+def find_sent_folder(m: imaplib.IMAP4, settings: dict) -> str:
+    """返信の控えを保存する送信済みフォルダの (サーバ上の) 名前を返す.
+
+    1. 設定「送信済みフォルダ」に名前があればそれを使う
+    2. サーバが「送信済み」の目印 (\\Sent) を付けたフォルダ
+    3. よくある名前 (Sent / INBOX.Sent / 送信済みアイテム など)
+    見つからなければ例外。フォルダを勝手に作ることはしない (Webメールが
+    使っていない別のフォルダに溜まっていくのを避けるため)。
+    """
+    configured = str(settings.get("imap_sent_folder") or "").strip()
+    if configured:
+        # 英数字だけならサーバ上の名前そのまま、日本語などは IMAP の表記に直す
+        return configured if configured.isascii() else _mutf7_encode(configured)
+    typ, data = m.list()
+    if typ != "OK":
+        raise RuntimeError("フォルダの一覧を取得できませんでした")
+    folders = [(flags, delim, name) for flags, delim, name in _parse_list(data)
+               if "\\noselect" not in flags and "\\nonexistent" not in flags]
+    for flags, _delim, name in folders:
+        if "\\sent" in flags:
+            return name
+    for want in SENT_FOLDER_NAMES:
+        for _flags, delim, name in folders:
+            leaf = _mutf7_decode(name)
+            if delim:
+                leaf = leaf.rsplit(delim, 1)[-1]
+            if leaf.strip().lower() == want:
+                return name
+    raise RuntimeError(
+        "送信済みフォルダが見つかりませんでした。設定の「送信済みフォルダ」に"
+        "Webメールで使っているフォルダ名を入れてください（例: Sent / INBOX.Sent）"
+    )
+
+
+def save_to_sent(settings: dict, raw: bytes) -> str:
+    """送ったメールを IMAP の送信済みフォルダへ既読で保存し、フォルダ名を返す.
+
+    SMTP で送っただけでは、Webメール等の「送信済み」に控えが残らないため。
+    失敗時は例外 (送信自体は済んでいるので、呼び出し側は送信成功として扱う)。
+    """
+    m = _imap_connect(settings)
+    try:
+        folder = find_sent_folder(m, settings)
+        typ, _data = m.append(_quote_mailbox(folder), r"(\Seen)",
+                              imaplib.Time2Internaldate(time.time()), raw)
+        if typ != "OK":
+            raise RuntimeError(
+                f"送信済みフォルダ（{_mutf7_decode(folder)}）に保存できませんでした")
+        return _mutf7_decode(folder)
+    finally:
+        try:
+            m.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def should_save_sent(settings: dict) -> bool:
+    """送信した返信を送信済みフォルダへ保存するか (IMAP 設定済み かつ 設定ON)."""
+    return bool(str(settings.get("imap_host") or "").strip()) and \
+        bool(int(settings.get("mail_save_sent", 1) or 0))
 
 
 def fetch_new_mail(conn, settings: dict) -> list[dict]:

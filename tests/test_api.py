@@ -2402,9 +2402,12 @@ def test_test_imap_endpoint(client, users, monkeypatch):
                        headers=auth(admin)).status_code == 400
     client.patch("/api/settings", headers=auth(admin),
                  json={"imap_host": "imap.example.com"})
-    monkeypatch.setattr(app_module.mail, "test_imap", lambda s: 42)
+    monkeypatch.setattr(app_module.mail, "test_imap", lambda s: {
+        "count": 42, "sent_folder": "INBOX.Sent", "sent_folder_error": ""})
     r = client.post("/api/settings/test-imap", headers=auth(admin))
-    assert r.status_code == 200 and r.json() == {"ok": True, "count": 42}
+    assert r.status_code == 200 and r.json() == {
+        "ok": True, "count": 42, "sent_folder": "INBOX.Sent",
+        "sent_folder_error": ""}
     # 接続失敗 → 502 / 一般ユーザー → 403
     def boom(s):
         raise RuntimeError("auth error")

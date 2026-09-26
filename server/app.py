@@ -334,7 +334,9 @@ class SettingsPatch(BaseModel):
     imap_user: str | None = None
     imap_pass: str | None = None
     imap_folder: str | None = None
+    imap_sent_folder: str | None = None
     imap_use_ssl: bool | None = None
+    mail_save_sent: bool | None = None
     mail_fetch_enabled: bool | None = None
     mail_auto_draft: bool | None = None
     mail_retention_days: int | None = None
@@ -790,6 +792,7 @@ def patch_settings(
         "mail_retention_days": (0, 3650),
         "mail_fetch_days": (1, 365),
         "notify_mail_high": (0, 1),
+        "mail_save_sent": (0, 1),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -882,10 +885,14 @@ def test_imap(_admin=Depends(require_admin), conn=Depends(get_conn)):
     if not str(s.get("imap_host", "")).strip():
         raise HTTPException(400, "IMAPが未設定です。受信サーバ等を保存してください")
     try:
-        count = mail.test_imap(s)
+        result = mail.test_imap(s)
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
         raise HTTPException(502, f"接続に失敗しました: {notify.safe_error(e, s)}")
-    return {"ok": True, "count": count}
+    return {"ok": True, "count": result["count"],
+            "sent_folder": result["sent_folder"],
+            "sent_folder_error": notify.safe_error(
+                RuntimeError(result["sent_folder_error"]), s)
+            if result["sent_folder_error"] else ""}
 
 
 # ---------- 新しい端末のメール確認 (ZATSUMU_LOGIN_VERIFY_EMAIL 設定時のみ) ----------
@@ -2162,7 +2169,7 @@ def mail_send(
         raise HTTPException(409, "このメールには返信済みです")
     conn.commit()
     try:
-        mail.send_reply(
+        raw = mail.send_reply(
             s, r["from_addr"], subject, text,
             in_reply_to=r["message_id"], references=r["references_hdr"],
         )
@@ -2175,6 +2182,21 @@ def mail_send(
         )
         conn.commit()
         raise HTTPException(502, f"送信に失敗しました: {notify.safe_error(e, s)}")
-    _audit(conn, admin, "mail_send",
-           detail=f"to={r['from_addr']} subject={subject}")
-    return {"sent": r["from_addr"], "subject": subject}
+    # 控えを送信済みフォルダへ保存する (Webメールの「送信済み」にも出るように)。
+    # 相手には届いているので、ここで失敗しても送信は成功として扱う
+    # (失敗扱いにすると画面から再送され、相手に二重に届いてしまう)
+    sent_folder, save_error = "", ""
+    if raw and mail.should_save_sent(s):
+        try:
+            sent_folder = mail.save_to_sent(s, raw)
+        except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+            save_error = notify.safe_error(e, s)
+    detail = f"to={r['from_addr']} subject={subject}"
+    if sent_folder:
+        detail += f" saved={sent_folder}"
+    elif save_error:
+        detail += " saved=failed"
+    _audit(conn, admin, "mail_send", detail=detail)
+    return {"sent": r["from_addr"], "subject": subject,
+            "saved_to_sent": bool(sent_folder), "sent_folder": sent_folder,
+            "sent_save_error": save_error}
