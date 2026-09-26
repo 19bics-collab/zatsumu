@@ -53,6 +53,13 @@ class FakeIMAP:
     def select(self, mailbox, readonly=False):
         return ("OK", [b"3"])
 
+    def status(self, mailbox, names):
+        from server import mail
+
+        # 一覧にあるフォルダだけ「ある」と答える
+        existing = {mail._quote_mailbox(n) for _f, _d, n in mail._parse_list(self.folders)}
+        return ("OK", [b"x"]) if mailbox in existing else ("NO", [b"no such mailbox"])
+
     def append(self, mailbox, flags, date_time, message):
         self.appended.append((mailbox, flags, date_time, message))
         return (self.append_result, [b"APPEND done"])
@@ -131,6 +138,28 @@ def test_find_sent_by_common_names(line, expected):
     assert mail.find_sent_folder(m, {}) == expected
 
 
+def test_find_sent_ignores_sent_inside_trash_or_archive():
+    """ゴミ箱・アーカイブの中の Sent より、最上位 (INBOX 直下) の送信済みを選ぶ."""
+    from server import mail
+
+    m = FakeIMAP([b'(\\HasNoChildren) "." "INBOX"',
+                  b'(\\HasNoChildren) "." "INBOX.Trash.Sent"',
+                  b'(\\HasNoChildren) "." "INBOX.&kAFP4W4IMH8-"'])     # INBOX.送信済み
+    assert mail.find_sent_folder(m, {}) == "INBOX.&kAFP4W4IMH8-"
+    m = FakeIMAP([b'(\\HasNoChildren) "/" "Archive/2023/Sent"',
+                  b'(\\HasNoChildren) "/" "Archive/Sent"',
+                  b'(\\HasNoChildren) "/" "Sent"'])
+    assert mail.find_sent_folder(m, {}) == "Sent"
+    # 候補の順位が高い名前を選ぶ (LIST の並び順に左右されない)
+    m = FakeIMAP([b'(\\HasNoChildren) "." "INBOX.&kAFP4W4IMH8-"',
+                  b'(\\HasNoChildren) "." "INBOX.Sent"'])
+    assert mail.find_sent_folder(m, {}) == "INBOX.Sent"
+    # 深い所にしか無ければ自動では選ばない (設定で指定してもらう)
+    m = FakeIMAP([b'(\\HasNoChildren) "." "INBOX.Trash.Sent"'])
+    with pytest.raises(RuntimeError):
+        mail.find_sent_folder(m, {})
+
+
 def test_find_sent_skips_noselect_and_reports_when_missing():
     from server import mail
 
@@ -139,6 +168,8 @@ def test_find_sent_skips_noselect_and_reports_when_missing():
     with pytest.raises(RuntimeError) as ei:
         mail.find_sent_folder(m, {})
     assert "送信済みフォルダ" in str(ei.value)
+    # 設定に入れる名前が分かるよう、サーバにあるフォルダを案内する
+    assert "INBOX" in str(ei.value) and "Sentinel" in str(ei.value)
 
 
 def test_find_sent_uses_configured_folder():
@@ -149,6 +180,13 @@ def test_find_sent_uses_configured_folder():
     assert mail.find_sent_folder(m, {"imap_sent_folder": " INBOX.Sent "}) == "INBOX.Sent"
     assert mail.find_sent_folder(m, {"imap_sent_folder": "送信済みアイテム"}) \
         == "&kAFP4W4IMH8wojCkMMYw4A-"
+    # すでにサーバの表記で入れた名前はそのまま
+    assert mail.find_sent_folder(
+        m, {"imap_sent_folder": "INBOX.&kAFP4W4IMH8wojCkMMYw4A-"}) \
+        == "INBOX.&kAFP4W4IMH8wojCkMMYw4A-"
+    # & を含む表示名はサーバの表記 (&-) に直す。改行は取り除く
+    assert mail.find_sent_folder(m, {"imap_sent_folder": "R&D Sent"}) == "R&-D Sent"
+    assert mail.find_sent_folder(m, {"imap_sent_folder": "Sent\r\nX"}) == "SentX"
 
 
 # ---------- 保存 (APPEND) ----------
@@ -185,6 +223,20 @@ def test_should_save_sent():
     assert mail.should_save_sent({"imap_host": "imap.e", "mail_save_sent": 1})
     assert not mail.should_save_sent({"imap_host": "imap.e", "mail_save_sent": 0})
     assert not mail.should_save_sent({"imap_host": " ", "mail_save_sent": 1})
+
+
+def test_imap_test_checks_configured_folder_exists(monkeypatch):
+    """設定で入れたフォルダ名が無ければ、接続テストの時点で知らせる."""
+    from server import mail
+
+    box = FakeIMAP([b'(\\HasNoChildren) "." "INBOX"',
+                    b'(\\HasNoChildren) "." "INBOX.Sent"'])
+    monkeypatch.setattr(mail, "_imap_connect", lambda s: box)
+    r = mail.test_imap({"imap_host": "imap.e", "imap_sent_folder": "Sent"})
+    assert r["sent_folder"] == ""
+    assert "Sent" in r["sent_folder_error"] and "INBOX.Sent" in r["sent_folder_error"]
+    r = mail.test_imap({"imap_host": "imap.e", "imap_sent_folder": "INBOX.Sent"})
+    assert r["sent_folder"] == "INBOX.Sent" and r["sent_folder_error"] == ""
 
 
 def test_imap_test_reports_sent_folder(monkeypatch):

@@ -349,7 +349,7 @@ def test_imap(settings: dict) -> dict:
         result = {"count": int(data[0] or 0), "sent_folder": "",
                   "sent_folder_error": ""}
         try:
-            result["sent_folder"] = _mutf7_decode(find_sent_folder(m, settings))
+            result["sent_folder"] = _mutf7_decode(check_sent_folder(m, settings))
         except Exception as e:  # noqa: BLE001  見つからない等は案内だけ出す
             result["sent_folder_error"] = str(e)
         return result
@@ -458,19 +458,49 @@ def _parse_list(data) -> list[tuple[set, str, str]]:
     return folders
 
 
+def _folder_names_hint(folders) -> str:
+    """見つからないときの案内用に、サーバにあるフォルダ名を並べる (多すぎる分は省く)."""
+    names = [_mutf7_decode(name) for flags, _d, name in folders
+             if "\\noselect" not in flags and "\\nonexistent" not in flags]
+    shown = "、".join(names[:15]) + ("…" if len(names) > 15 else "")
+    return f"（サーバにあるフォルダ: {shown}）" if shown else ""
+
+
+def _is_top_level(name: str, delim: str) -> bool:
+    """最上位か INBOX の直下のフォルダか (ゴミ箱やアーカイブの中の Sent を除くため)."""
+    if not delim:
+        return True
+    parts = name.split(delim)
+    if len(parts) > 1 and parts[0].upper() == "INBOX":
+        parts = parts[1:]
+    return len(parts) == 1
+
+
+def configured_sent_folder(settings: dict) -> str:
+    """設定「送信済みフォルダ」をサーバ上の名前 (modified UTF-7) にして返す (未設定なら "")."""
+    configured = re.sub(r"[\r\n\x00]+", "", str(settings.get("imap_sent_folder") or "")).strip()
+    if not configured:
+        return ""
+    # すでにサーバ上の表記 (英数字や &…- 形式) ならそのまま、日本語や & を含む
+    # 表示名ならサーバの表記に直す
+    if _mutf7_encode(_mutf7_decode(configured)) == configured:
+        return configured
+    return _mutf7_encode(configured)
+
+
 def find_sent_folder(m: imaplib.IMAP4, settings: dict) -> str:
     """返信の控えを保存する送信済みフォルダの (サーバ上の) 名前を返す.
 
     1. 設定「送信済みフォルダ」に名前があればそれを使う
     2. サーバが「送信済み」の目印 (\\Sent) を付けたフォルダ
-    3. よくある名前 (Sent / INBOX.Sent / 送信済みアイテム など)
+    3. よくある名前 (Sent / INBOX.Sent / 送信済みアイテム など)。ただし最上位か
+       INBOX 直下のフォルダだけ (ゴミ箱・アーカイブの中の Sent を選ばないため)
     見つからなければ例外。フォルダを勝手に作ることはしない (Webメールが
     使っていない別のフォルダに溜まっていくのを避けるため)。
     """
-    configured = str(settings.get("imap_sent_folder") or "").strip()
+    configured = configured_sent_folder(settings)
     if configured:
-        # 英数字だけならサーバ上の名前そのまま、日本語などは IMAP の表記に直す
-        return configured if configured.isascii() else _mutf7_encode(configured)
+        return configured
     typ, data = m.list()
     if typ != "OK":
         raise RuntimeError("フォルダの一覧を取得できませんでした")
@@ -479,17 +509,45 @@ def find_sent_folder(m: imaplib.IMAP4, settings: dict) -> str:
     for flags, _delim, name in folders:
         if "\\sent" in flags:
             return name
-    for want in SENT_FOLDER_NAMES:
-        for _flags, delim, name in folders:
-            leaf = _mutf7_decode(name)
-            if delim:
-                leaf = leaf.rsplit(delim, 1)[-1]
-            if leaf.strip().lower() == want:
-                return name
+    best = None
+    for _flags, delim, name in folders:
+        if not _is_top_level(name, delim):
+            continue
+        leaf = _mutf7_decode(name)
+        if delim:
+            leaf = leaf.rsplit(delim, 1)[-1]
+        leaf = leaf.strip().lower()
+        if leaf in SENT_FOLDER_NAMES:
+            rank = SENT_FOLDER_NAMES.index(leaf)
+            if best is None or rank < best[0]:
+                best = (rank, name)
+    if best:
+        return best[1]
     raise RuntimeError(
         "送信済みフォルダが見つかりませんでした。設定の「送信済みフォルダ」に"
         "Webメールで使っているフォルダ名を入れてください（例: Sent / INBOX.Sent）"
+        + _folder_names_hint(folders)
     )
+
+
+def check_sent_folder(m: imaplib.IMAP4, settings: dict) -> str:
+    """送信済みフォルダを決め、実在を確かめてから名前を返す (接続テスト用).
+
+    設定で名前を入れた場合はサーバに問い合わせずに使うため、打ち間違いや
+    INBOX. の付け忘れを接続テストの時点で知らせる。
+    """
+    folder = find_sent_folder(m, settings)
+    if configured_sent_folder(settings):
+        typ, _data = m.status(_quote_mailbox(folder), "(MESSAGES)")
+        if typ != "OK":
+            typ, data = m.list()
+            folders = _parse_list(data) if typ == "OK" else []
+            raise RuntimeError(
+                f"設定の送信済みフォルダ（{_mutf7_decode(folder)}）がサーバにありません。"
+                "Webメールで使っているフォルダ名を入れてください"
+                + _folder_names_hint(folders)
+            )
+    return folder
 
 
 def save_to_sent(settings: dict, raw: bytes) -> str:
