@@ -192,7 +192,7 @@ def test_fetch_now_waits_for_running_fetch(client, imap_on, lock_held, monkeypat
 
     threading.Thread(target=finish_other).start()
     r = client.post("/api/mail/fetch", headers=auth(imap_on))
-    assert r.status_code == 200 and r.json() == {"fetched": 1}
+    assert r.status_code == 200 and r.json() == {"fetched": 1, "errors": []}
     assert called and called[0] >= released["at"]   # ほかの受信が終わってから受信した
 
 
@@ -269,7 +269,8 @@ def test_status_counts_and_newest(client, users, tmp_path):
     worker, admin = users
     s = status(client, admin)
     assert s == {"unhandled": 0, "newest_id": None, "last_fetch_at": None,
-                 "last_error": "", "last_error_at": None, "fetching": False,
+                 "last_error": "", "last_error_at": None, "last_error_account": "",
+                 "error_count": 0, "fetching": False, "accounts": [], "deleted_mail_count": 0,
                  "imap_set": False, "auto_fetch": False, "interval_min": 5}
     _add_mail(tmp_path, n=1)
     _add_mail(tmp_path, n=2, status="replied")

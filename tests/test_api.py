@@ -197,14 +197,14 @@ def test_mail_page_is_separate_from_admin(client):
     assert "ログイン" in r.text
     # メールUIの中核 (一覧・返信モーダル・IMAP/AI設定) が揃っていること
     for marker in ('id="mail-table"', 'id="mail-modal"', 'id="m-draft"',
-                   'id="set-imap-host"', 'id="set-anthropic-key"',
+                   'id="acct-imap-host"', 'id="set-anthropic-key"',
                    'id="set-smtp-host"'):
         assert marker in r.text, marker
 
     admin_page = client.get("/admin").text
     # 勤怠側からはメールUIが消えている (タブ・一覧・モーダル・受信/AI設定)
     for gone in ('id="nav-mail"', 'id="mail-view"', 'id="mail-modal"',
-                 'id="mail-table"', 'id="set-imap-host"',
+                 'id="mail-table"', 'id="acct-imap-host"',
                  'id="set-anthropic-key"', "refreshMailBadge"):
         assert gone not in admin_page, gone
     # 送信用の SMTP 設定は勤怠側の通知にも使うので残す
@@ -2192,8 +2192,8 @@ def test_mail_send_flow(client, users, tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(
         app_module.mail, "send_reply",
-        lambda s, to, subject, body, in_reply_to="", references="", cc=None, bcc=None:
-            sent.append((to, subject, body, in_reply_to, references)))
+        lambda s, to, subject, body, in_reply_to="", references="", cc=None, bcc=None,
+        sender=None: sent.append((to, subject, body, in_reply_to, references)))
     # 本文が空なら 400
     assert client.post(f"/api/mail/{mid}/send", headers=auth(admin),
                        json={"body": "  "}).status_code == 400
@@ -2260,7 +2260,7 @@ def test_mail_fetch_endpoint(client, users, monkeypatch):
     monkeypatch.setattr(app_module.mail, "fetch_new_mail",
                         lambda conn, s, **kw: [{"priority": 2}, {"priority": 1}])
     r = client.post("/api/mail/fetch", headers=auth(admin))
-    assert r.status_code == 200 and r.json() == {"fetched": 2}
+    assert r.status_code == 200 and r.json() == {"fetched": 2, "errors": []}
     # 受信エラーは 502 で原因を返す
     def boom(conn, s, **kw):
         raise RuntimeError("login failed")

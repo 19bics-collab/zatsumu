@@ -201,6 +201,14 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   添付ファイルは Notion にアップロードして並べる。登録したら「Notionで開く」になり二重には登録しない。
   設定は画面の「Notion（案件DB）」。手順は [DEPLOY.md](DEPLOY.md) の「問い合わせを Notion の案件DBに
   登録できるようにする」）。
+  **複数のメールアドレス**（例: kurosu@… と info@…）をまとめて1つの受信箱で受信できます
+  （設定画面の「受信するメールアドレス」で追加・変更・止める・削除。アドレスごとに「接続テスト」。
+  2つ以上あると受信箱の件名の前に「宛先: 黒須」のように届いたアドレスが出て、「アドレス」で絞り込める。
+  返信は届いたアドレスを差出人にして送り、控えもそのアドレスの送信済みフォルダに残す。
+  送信のログインはアドレスごとに入れなければ共通の SMTP 設定。1つのアドレスの受信に失敗しても
+  ほかのアドレスは受信し、受信箱の注意書きにどのアドレスかを出す。アドレスを削除しても届いたメールは
+  残り「削除したアドレス」と出る。それまでの受信サーバの設定は、更新後の最初の起動で1つ目の
+  アドレスになり、続きから受信する）。
   勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
   **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
   メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
@@ -268,11 +276,14 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
-| GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority/category/assignee で絞り込み。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
+| GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
 | GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧・この相手とのやり取り `thread`（新しい順に30件まで。送った返信付き）と全部の件数 `thread_total`。`?thread=false` でやり取りを省く） |
 | GET | `/api/mail/{id}/attachments/{添付id}` | admin | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
-| POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み（ほかの受信の途中で、少し待っても終わらなければ 409） |
-| GET | `/api/mail/status` | admin | 受信の様子（未対応の数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗）。メール画面が 1 分ごとに呼ぶ |
+| POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み（受信するアドレスを順に。一部のアドレスだけ失敗したら `errors` に理由。ほかの受信の途中で、少し待っても終わらなければ 409） |
+| GET | `/api/mail/status` | admin | 受信の様子（未対応の数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗とどのアドレスか・アドレスごとの様子 `accounts`）。メール画面が 1 分ごとに呼ぶ |
+| GET/POST | `/api/mail/accounts` | admin | 受信するメールアドレスの一覧・追加（パスワードは返さず `imap_pass_set` などだけ） |
+| PATCH/DELETE | `/api/mail/accounts/{id}` | admin | アドレスの変更・止める（`enabled`）・並べ替え（`move: up/down`）・削除（届いたメールは残す） |
+| POST | `/api/mail/accounts/{id}/test` | admin | そのアドレスの保存済みの受信サーバに接続テスト |
 | POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
 | POST | `/api/mail/{id}/events` | admin | このメールの日付から予定の候補を作る（`events`: 名前・日付・開始/終了・終日・場所・メモ。AI / ルール。DB には書かない。Google への登録は画面がする） |
 | POST | `/api/mail/{id}/notion` | admin | このメールを Notion のデータベースに1行で登録（本文・添付ファイル付き。登録済みなら 409、`{"again": true}` でもう1行作る） |
@@ -282,7 +293,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET/POST | `/api/mail/templates` | admin | 定型文の一覧・追加 |
 | PATCH/DELETE | `/api/mail/templates/{id}` | admin | 定型文の変更・並べ替え（`move: up/down`）・削除 |
 | GET | `/api/mail/{id}/templates` | admin | このメール用に差し込みを置き換えた定型文 |
-| POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認 |
+| POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認（受信するアドレスがあれば先頭のアドレスで） |
 | POST | `/api/settings/test-email` | admin | 指定アドレスへメールのテスト送信 |
 | POST | `/api/settings/test-notion` | admin | Notion のデータベースを読めるか確かめ、列の一覧と何を入れるかを返す（Notion には書き込まない） |
 | GET | `/api/mail/report/preview` | admin | 週ごとのまとめの見本（昨日までの7日間の分の件名・本文、期間、次に送る日時、いまの送り先。送ったことにはしない） |

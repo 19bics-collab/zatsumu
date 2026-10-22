@@ -72,6 +72,12 @@
          white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
          vertical-align: 1px; }
   .cat.none { background: #f3f4f6; color: #6b7280; }
+  /* 届いたアドレス (一覧のバッジ。受信するアドレスが2つ以上のときだけ出す) */
+  .acct { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+          border-radius: 99px; border: 1px solid #99f6e4; background: #f0fdfa; color: #115e59;
+          margin-right: .35rem; white-space: nowrap; max-width: 100%; overflow: hidden;
+          text-overflow: ellipsis; vertical-align: 1px; }
+  .acct.gone { border-color: #e5e7eb; background: #f9fafb; color: #6b7280; }
   /* 同じ相手から届いたほかのメールの数 (一覧の差出人の横) */
   .thr-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
                border-radius: 99px; background: #ede9fe; color: #5b21b6; margin-left: .35rem;
@@ -125,6 +131,22 @@
   .tpl-ph { display: flex; gap: .3rem; align-items: center; flex-wrap: wrap;
             margin: .3rem 0; font-size: .85rem; color: #4b5563; }
   .tpl-ph button { padding: .3rem .6rem; font-size: .82rem; }
+  /* 受信するメールアドレス (設定)。1行=1アドレス。ボタンは狭い画面では次の行へ */
+  .acct-row { display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+              justify-content: space-between; border-bottom: 1px solid #e5e7eb;
+              padding: .55rem 0; font-size: .9rem; }
+  .acct-row > div:first-child { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+  .acct-row small { color: #6b7280; }
+  .acct-row small.acct-err { color: var(--hi); }
+  .acct-row.off b { color: #9ca3af; }
+  .acct-btns { display: flex; flex-wrap: wrap; gap: .3rem; margin-left: auto; }
+  .acct-btns button { padding: .4rem .65rem; }
+  .acct-move { display: flex; gap: .3rem; }   /* ↑↓ は離さずに折り返す */
+  .acct-test { flex-basis: 100%; font-size: .85rem; overflow-wrap: anywhere; }
+  .acct-test:empty { display: none; }
+  .acct-more { margin: .3rem 0; font-size: .95rem; }
+  .acct-more summary { cursor: pointer; color: #374151; padding: .35rem 0; }
+  #acct-msg { font-size: .85rem; overflow-wrap: anywhere; }
   /* 返信モーダル */
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
            align-items: center; justify-content: center; z-index: 10; }
@@ -164,8 +186,9 @@
   .rcpt { margin-top: .8rem; display: flex; flex-direction: column; gap: .35rem;
           font-size: .88rem; color: #374151; }
   .rcpt-row { display: flex; align-items: center; gap: .5rem; }
-  .rcpt-row > span:first-child { flex: 0 0 2.6rem; color: #6b7280; }
-  #m-to { min-width: 0; overflow-wrap: anywhere; }
+  .rcpt-row > span:first-child { flex: 0 0 2.9rem; color: #6b7280; }
+  #m-to, #m-from { min-width: 0; overflow-wrap: anywhere; }
+  #m-from-row[hidden] { display: none; }
   .rcpt-row input { flex: 1; min-width: 0; padding: .4rem; border: 1px solid #ccc;
                     border-radius: 6px; font-size: .9rem; }
   .rcpt-row input[readonly] { background: #f9fafb; color: #6b7280; }
@@ -343,12 +366,13 @@
     </select>
     <select id="filter-cat" class="flt" aria-label="種類"><option value="">種類：すべて</option></select>
     <select id="filter-asg" class="flt" aria-label="担当"><option value="">担当：すべて</option></select>
+    <select id="filter-acct" class="flt" aria-label="アドレス" hidden><option value="">アドレス：すべて</option></select>
     <button id="fetch-now" class="ghost" style="margin-left:.6rem">今すぐ受信</button>
     <span id="fetch-info"></span>
     <span id="fetch-msg" style="margin-left:.6rem;font-size:.85rem"></span>
   </h2>
   <p id="fetch-error" class="error" hidden><small>⚠ <span id="fetch-error-text"></span>
-  設定は「設定」の「メール受信（IMAP）」で確かめられます。</small></p>
+  設定は「設定」の「受信するメールアドレス」で確かめられます。</small></p>
   <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
@@ -356,7 +380,9 @@
   問い合わせの種類（清掃のご依頼など）と担当は自動で入り、返信画面で変えられます。
   同じ相手からほかにもメールが届いているときは差出人の横に「やり取り」の件数が出て、
   返信画面の「この相手とのやり取り」で前のメールと送った返信を見られます。
-  受信サーバ（IMAP）とAIの設定は「設定」画面で行ってください。</small></p>
+  受信するメールアドレスが2つ以上あるときは、件名の前にどのアドレスに届いたか（宛先）が出て、
+  上の「アドレス」で絞り込めます（返信は、届いたアドレスから送ります）。
+  受信するメールアドレスとAIの設定は「設定」画面で行ってください。</small></p>
   <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
   理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
   <div class="table-wrap"><table id="mail-table">
@@ -375,8 +401,63 @@
       なくした端末は「取り消し」を押してください（その端末では次の操作から
       確認コードが必要になります）。</small></p>
     </div>
+    <div class="set-card" id="acct-card">
+      <h3>受信するメールアドレス</h3>
+      <p class="set-help"><small>ここに入れたメールアドレス（例: kurosu@… と info@…）に届いたメールを、
+      まとめて1つの「受信箱」に出します。返信は、メールが届いたアドレスを差出人にして送ります。</small></p>
+      <div id="acct-list"></div>
+      <p id="acct-form-title" style="margin:.9rem 0 .3rem;font-size:.9rem;font-weight:600">アドレスを追加</p>
+      <label class="set-row"><span>メールアドレス（返信の差出人）</span>
+        <input type="text" id="acct-from" inputmode="email" autocomplete="off" autocapitalize="off"
+          spellcheck="false" placeholder="kurosu@example.com"></label>
+      <label class="set-row"><span>名前（受信箱に出す）</span>
+        <input type="text" id="acct-label" maxlength="20" autocomplete="off" placeholder="例：黒須"></label>
+      <label class="set-row"><span>IMAPサーバ</span>
+        <input type="text" id="acct-imap-host" autocomplete="off" autocapitalize="off" spellcheck="false"
+          placeholder="imap.example.com"></label>
+      <label class="set-row"><span>IMAPポート</span>
+        <input type="text" id="acct-imap-port" inputmode="numeric" placeholder="993"></label>
+      <label class="set-row"><span>SSLで接続</span>
+        <input type="checkbox" id="acct-imap-ssl"></label>
+      <label class="set-row"><span>IMAPユーザー</span>
+        <input type="text" id="acct-imap-user" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <label class="set-row"><span>IMAPパスワード</span>
+        <input type="password" id="acct-imap-pass" autocomplete="new-password" placeholder="(未設定)"></label>
+      <details class="acct-more" id="acct-more">
+        <summary>くわしい設定（ふつうはそのままで大丈夫です）</summary>
+        <label class="set-row"><span>フォルダ</span>
+          <input type="text" id="acct-imap-folder" autocomplete="off" placeholder="INBOX"></label>
+        <label class="set-row"><span>送った返信を送信済みフォルダに残す</span>
+          <input type="checkbox" id="acct-save-sent"></label>
+        <label class="set-row"><span>送信済みフォルダ（空なら自動）</span>
+          <input type="text" id="acct-sent-folder" autocomplete="off" placeholder="自動（例: Sent / INBOX.Sent）"></label>
+        <label class="set-row"><span>送信用のユーザー（空なら共通）</span>
+          <input type="text" id="acct-smtp-user" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <label class="set-row"><span>送信用のパスワード</span>
+          <input type="password" id="acct-smtp-pass" autocomplete="new-password" placeholder="(未設定)"></label>
+        <p class="set-help"><small>送信用のユーザーとパスワードは、ふだんは空のままで大丈夫です
+        （下の「返信の送信（SMTP）」の共通の設定で送ります）。返信を送ったときに
+        「差出人のアドレスを断られました」と出るアドレスだけ、そのアドレスで送信サーバに
+        ログインするユーザー（ふつうはメールアドレス）とパスワードを入れてください。</small></p>
+      </details>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.5rem">
+        <button id="acct-save">アドレスを追加</button>
+        <button id="acct-cancel" class="ghost" hidden>やめる</button>
+        <span id="acct-msg"></span>
+      </div>
+      <p><small>IMAPサーバ・ユーザー・パスワードは、メール業者（レンタルサーバ）の案内に書いてあります
+      （同じ会社のアドレスなら、サーバはふつう同じです）。名前は受信箱の「宛先」に出ます（空なら
+      アドレスの @ の前）。「株式会社◯◯ &lt;info@…&gt;」のように入れると、返信の差出人に名前も出ます。
+      受信箱のメールは変更しません（既読も付きません）。この画面から送った返信は、そのアドレスの
+      送信済みフォルダにも控えを残すので、Webメールの「送信済み」からも見られます。
+      「止める」と、そのアドレスは受信しません（届いたメールは残ります）。「削除」しても、
+      届いたメールは消えません（受信箱では「削除したアドレス」と出ます）。
+      パスワードは画面に出ません（変えるときだけ入れてください）。
+      このカードは、ボタンを押したときに保存されます（下の「保存」は要りません）。
+      追加・変更したら「接続テスト」で確かめてください。</small></p>
+    </div>
     <div class="set-card">
-      <h3>メール受信（IMAP）</h3>
+      <h3>メールの受信</h3>
       <label class="set-row"><span>自動受信する</span>
         <input type="checkbox" id="set-mail-fetch-enabled"></label>
       <label class="set-row"><span>自動受信の間隔（分）</span>
@@ -385,36 +466,15 @@
       （1〜60分。おすすめは5分）。短くすると早く届きますが、受信サーバへの接続が増えます。
       開いている受信箱の画面は、押さなくても1分ごとに自動で新しくなります
       （ブラウザのタブの名前に、未対応の数が出ます）。</small></p>
-      <label class="set-row"><span>IMAPサーバ</span>
-        <input type="text" id="set-imap-host" placeholder="imap.example.com"></label>
-      <label class="set-row"><span>IMAPポート</span>
-        <input type="text" id="set-imap-port" placeholder="993"></label>
-      <label class="set-row"><span>SSLで接続</span>
-        <input type="checkbox" id="set-imap-ssl"></label>
-      <label class="set-row"><span>IMAPユーザー</span>
-        <input type="text" id="set-imap-user"></label>
-      <label class="set-row"><span>IMAPパスワード</span>
-        <input type="password" id="set-imap-pass" placeholder="(変更時のみ入力)"></label>
-      <label class="set-row"><span>フォルダ</span>
-        <input type="text" id="set-imap-folder" placeholder="INBOX"></label>
-      <label class="set-row"><span>送った返信を送信済みフォルダに残す</span>
-        <input type="checkbox" id="set-mail-save-sent"></label>
-      <label class="set-row"><span>送信済みフォルダ（空なら自動）</span>
-        <input type="text" id="set-imap-sent-folder" placeholder="自動（例: Sent / INBOX.Sent）"></label>
       <label class="set-row"><span>初回に遡る日数</span>
         <input type="number" id="set-mail-fetch-days" min="1" max="365"></label>
       <label class="set-row"><span>メール保存日数（0=削除なし）</span>
         <input type="number" id="set-mail-retention" min="0" max="3650"></label>
       <label class="set-row"><span>優先度[高]の受信を通知</span>
         <input type="checkbox" id="set-notify-mail-high"></label>
-      <p><small>共有の受信箱（例: info@…）をIMAPで定期取得し、「受信箱」に優先度順で
-      表示します。受信箱のメールは変更しません（既読も付きません）。
-      添付ファイルもこのサーバに保存し、「メール保存日数」を過ぎるとメールと一緒に消えます。
-      この画面から送った返信は、同じメールボックスの送信済みフォルダにも控えを残すので、
-      Webメールの「送信済み」からも見られます。フォルダが見つからないときは
-      「IMAP接続テスト」の結果を見て、Webメールで使っているフォルダ名を入れてください。</small></p>
-      <button class="ghost" id="set-test-imap">IMAP接続テスト</button>
-      <span id="test-imap-msg" style="margin-left:.6rem;font-size:.85rem"></span>
+      <p><small>「受信するメールアドレス」のメールボックスを定期的に受信し、「受信箱」に優先度順で
+      表示します。初めて受信するアドレスは「初回に遡る日数」の分だけ前のメールから取り込みます。
+      添付ファイルもこのサーバに保存し、「メール保存日数」を過ぎるとメールと一緒に消えます。</small></p>
     </div>
     <div class="set-card" id="ai-card">
       <h3>AI返信（Claude）</h3>
@@ -468,8 +528,10 @@
         <input type="password" id="set-smtp-pass" placeholder="(変更時のみ入力)"></label>
       <label class="set-row"><span>差出人メール</span>
         <input type="text" id="set-mail-from"></label>
-      <p><small>返信の送信に使います。この設定は勤怠管理の通知メールと共通です
-      （どちらの画面で変更しても同じ設定が変わります）。</small></p>
+      <p><small>返信の送信と通知メールに使います。この設定は勤怠管理の通知メールと共通です
+      （どちらの画面で変更しても同じ設定が変わります）。返信の差出人は、メールが届いたアドレス
+      （「受信するメールアドレス」）です。ここの差出人メールは、通知メールと、一覧から削除した
+      アドレスに届いたメールへの返信に使います。</small></p>
       <div style="margin-top:.7rem;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
         <input type="email" id="set-test-email-to" placeholder="送信先メール（例 you@example.com）"
           style="flex:1;min-width:180px;padding:.4rem;border:1px solid #ccc;border-radius:6px">
@@ -684,6 +746,7 @@
       <span id="m-reason" style="font-size:.8rem;color:#6b7280"></span>
     </div>
     <div class="rcpt">
+      <div class="rcpt-row" id="m-from-row"><span>差出人</span><span id="m-from"></span></div>
       <div class="rcpt-row"><span>宛先</span><span id="m-to"></span></div>
       <label class="rcpt-all" id="m-cc-all-row" hidden>
         <input type="checkbox" id="m-cc-all">CCの人にも送る（全員に返信）<span id="m-cc-count" style="font-size:.8rem;color:#6b7280"></span></label>
@@ -833,8 +896,12 @@ async function checkStatus() {
   const r = await api("/api/mail/status");
   if (!r.ok) throw new Error("status " + r.status);
   const s = await r.json();
+  // 受信するアドレスを足した・消した・名前を変えたときも、受信箱 (宛先の表示) を取り直す
+  const acctSig = x => (x.accounts || []).map(a => `${a.id}:${a.label}`).join("\n") +
+    "|" + (x.deleted_mail_count || 0);
   const changed = !!mailStatus &&
-    (s.newest_id !== mailStatus.newest_id || s.unhandled !== mailStatus.unhandled);
+    (s.newest_id !== mailStatus.newest_id || s.unhandled !== mailStatus.unhandled ||
+     acctSig(s) !== acctSig(mailStatus));
   mailStatus = s;
   connLost = false;
   renderStatus();
@@ -873,25 +940,39 @@ function renderStatus() {
   $("inbox-badge").textContent = n;
   document.title = (n ? `(${n}) ` : "") + baseTitle;
   const info = [];
-  if (mailStatus && !s.imap_set) info.push("受信サーバ（IMAP）が未設定です");
-  else if (mailStatus) {
+  const accts = s.accounts || [];
+  if (mailStatus && !s.imap_set) {
+    info.push(accts.length ? "受信するメールアドレスを全部止めています" : "受信するメールアドレスが未設定です");
+  } else if (mailStatus) {
     info.push("最終受信: " + (s.last_fetch_at ? fmtTime(s.last_fetch_at) : "まだありません"));
     if (s.fetching) info.push("受信中…");
     else if (!s.auto_fetch) info.push("自動受信はオフです");
   }
   if (connLost) info.push("サーバとつながっていません（つながると自動で新しくなります）");
   $("fetch-info").textContent = info.join("・");
+  // 失敗しているアドレスが複数あるときは、一番長く受信できていないアドレスの理由を出す
   const err = s.imap_set && s.last_error;
   $("fetch-error-text").textContent = err
-    ? `${s.last_error_at ? fmtTime(s.last_error_at) + " の" : ""}受信に失敗しました: ` +
-      s.last_error.replace(/[。.]?$/, "。") : "";
+    ? `${s.last_error_at ? fmtTime(s.last_error_at) + " の" : ""}受信に失敗しました` +
+      (accts.length > 1 && s.last_error_account ? `（${s.last_error_account}）` : "") + ": " +
+      s.last_error.replace(/[。.]?$/, "。") +
+      (s.error_count > 1 ? `ほかに${s.error_count - 1}つのアドレスでも受信できていません。` : "")
+    : "";
   $("fetch-error").hidden = !err;
+  renderAccountFilter();
 }
 
 /* ---------- 受信箱 ---------- */
 // 種類のバッジ。種類が空 (この機能より前に届いたメール) は「未分類」。種類の名前は esc() を通す
 const catBadge = c => c ? `<span class="cat">${esc(c)}</span>` : '<span class="cat none">未分類</span>';
 // 同じ相手 (同じアドレス) から届いたほかのメールの数。返信画面の「この相手とのやり取り」で見られる
+// 届いたアドレス (受信するアドレスが2つ以上のときだけ出す)。名前は esc() を通す
+const acctList = () => (mailStatus && mailStatus.accounts) || [];
+const showAccounts = () => acctList().length >= 2 ||
+  (acctList().length >= 1 && ((mailStatus && mailStatus.deleted_mail_count) || 0) > 0);
+const acctBadge = m => !showAccounts() ? "" : m.account_id
+  ? `<span class="acct" title="このアドレスに届いたメールです（返信もこのアドレスから送ります）">宛先: ${esc(m.account_label)}</span>`
+  : '<span class="acct gone" title="一覧から削除したアドレスに届いたメールです">宛先: 削除したアドレス</span>';
 const threadBadge = m => m.thread_count > 0
   ? ` <span class="thr-badge" title="この相手から届いたほかのメール（返信画面で見られます）">やり取り ${Number(m.thread_count)}件</span>`
   : "";
@@ -915,7 +996,8 @@ async function showInbox(opts = {}) {
   }
   // 絞り込み (状態・種類・担当)。値は URLSearchParams で URL に入れる
   const q = new URLSearchParams();
-  for (const [key, id] of [["status", "filter"], ["category", "filter-cat"], ["assignee", "filter-asg"]]) {
+  for (const [key, id] of [["status", "filter"], ["category", "filter-cat"], ["assignee", "filter-asg"],
+                           ["account", "filter-acct"]]) {
     if ($(id).value) q.set(key, $(id).value);
   }
   const path = "/api/mail" + (q.toString() ? "?" + q : "");
@@ -985,14 +1067,14 @@ function renderInbox(list, keepPlace) {
     seenId = newest || Math.max(0, ...list.map(m => Number(m.id)));
     saveSeen(seenId, reset);
   }
-  const filtered = $("filter-cat").value || $("filter-asg").value;
+  const filtered = $("filter-cat").value || $("filter-asg").value || $("filter-acct").value;
   tbody.innerHTML = list.map(m => {
     const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
     return `
     <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
       <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong>${threadBadge(m)}</td>
-      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
+      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
       <td data-label="状態" class="st-${m.status}">${ST[m.status] || m.status}</td>
       <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
@@ -1000,8 +1082,8 @@ function renderInbox(list, keepPlace) {
     </tr>`;
   }).join("") ||
     (filtered
-      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の「種類」「担当」を「すべて」に戻すと全部見られます）</small></td></tr>`
-      : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」または設定画面のIMAP設定を確認してください）</small></td></tr>`);
+      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の「種類」「担当」「アドレス」を「すべて」に戻すと全部見られます）</small></td></tr>`
+      : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
     tr.onclick = () => openMail(+tr.dataset.id));
   wrap.scrollLeft = left;
@@ -1012,6 +1094,22 @@ function renderInbox(list, keepPlace) {
 $("filter").onchange = () => showInbox();
 $("filter-cat").onchange = () => showInbox();
 $("filter-asg").onchange = () => showInbox();
+$("filter-acct").onchange = () => showInbox();
+
+// 「アドレス」の絞り込み。受信するアドレスが2つ以上 (か、削除したアドレスのメールがある) ときだけ出す。
+// 選んでいたアドレスを削除したら「すべて」に戻す (受信箱は、変わったと分かった後に取り直す)
+function renderAccountFilter() {
+  const sel = $("filter-acct");
+  const opts = [["", "アドレス：すべて"], ...acctList().map(a => [String(a.id), a.label])];
+  if (mailStatus && mailStatus.deleted_mail_count) opts.push(["none", "削除したアドレス"]);
+  // 1分ごとに呼ばれるので、選択肢が変わったときだけ作り直す (開いている選択欄を閉じないように)
+  const sig = JSON.stringify(opts);
+  if (sel.dataset.sig !== sig) {
+    setOptions(sel, opts, sel.value);
+    sel.dataset.sig = sig;
+  }
+  sel.hidden = !showAccounts() && !sel.value;
+}
 
 /* 種類・担当の選択肢。名前 (設定や登録した人の名前) は textContent で入れる */
 let assignees = [];   // 担当に選べる人 [{id, name}]
@@ -1075,9 +1173,12 @@ $("fetch-now").onclick = async () => {
     const r = await api("/api/mail/fetch", { method: "POST" });
     const e = await r.json().catch(() => ({}));
     if (r.ok) {
-      msg.style.color = "#0a7d32";
-      msg.textContent = `新着 ${e.fetched} 件`;
-      setTimeout(() => msg.textContent = "", 4000);
+      // 一部のアドレスだけ受信できなかったときは、どのアドレスかも出す (理由は下の赤字)
+      const failed = (e.errors || []).map(x => x.label);
+      msg.style.color = failed.length ? "#b45309" : "#0a7d32";
+      msg.textContent = `新着 ${e.fetched} 件` +
+        (failed.length ? `（${failed.join("・")} は受信できませんでした）` : "");
+      setTimeout(() => msg.textContent = "", failed.length ? 10000 : 4000);
     } else if (r.status === 409) {
       // ほかの受信 (自動の受信・別の画面) の途中。終わると受信箱は自動で新しくなる
       msg.style.color = "#b45309";
@@ -1118,6 +1219,10 @@ async function openMail(id) {
   // 入れて、鍵の番号などを送ってしまわないように)。
   // 送信済みなら、実際に送った CC・BCC を出す。値は textContent / value で入れる
   $("m-to").textContent = `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}>`;
+  // 差出人は、このメールが届いたアドレス (削除したアドレスなら共通の差出人メール)
+  $("m-from").textContent = (m.reply_from || "（未設定）") +
+    (!m.account_id && showAccounts() ? "（届いたアドレスは削除したため、共通の差出人で送ります）" : "");
+  $("m-from-row").hidden = !m.reply_from && !showAccounts();
   $("m-cc").value = replied ? (m.reply_cc || []).join(", ") : "";
   $("m-bcc").value = replied ? (m.reply_bcc || []).join(", ") : "";
   $("m-cc-all").checked = replied && !!$("m-cc").value;
@@ -1278,7 +1383,9 @@ $("m-send").onclick = async () => {
   if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
   const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
   // 誰に届くかを送る前に見せる (全員に返信のつもりが無かった、などに気付けるように)
-  if (!confirm("この内容で返信を送信しますか？\n\n宛先: " + $("m-to").textContent +
+  if (!confirm("この内容で返信を送信しますか？\n\n" +
+      ($("m-from-row").hidden ? "" : "差出人: " + $("m-from").textContent + "\n") +
+      "宛先: " + $("m-to").textContent +
       (cc.length ? "\nCC: " + cc.join(", ") : "") +
       (bcc.length ? "\nBCC: " + bcc.join(", ") : "") +
       (cc.length || bcc.length
@@ -1988,6 +2095,7 @@ async function openSettings() {
   fillSettings(appSettings);
   loadDevices();
   loadTemplates();
+  loadAccounts();
   loadAssignees();   // 登録されている名前 (種類ごとの担当の案内) を取り直す
 }
 
@@ -1995,15 +2103,6 @@ function fillSettings(s) {
   loaded = s;
   $("set-mail-fetch-enabled").checked = !!s.mail_fetch_enabled;
   $("set-mail-fetch-interval").value = s.mail_fetch_interval_min;
-  $("set-imap-host").value = s.imap_host;
-  $("set-imap-port").value = s.imap_port;
-  $("set-imap-ssl").checked = !!s.imap_use_ssl;
-  $("set-imap-user").value = s.imap_user;
-  $("set-imap-pass").value = "";   // パスワードは表示しない(サーバも返さない)
-  $("set-imap-pass").placeholder = s.imap_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
-  $("set-imap-folder").value = s.imap_folder;
-  $("set-mail-save-sent").checked = !!s.mail_save_sent;
-  $("set-imap-sent-folder").value = s.imap_sent_folder || "";
   $("set-mail-fetch-days").value = s.mail_fetch_days;
   $("set-mail-retention").value = s.mail_retention_days;
   $("set-notify-mail-high").checked = !!s.notify_mail_high;
@@ -2033,7 +2132,6 @@ function fillSettings(s) {
   fillReportSettings(s);
   fillNotionSettings(s);
   $("set-msg").textContent = "";
-  $("test-imap-msg").textContent = "";
   $("test-ai-msg").textContent = "";
   $("test-email-msg").textContent = "";
   $("test-remind-msg").textContent = "";
@@ -2382,13 +2480,6 @@ $("set-save").onclick = async () => {
   const body = {
     mail_fetch_enabled: $("set-mail-fetch-enabled").checked,
     mail_fetch_interval_min: +$("set-mail-fetch-interval").value,
-    imap_host: $("set-imap-host").value,
-    imap_port: $("set-imap-port").value,
-    imap_use_ssl: $("set-imap-ssl").checked,
-    imap_user: $("set-imap-user").value,
-    imap_folder: $("set-imap-folder").value,
-    mail_save_sent: $("set-mail-save-sent").checked,
-    imap_sent_folder: $("set-imap-sent-folder").value,
     mail_fetch_days: +$("set-mail-fetch-days").value,
     mail_retention_days: +$("set-mail-retention").value,
     notify_mail_high: $("set-notify-mail-high").checked,
@@ -2432,7 +2523,6 @@ $("set-save").onclick = async () => {
     const v = $(id).value;
     if (v !== (loaded[key] ?? "")) body[key] = v;
   }
-  if ($("set-imap-pass").value) body.imap_pass = $("set-imap-pass").value;
   if ($("set-anthropic-key").value) body.anthropic_api_key = $("set-anthropic-key").value;
   if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
   if ($("set-slack").value.trim()) body.slack_webhook_url = $("set-slack").value.trim();
@@ -2442,8 +2532,11 @@ $("set-save").onclick = async () => {
     body: JSON.stringify(body),
   });
   fillSettings(appSettings);
-  $("set-msg").textContent = "保存しました ✓";
-  setTimeout(() => $("set-msg").textContent = "", 2500);
+  // 受信するメールアドレスの欄は、このボタンでは保存されない (カードのボタンで保存する)
+  $("set-msg").textContent = "保存しました ✓" + (acctDirty()
+    ? "（「受信するメールアドレス」の入力は、まだ保存されていません。そのカードの「" +
+      $("acct-save").textContent + "」を押してください）" : "");
+  setTimeout(() => $("set-msg").textContent = "", acctDirty() ? 10000 : 2500);
 };
 
 // 保存では空のキー欄は送らない (「変更時のみ入力」のため) ので、消すときはこのボタンで消す。
@@ -2463,21 +2556,6 @@ $("set-anthropic-key-clear").onclick = async () => {
   renderAiStatus(appSettings);         // 受信箱の注意書きも消える
   $("test-ai-msg").style.color = "#0a7d32";
   $("test-ai-msg").textContent = "APIキーを消しました ✓";
-};
-
-$("set-test-imap").onclick = async () => {
-  $("test-imap-msg").style.color = "#475569";
-  $("test-imap-msg").textContent = "接続中...";
-  try {
-    const r = await apiJson("/api/settings/test-imap", { method: "POST" });
-    $("test-imap-msg").style.color = "#0a7d32";
-    $("test-imap-msg").textContent = `接続できました ✓（フォルダ内 ${r.count} 通）` +
-      (r.sent_folder ? `／送信済みフォルダ: ${r.sent_folder}`
-        : `／送信済みフォルダ: 見つかりません（${r.sent_folder_error}）`);
-  } catch {
-    $("test-imap-msg").style.color = "#c62828";
-    $("test-imap-msg").textContent = "接続できませんでした（設定を保存後にお試しください）";
-  }
 };
 
 $("set-test-ai").onclick = async () => {
@@ -2532,6 +2610,199 @@ $("set-test-email").onclick = async () => {
     $("test-email-msg").textContent = "送信できませんでした（SMTP設定を保存後にお試しください）";
   }
 };
+
+/* ---------- 受信するメールアドレス (設定) ---------- */
+// 追加・変更・止める・削除・並べ替えは、ボタンを押した時点でサーバに保存する (下の「保存」とは別)。
+// パスワードはサーバが返さない (入っているかだけ)。名前・アドレス・失敗の理由は esc() を通す
+let accounts = [];          // 受信するメールアドレス [{id, label, address, ...}]
+let deletedMailCount = 0;   // 一覧から削除したアドレスに届いたメールの数
+let acctEditing = null;     // 編集中のアドレスの id (null = 新しく追加)
+let acctAutoUser = "";      // メールアドレスから自動で入れた IMAP ユーザー (人が変えたら上書きしない)
+
+async function loadAccounts() {
+  let d;
+  try { d = await apiJson("/api/mail/accounts"); } catch { return; }
+  accounts = d.accounts || [];
+  deletedMailCount = d.deleted_mail_count || 0;
+  renderAccountList();
+  if (!acctEditing && !acctDirty()) resetAcctForm();   // 入力中の内容は消さない
+}
+
+function renderAccountList() {
+  const last = accounts.length - 1;
+  $("acct-list").innerHTML = (accounts.length ? accounts.map((a, i) => {
+    const id = Number(a.id);
+    const st = !a.enabled ? "<small>止めています（受信しません）</small>"
+      : a.last_error
+        ? `<small class="acct-err">⚠ ${a.last_error_at ? esc(fmtTime(a.last_error_at)) + " の" : ""}受信に失敗しました: ${esc(a.last_error)}</small>`
+        : `<small>最終受信: ${a.last_fetch_at ? esc(fmtTime(a.last_fetch_at)) : "まだありません"}</small>`;
+    return `
+    <div class="acct-row${a.enabled ? "" : " off"}"><div>
+      <b>${esc(a.label)}</b> <small>${esc(a.address)}</small><br>${st}<br>
+      <small>受信箱のメール ${Number(a.mail_count) || 0}通${a.smtp_user ? "・送信用のユーザーで送ります" : ""}</small>
+    </div><div class="acct-btns">
+      <button class="ghost" data-acct="${id}" data-act="test">接続テスト</button>
+      <button class="ghost" data-acct="${id}" data-act="edit">編集</button>
+      <button class="ghost" data-acct="${id}" data-act="toggle">${a.enabled ? "止める" : "受信する"}</button>
+      <button class="ghost" data-acct="${id}" data-act="del">削除</button>
+      <span class="acct-move">
+        <button class="ghost" data-acct="${id}" data-act="up" aria-label="上へ"${i === 0 ? " disabled" : ""}>↑</button>
+        <button class="ghost" data-acct="${id}" data-act="down" aria-label="下へ"${i === last ? " disabled" : ""}>↓</button>
+      </span>
+    </div><div class="acct-test" id="acct-test-${id}"></div></div>`;
+  }).join("") : "<small>まだありません。下の欄から追加してください（追加するまで、メールは受信しません）</small>") +
+    (deletedMailCount ? `<p><small>削除したアドレスに届いたメール: ${Number(deletedMailCount)}通（受信箱に残っています）</small></p>` : "");
+}
+
+const ACCT_TEXT = { label: "acct-label", from_addr: "acct-from", imap_host: "acct-imap-host",
+                    imap_port: "acct-imap-port", imap_user: "acct-imap-user",
+                    imap_folder: "acct-imap-folder", imap_sent_folder: "acct-sent-folder",
+                    smtp_user: "acct-smtp-user" };
+function acctMsg(text, color) {
+  $("acct-msg").style.color = color || "#0a7d32";
+  $("acct-msg").textContent = text;
+}
+// 追加の欄に何か入れたか (下の「保存」を押しても、ここは保存されないことを知らせる用)
+const acctDirty = () => acctEditing !== null || !!($("acct-from").value.trim() ||
+  $("acct-imap-pass").value || $("acct-imap-user").value.trim() || $("acct-smtp-pass").value);
+
+function resetAcctForm() {
+  acctEditing = null;
+  // 同じ会社のアドレスなら、受信サーバは同じことが多いので、1つ目のアドレスのものを入れておく
+  const base = accounts[0];
+  for (const id of Object.values(ACCT_TEXT)) $(id).value = "";
+  $("acct-imap-host").value = base ? base.imap_host : "";
+  $("acct-imap-port").value = base ? base.imap_port : "993";
+  $("acct-imap-ssl").checked = base ? !!base.imap_ssl : true;
+  $("acct-save-sent").checked = true;
+  $("acct-imap-pass").value = $("acct-smtp-pass").value = "";
+  $("acct-imap-pass").placeholder = $("acct-smtp-pass").placeholder = "(未設定)";
+  $("acct-label").placeholder = "例：黒須";
+  $("acct-more").open = false;
+  acctAutoUser = "";
+  $("acct-form-title").textContent = "アドレスを追加";
+  $("acct-save").textContent = "アドレスを追加";
+  $("acct-cancel").hidden = true;
+}
+
+function editAccount(a) {
+  acctEditing = a.id;
+  for (const [key, id] of Object.entries(ACCT_TEXT)) $(id).value = a[key] || "";
+  $("acct-imap-ssl").checked = !!a.imap_ssl;
+  $("acct-save-sent").checked = !!a.save_sent;
+  $("acct-imap-pass").value = $("acct-smtp-pass").value = "";
+  $("acct-imap-pass").placeholder = a.imap_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("acct-smtp-pass").placeholder = a.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  // 「くわしい設定」を変えてあるアドレスは、最初から開いておく
+  $("acct-more").open = !!(a.smtp_user || a.imap_sent_folder || !a.save_sent ||
+                           (a.imap_folder && a.imap_folder !== "INBOX"));
+  acctAutoUser = "";
+  $("acct-form-title").textContent = `「${a.label}」を編集中`;
+  $("acct-save").textContent = "変更を保存";
+  $("acct-cancel").hidden = false;
+  acctMsg("");
+  $("acct-form-title").scrollIntoView({ block: "start", behavior: "smooth" });
+  $("acct-from").focus({ preventScroll: true });
+}
+
+// メールアドレスを入れたら、IMAP ユーザー (空か、前に自動で入れたもの) にも入れ、
+// 名前の例も @ の前にする (名前を空のまま追加すると、サーバが @ の前を名前にする)
+$("acct-from").addEventListener("input", () => {
+  const v = $("acct-from").value;
+  const addr = ((/<([^<>]*)>/.exec(v) || [])[1] || v).trim();
+  const user = $("acct-imap-user");
+  if (!user.value.trim() || user.value === acctAutoUser) {
+    user.value = addr;
+    acctAutoUser = addr;
+  }
+  $("acct-label").placeholder = "例：" + (addr.split("@")[0] || "黒須");
+});
+
+$("acct-save").onclick = async () => {
+  const body = {};
+  for (const [key, id] of Object.entries(ACCT_TEXT)) body[key] = $(id).value;
+  body.imap_ssl = $("acct-imap-ssl").checked;
+  body.save_sent = $("acct-save-sent").checked;
+  // パスワードは入れたときだけ送る (空は「変えない」)
+  if ($("acct-imap-pass").value) body.imap_pass = $("acct-imap-pass").value;
+  if ($("acct-smtp-pass").value) body.smtp_pass = $("acct-smtp-pass").value;
+  const editing = acctEditing, b = $("acct-save");
+  b.disabled = true;
+  acctMsg("保存しています...", "#475569");
+  try {
+    const r = await api(editing ? `/api/mail/accounts/${editing}` : "/api/mail/accounts", {
+      method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const e = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      acctMsg(e.detail || "保存できませんでした", "#c62828");
+    } else {
+      resetAcctForm();
+      acctMsg(editing ? `「${e.label}」の変更を保存しました ✓`
+        : `「${e.label}」を追加しました ✓ 次の自動受信から受信します（「接続テスト」で確かめられます）`);
+      await loadAccounts();
+      refreshStatus();
+    }
+  } catch (e) {
+    if (e.message !== "auth") acctMsg("通信に失敗しました。もう一度お試しください", "#c62828");
+  }
+  b.disabled = false;
+};
+$("acct-cancel").onclick = () => { resetAcctForm(); acctMsg(""); };
+
+$("acct-list").onclick = async e => {
+  const b = e.target.closest("button[data-acct]");
+  if (!b) return;
+  const a = accounts.find(x => x.id === +b.dataset.acct);
+  if (!a) return;
+  const act = b.dataset.act;
+  if (act === "edit") { editAccount(a); return; }
+  if (act === "test") {
+    const msg = $(`acct-test-${Number(a.id)}`);
+    b.disabled = true;
+    msg.style.color = "#475569";
+    msg.textContent = "接続中...（保存済みの設定で試します）";
+    try {
+      const r = await api(`/api/mail/accounts/${a.id}/test`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        msg.style.color = "#0a7d32";
+        msg.textContent = `接続できました ✓（フォルダ内 ${d.count} 通）` +
+          (d.sent_folder ? `／送信済みフォルダ: ${d.sent_folder}`
+            : `／送信済みフォルダ: 見つかりません（${d.sent_folder_error}）`);
+      } else {
+        msg.style.color = "#c62828";
+        msg.textContent = d.detail || "接続できませんでした";
+      }
+    } catch (err) {
+      if (err.message !== "auth") {
+        msg.style.color = "#c62828";
+        msg.textContent = "通信に失敗しました。もう一度お試しください";
+      }
+    }
+    b.disabled = false;
+    return;
+  }
+  if (act === "del" && !confirm(
+      `「${a.label}」（${a.address}）を、受信するメールアドレスの一覧から削除しますか？\n\n` +
+      "このアドレスは受信しなくなります。届いたメール" +
+      (a.mail_count ? ` ${a.mail_count}通` : "") + "は消えません" +
+      "（受信箱では「削除したアドレス」と出て、返信は共通の差出人で送ります）。\n" +
+      "受信を休むだけなら「止める」を押してください。")) return;
+  let req;
+  if (act === "del") req = { method: "DELETE" };
+  else {
+    const body = act === "toggle" ? { enabled: !a.enabled } : { move: act };
+    req = { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  }
+  try { await apiJson(`/api/mail/accounts/${a.id}`, req); } catch { return; }
+  if (act === "del" && acctEditing === a.id) resetAcctForm();
+  if (act === "del") acctMsg(`「${a.label}」を削除しました（届いたメールは受信箱に残っています）`);
+  await loadAccounts();
+  refreshStatus();   // 受信箱の「アドレス」の絞り込みと宛先の表示も、そろえる
+};
+resetAcctForm();     // 一覧を読み込めなくても、追加の欄は既定の値 (SSL・993番など) にしておく
 
 /* ---------- 定型文 (設定) ---------- */
 // 追加・変更・削除・並べ替えは、ボタンを押した時点でサーバに保存する (下の「保存」とは別)

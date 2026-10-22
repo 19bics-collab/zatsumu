@@ -171,9 +171,23 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
     # 種類ごとの担当の確認用 (運営代行のご相談は管理者が担当)
     db.set_setting(conn, "mail_category_assignees", "運営代行のご相談: 管理者")
 
+    # 受信するメールアドレスの確認用 (info@ と kurosu@ の2つ。受信箱に「宛先」と「アドレス」の
+    # 絞り込みが出る)。デモの受信サーバは無いので、自動受信は止めておく
+    # (「今すぐ受信」や「接続テスト」を押すと、受信できなかった理由が出る)
+    db.set_setting(conn, "mail_fetch_enabled", 0)
+    accounts = {}
+    for i, (label, addr) in enumerate((("info", "info@example.com"),
+                                       ("黒須", "kurosu@example.com"))):
+        accounts[addr] = conn.execute(
+            "INSERT INTO mail_accounts (label, imap_host, imap_user, imap_pass, from_addr,"
+            " sort_order, created_at, fetch_ok_at) VALUES (?, 'imap.example.com', ?,"
+            " 'demo-password', ?, ?, ?, ?)",
+            (label, addr, addr, i, tz.utc_iso(now_utc), tz.utc_iso(now_utc))).lastrowid
+    db.set_setting(conn, db.MAIL_ACCOUNTS_MIGRATED_KEY, "1")
+
     def add_mail(mins_ago, from_name, from_addr, subject, body, prio, reason,
                  draft="", status="unhandled", cc="", category="", assignee=None,
-                 in_reply_to="", reply=None):
+                 in_reply_to="", reply=None, to="info@example.com"):
         # reply: こちらが送った返信 (本文, 何分前に送ったか, 送った人, CC)。
         # 返信画面の「この相手とのやり取り」の確認用
         received = (now_utc - timedelta(minutes=mins_ago)).isoformat()
@@ -187,11 +201,11 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
             " priority_reason, priority_source, status, draft_reply,"
             " draft_source, draft_generated_at, category, assignee_user_id,"
             " references_hdr, reply_subject, reply_body, reply_cc, replied_at,"
-            " replied_by, reply_message_id, archived_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " replied_by, reply_message_id, archived_at, account_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             # 取り込んだ時刻は届いた時刻と同じにする (週ごとのまとめ・お知らせの待ち時間の確認用)
             (f"<demo-{mins_ago}@example.com>", from_addr, from_name,
-             "info@example.com", cc, subject, body, received,
+             to, cc, subject, body, received,
              received, prio, reason, "rule", status, draft,
              "template" if draft else "",
              now_utc.isoformat() if draft else None, category, assignee,
@@ -199,7 +213,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              reply_cc,
              (now_utc - timedelta(minutes=reply_mins)).isoformat() if reply else None,
              replied_by, f"<demo-reply-{mins_ago}@example.com>" if reply else "",
-             archived),
+             archived, accounts[to]),
         ).lastrowid
         mail.save_refs(conn, mail_id, in_reply_to, in_reply_to)
         return mail_id
@@ -262,7 +276,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              "いつもお世話になっております。\n下記の日程で清掃をお願いできますでしょうか。\n\n"
              f"日時：{md}\n時間：１０：００～１３：００\n物件名：ビックス渋谷 201号室\n"
              "住所：東京都渋谷区神南1-2-3\n\nよろしくお願いいたします。",
-             2, "通常", category="清掃のご依頼")
+             2, "通常", category="清掃のご依頼", to="kurosu@example.com")
     add_mail(240, "業界ニュース配信", "no-reply@newsletter.example.com",
              "【メルマガ】今週の業界トピックス",
              "今週の業界ニュースをお届けします。配信停止はこちら。",
@@ -270,7 +284,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
     add_mail(1500, "高橋", "takahashi@example.com",
              "先日の打ち合わせのお礼",
              "先日はお時間をいただきありがとうございました。",
-             2, "通常", status="replied", category="その他")
+             2, "通常", status="replied", category="その他", to="kurosu@example.com")
 
     conn.commit()
     return True

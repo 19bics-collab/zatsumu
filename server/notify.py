@@ -25,15 +25,18 @@ class InsecureConnectionError(RuntimeError):
 SECRET_SETTING_KEYS = ("smtp_pass", "imap_pass", "anthropic_api_key", "notion_token")
 
 
-def safe_error(e: BaseException, settings: dict) -> str:
+def safe_error(e: BaseException, settings: dict, extra_secrets=()) -> str:
     """例外の文面を返す。設定の秘密値がもし含まれていたら *** に置き換える.
 
     接続テストなどの失敗理由は管理者に見せたいが、ライブラリの例外文に
     サーバ応答などと一緒に秘密値が混ざる可能性をゼロにはできないため。
+    extra_secrets には設定の外の秘密値 (受信するアドレスごとのパスワードなど) を渡す。
+    長いものから置き換える (短い秘密値が長い秘密値の一部のときも、長い方を残さない)。
     """
     text = str(e)
-    for key in SECRET_SETTING_KEYS:
-        value = str(settings.get(key) or "")
+    values = {str(settings.get(key) or "") for key in SECRET_SETTING_KEYS}
+    values.update(str(v or "") for v in extra_secrets)
+    for value in sorted(values, key=len, reverse=True):
         if value:
             text = text.replace(value, "***")
     return text

@@ -5,6 +5,7 @@ import sqlite3
 import secrets
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from email.utils import parseaddr
 from pathlib import Path
 
 DB_PATH = (
@@ -124,7 +125,39 @@ CREATE TABLE IF NOT EXISTS mails (
     notion_page_id TEXT NOT NULL DEFAULT '',
     notion_page_url TEXT NOT NULL DEFAULT '',
     notion_registered_at TEXT,
-    notion_registered_by TEXT NOT NULL DEFAULT ''
+    notion_registered_by TEXT NOT NULL DEFAULT '',
+    -- 届いたアドレス (mail_accounts)。NULL=そのアドレスを一覧から削除した
+    -- (メールは残す。画面では「削除したアドレス」)
+    account_id INTEGER REFERENCES mail_accounts(id) ON DELETE SET NULL
+);
+-- 受信するメールアドレス (kurosu@・info@ など。server/mail.py)。1つずつ IMAP で受信して
+-- 1つの受信箱にまとめ、返信は届いたアドレスを差出人にして送る。
+-- パスワード (imap_pass・smtp_pass) は画面・API には出さない (入っているかだけ返す)
+CREATE TABLE IF NOT EXISTS mail_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL DEFAULT '',            -- 受信箱に出す名前 (例: 黒須・info)
+    imap_host TEXT NOT NULL DEFAULT '',
+    imap_port TEXT NOT NULL DEFAULT '993',
+    imap_ssl INTEGER NOT NULL DEFAULT 1,       -- SSL で接続する (993番ポートなど)
+    imap_user TEXT NOT NULL DEFAULT '',
+    imap_pass TEXT NOT NULL DEFAULT '',
+    imap_folder TEXT NOT NULL DEFAULT 'INBOX',
+    imap_sent_folder TEXT NOT NULL DEFAULT '', -- 返信の控えを保存するフォルダ (空なら自動で探す)
+    save_sent INTEGER NOT NULL DEFAULT 1,      -- 送った返信を、このメールボックスの送信済みにも残すか
+    from_addr TEXT NOT NULL DEFAULT '',        -- 返信の差出人 (「名前 <アドレス>」も可)
+    -- 送信のログイン (空なら「返信の送信（SMTP）」の共通の設定で送る)
+    smtp_user TEXT NOT NULL DEFAULT '',
+    smtp_pass TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,        -- 受信するか (止めても、届いたメールは残る)
+    sort_order INTEGER NOT NULL DEFAULT 0,     -- 並び順 (小さいほど上)
+    created_at TEXT NOT NULL,
+    -- 受信の続きの位置 (UIDVALIDITY と、最後に取り込んだ UID。差分だけ読むため)
+    state_uidvalidity TEXT NOT NULL DEFAULT '',
+    state_last_uid INTEGER NOT NULL DEFAULT 0,
+    -- 受信の様子 (最後に受信できた時刻・直近の失敗の理由と時刻。受信できたら理由は空にする)
+    fetch_ok_at TEXT,
+    fetch_error TEXT NOT NULL DEFAULT '',
+    fetch_error_at TEXT
 );
 -- 届いたメールが「どのメールへの返事か」を示す Message-ID (In-Reply-To・References の中身)。
 -- 返信画面の「この相手とのやり取り」で、同じ話のメールを探すのに使う (server/mail.py)。
@@ -454,13 +487,120 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
     if "notion_registered_at" not in mcols:
         conn.execute("ALTER TABLE mails ADD COLUMN notion_registered_at TEXT")
+    # 届いたアドレス (複数のアドレスの受信)。以前に取り込んだメールは、旧設定の受信サーバから
+    # 作る1つ目のアドレスにする (migrate_mail_accounts)
+    if "account_id" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN account_id INTEGER"
+                     " REFERENCES mail_accounts(id) ON DELETE SET NULL")
     # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
+    # アドレスでの絞り込み・アドレスを削除したときの付け替え用
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_account ON mails(account_id)")
     # 送った返信への返事を探す用 (この列も後から足したので、ここで作る)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_reply_msgid ON mails(reply_message_id)")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
     _seed_mail_templates(conn)
+    migrate_mail_accounts(conn)
+
+
+# 受信するメールアドレスの一覧 (mail_accounts) を使い始めた印 (settings の非公開キー)。
+# これがあれば、旧設定 (受信サーバが1つだけの imap_host など) からアドレスを作らない
+# (アドレスを全部消した後に、旧設定から勝手に作り直さないように)
+MAIL_ACCOUNTS_MIGRATED_KEY = "mail_state_accounts_migrated"
+# 旧設定から作ったアドレスの番号 (自動更新で前の版に戻っていた間に取り込んだメールを、
+# このアドレスにする。server/mail.py の fill_missing_accounts)
+MAIL_LEGACY_ACCOUNT_KEY = "mail_state_legacy_account_id"
+# どの番号のメールまで、届いたアドレスを確かめ終えたか (同じく fill_missing_accounts)
+MAIL_ACCOUNTS_FILLED_KEY = "mail_state_accounts_filled_upto"
+# 旧設定のときの受信の続きの位置と受信の様子 (server/mail.py の _get_state で読んでいたキー)
+_LEGACY_FETCH_STATE_KEYS = ("mail_state_uidvalidity", "mail_state_last_uid",
+                            "mail_state_fetch_ok_at", "mail_state_fetch_error",
+                            "mail_state_fetch_error_at")
+# 受信箱に出す名前の最大文字数 (server/mail.py の ACCOUNT_LABEL_MAX_CHARS と同じ)
+_ACCOUNT_LABEL_MAX_CHARS = 20
+
+
+def _legacy_sender(s: dict) -> str:
+    """旧設定で返信の差出人にしていたもの (差出人メール、無ければ SMTP ユーザー。アドレスの形のものだけ)."""
+    for key in ("mail_from", "smtp_user"):
+        value = re.sub(r"[\r\n\x00]+", " ", str(s.get(key) or "")).strip()
+        addr = parseaddr(value)[1]
+        if "@" in addr and not re.search(r"\s", addr):
+            return value
+    return ""
+
+
+def account_label_from(address: str) -> str:
+    """アドレスから受信箱に出す名前を作る (info@example.com → info)."""
+    local = parseaddr(str(address or ""))[1].partition("@")[0].strip()
+    if not local:
+        local = str(address or "").partition("@")[0].strip()
+    return local[:_ACCOUNT_LABEL_MAX_CHARS] or "メール"
+
+
+def migrate_mail_accounts(conn: sqlite3.Connection) -> None:
+    """旧設定 (受信サーバが1つだけ) から、受信するメールアドレスの1つ目を作る (最初の1回だけ).
+
+    旧設定の受信サーバが入っていて、アドレスがまだ1つも無いときだけ作る。パスワードも
+    そのまま移し、受信の続きの位置 (UIDVALIDITY・最後の UID) と受信の様子も引き継ぐので、
+    取り込み済みのメールを読み直したり、取り逃したりしない。前からあるメールはこのアドレスにする。
+    旧設定のキーは消さない (自動更新で前の版に戻ったときも、そのまま受信できるように)。
+    受信をまだ使っていない (旧設定も空) なら印も付けない (後で旧設定が入ったら、そのときに作る)。
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key = ?",
+                    (MAIL_ACCOUNTS_MIGRATED_KEY,)).fetchone():
+        return
+    has_accounts = conn.execute("SELECT 1 FROM mail_accounts LIMIT 1").fetchone()
+    s = get_settings(conn)
+    if not has_accounts and not str(s.get("imap_host") or "").strip():
+        return
+    # 印を先に書く。同時に開いた別の接続とは書き込みロックで順番になり、
+    # 後の方は印が既にあるので (rowcount=0) 作らない (二重に作らない)
+    cur = conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, '1')",
+                       (MAIL_ACCOUNTS_MIGRATED_KEY,))
+    if cur.rowcount and not conn.execute("SELECT 1 FROM mail_accounts LIMIT 1").fetchone():
+        _account_from_legacy(conn, s)
+    # すぐ確定する (この接続でこの後に行う通信の間、書き込みロックを持ち越さない)
+    conn.commit()
+
+
+def _account_from_legacy(conn: sqlite3.Connection, s: dict) -> None:
+    """旧設定の受信サーバを1つ目のアドレスにして、前からあるメールをそのアドレスにする."""
+    state = {r["key"]: r["value"] for r in conn.execute(
+        f"SELECT key, value FROM settings WHERE key IN ({','.join('?' * len(_LEGACY_FETCH_STATE_KEYS))})",
+        _LEGACY_FETCH_STATE_KEYS)}
+    try:
+        last_uid = max(int(state.get("mail_state_last_uid") or 0), 0)
+    except ValueError:
+        last_uid = 0
+    error = state.get("mail_state_fetch_error") or ""
+    sender = _legacy_sender(s)
+    user = str(s.get("imap_user") or "").strip()
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "INSERT INTO mail_accounts (label, imap_host, imap_port, imap_ssl, imap_user,"
+        " imap_pass, imap_folder, imap_sent_folder, save_sent, from_addr, enabled,"
+        " sort_order, created_at, state_uidvalidity, state_last_uid, fetch_ok_at,"
+        " fetch_error, fetch_error_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?)",
+        (account_label_from(sender or user), str(s.get("imap_host") or "").strip(),
+         str(s.get("imap_port") or "").strip() or "993", int(bool(s.get("imap_use_ssl"))),
+         user, str(s.get("imap_pass") or ""),
+         str(s.get("imap_folder") or "").strip() or "INBOX",
+         str(s.get("imap_sent_folder") or "").strip(), int(bool(s.get("mail_save_sent"))),
+         sender, now, state.get("mail_state_uidvalidity") or "", last_uid,
+         state.get("mail_state_fetch_ok_at") or None, error,
+         (state.get("mail_state_fetch_error_at") or None) if error else None),
+    )
+    account_id = cur.lastrowid
+    conn.execute("UPDATE mails SET account_id = ? WHERE account_id IS NULL", (account_id,))
+    newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM mails").fetchone()[0]
+    for key, value in ((MAIL_LEGACY_ACCOUNT_KEY, account_id),
+                       (MAIL_ACCOUNTS_FILLED_KEY, newest)):
+        conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                     (key, str(value)))
 
 
 # 操作の記録 (audit_log) の「メールを変えた」の書き方 (server/app.py の mail_patch)。

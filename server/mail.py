@@ -27,6 +27,10 @@ In-Reply-To・References でつながるメール (別のアドレスからの�
 Slack・通知先メールへまとめてお知らせする (1通につき1回。夜中などは止めておく。remind_unanswered)。
 週に1回、決めた曜日・時刻に、前の7日間のメールの数・返信までの時間・まだ返事をしていない
 メールなどを1通にまとめて同じ送り先へ送る (週ごとのまとめ。send_weekly_report)。
+受信するメールアドレス (kurosu@・info@ など) は複数登録でき (mail_accounts)、1つずつ受信して
+1つの受信箱にまとめる (1つのアドレスが失敗しても、ほかのアドレスは受信する)。届いたメールには
+どのアドレスに届いたかを残し、返信はそのアドレスを差出人にして送り、控えもそのアドレスの
+送信済みフォルダに残す (送信のログインは、アドレスごとの設定が無ければ共通の SMTP 設定)。
 """
 import base64
 import email
@@ -53,6 +57,7 @@ from pathlib import Path
 from urllib.parse import quote
 from email.utils import (
     format_datetime,
+    formataddr,
     getaddresses,
     make_msgid,
     parseaddr,
@@ -1142,27 +1147,46 @@ def valid_address(addr: str) -> bool:
     return len(addr) <= 254 and bool(_ADDRESS_RE.fullmatch(addr))
 
 
-def own_addresses(settings: dict) -> set[str]:
+def _address_key(value) -> str:
+    """設定の値 (「名前 <アドレス>」も可) からアドレスだけを小文字で取り出す (アドレスでなければ "")."""
+    addr = parseaddr(str(value or ""))[1].strip().lower()
+    return addr if "@" in addr else ""
+
+
+def own_send_addresses(settings: dict, accounts=()) -> set[str]:
+    """自分たちが差出人にして送るアドレス (小文字).
+
+    共通の「差出人メール」「SMTPユーザー」と、受信するメールアドレスそれぞれの差出人・
+    送信用のユーザー。受信したときに、自分たちが送ったメールの控えを取り込まないのに使う。
+    """
+    values = [settings.get("mail_from"), settings.get("smtp_user")]
+    for a in accounts:
+        values += [a.get("from_addr"), a.get("smtp_user")]
+    return {k for k in map(_address_key, values) if k}
+
+
+def own_addresses(settings: dict, accounts=()) -> set[str]:
     """自分たち (差出人・送信と受信のアカウント) のアドレス (小文字).
 
+    受信するメールアドレスが複数あるときは (accounts)、その全部のアドレスも入る。
     「全員に返信」で自分たちにまで CC を送らないよう、候補から除くのに使う。
     """
-    out = set()
-    for key in ("mail_from", "smtp_user", "imap_user"):
-        addr = parseaddr(str(settings.get(key) or ""))[1].strip().lower()
-        if "@" in addr:
-            out.add(addr)
+    out = own_send_addresses(settings, accounts)
+    for value in [settings.get("imap_user"), *(a.get("imap_user") for a in accounts)]:
+        key = _address_key(value)
+        if key:
+            out.add(key)
     return out
 
 
-def reply_all_cc(settings: dict, mail: dict) -> list[str]:
+def reply_all_cc(settings: dict, mail: dict, accounts=()) -> list[str]:
     """「全員に返信」で CC に入れる候補のアドレス.
 
     元メールの To と Cc に入っていた人。返信の宛先 (元メールの差出人) と
-    自分たちのアドレスは除き、大文字・小文字の違いだけの重複も1つにする。
-    アドレスとして読めないもの (「undisclosed-recipients:;」等) は入れない。
+    自分たちのアドレス (受信するアドレス全部を含む) は除き、大文字・小文字の違いだけの
+    重複も1つにする。アドレスとして読めないもの (「undisclosed-recipients:;」等) は入れない。
     """
-    skip = own_addresses(settings) | {str(mail.get("from_addr") or "").strip().lower()}
+    skip = own_addresses(settings, accounts) | {str(mail.get("from_addr") or "").strip().lower()}
     out = []
     # ヘッダごとに読む (片方が壊れていても、もう片方の候補は出せるように)
     for header in (mail.get("to_addr"), mail.get("cc_addr")):
@@ -1257,9 +1281,27 @@ class SomeRecipientsRefused(Exception):
         self.refused = refused
 
 
+def sender_address(value) -> str:
+    """差出人 (「名前 <アドレス>」も可) のアドレスの部分 (読めなければ "")."""
+    return parseaddr(str(value or ""))[1].strip()
+
+
+def _from_header(sender) -> str:
+    """From ヘッダに入れる形にする.
+
+    「株式会社インビックス <info@…>」のような日本語の名前は、名前だけを符号化する
+    (全体を符号化するとアドレスが読めなくなり、相手のメールソフトで差出人が壊れるため)。
+    """
+    text = _header_text(sender)
+    name, addr = parseaddr(text)
+    if "@" not in addr:
+        return text
+    return formataddr((name, addr), charset="utf-8") if name else addr
+
+
 def send_reply(settings: dict, to_addr: str, subject: str, body: str,
                in_reply_to: str = "", references: str = "",
-               cc=None, bcc=None) -> bytes:
+               cc=None, bcc=None, sender: str | None = None) -> bytes:
     """返信メールを1通送信し、送ったメールそのもの (bytes) を返す (失敗時は例外).
 
     送り先の一部だけが断られたとき (宛先は断られ CC には届いた、など) は
@@ -1268,6 +1310,8 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
     cc は Cc ヘッダに出す。bcc はヘッダに出さず、SMTP の送り先にだけ入れる
     (BCC の人が誰かは、宛先・CC の人には見えない)。cc・bcc は呼び出し側で
     check_reply_recipients を通したアドレスの一覧を渡す。
+    sender は差出人 (届いたアドレス。reply_sender)。省略すると共通の差出人メール
+    (無ければ SMTP ユーザー)。送信のログインは settings の SMTP 設定 (smtp_settings) を使う。
     戻り値は送信済みフォルダへの保存 (save_to_sent) に使う
     (相手に届いたものと同じなので、控えにも Cc は出て、Bcc は出ない)。
     """
@@ -1277,15 +1321,15 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
     in_reply_to = _header_text(in_reply_to)
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = _header_text(subject)
-    sender = settings.get("mail_from") or settings.get("smtp_user")
-    msg["From"] = sender
+    sender = sender or settings.get("mail_from") or settings.get("smtp_user")
+    msg["From"] = _from_header(sender)
     msg["To"] = to_addr
     if cc:
         msg["Cc"] = ", ".join(cc)
     # 送信済みフォルダに保存する控えと相手に届くメールを同じ内容にするため、
     # 日時と Message-ID はサーバ任せにせずここで付ける
     msg["Date"] = format_datetime(datetime.now(tz.TZ))
-    domain = parseaddr(str(sender or ""))[1].rpartition("@")[2]
+    domain = sender_address(sender).rpartition("@")[2]
     msg["Message-ID"] = make_msgid(domain=_header_text(domain) or None)
     if in_reply_to:
         # 受信側のメーラーで元メールと同じスレッドに繋がるようにする
@@ -1294,11 +1338,347 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
     from . import notify  # 循環を避けるため遅延インポート
 
     raw = msg.as_string()
-    # 接続・暗号化・ログインは通知メールと同じ1か所の処理を使う
-    refused = notify.smtp_send(settings, sender, [to_addr, *cc, *bcc], raw)
+    # 接続・暗号化・ログインは通知メールと同じ1か所の処理を使う。
+    # 送信サーバに伝える差出人 (MAIL FROM) はアドレスの部分だけ
+    envelope = sender_address(sender) if "@" in sender_address(sender) else sender
+    refused = notify.smtp_send(settings, envelope, [to_addr, *cc, *bcc], raw)
     if refused:
         raise SomeRecipientsRefused(raw.encode("utf-8"), list(refused))
     return raw.encode("utf-8")
+
+
+# 送信サーバが「差出人が違う」(ログインしたユーザーでは、その差出人で送れない) と断ったときの
+# 返事に出る言葉 (Postfix の「Sender address rejected: not owned by user」、
+# Microsoft 365 の「SendAsDenied」など)
+_SENDER_REFUSED_RE = re.compile(
+    r"sender|send ?as|from address|not owned|mismatch|spoof|impersonat", re.IGNORECASE)
+
+
+def _smtp_reply_text(value) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    return str(value or "")
+
+
+def sender_refused(e: BaseException) -> bool:
+    """送信サーバに差出人 (From) を断られた失敗か."""
+    import smtplib
+
+    if isinstance(e, smtplib.SMTPSenderRefused):
+        return True
+    if isinstance(e, smtplib.SMTPRecipientsRefused):
+        # 差出人の確かめを送り先ごとの返事で返すサーバもある (全員分が差出人の理由のときだけ)
+        replies = [r[1] if isinstance(r, tuple) and len(r) > 1 else r
+                   for r in (e.recipients or {}).values()]
+        return bool(replies) and all(
+            _SENDER_REFUSED_RE.search(_smtp_reply_text(r)) for r in replies)
+    if isinstance(e, smtplib.SMTPResponseException) and e.smtp_code >= 500:
+        # 本文を送った後に断るサーバもある (Microsoft 365 の SendAsDenied など)
+        return bool(_SENDER_REFUSED_RE.search(_smtp_reply_text(e.smtp_error)))
+    return False
+
+
+def sender_refused_text(e: BaseException, settings: dict, account: dict | None) -> str:
+    """差出人を断られたときの、次に何をすればよいか分かる説明 (差出人の問題でなければ "").
+
+    共通の SMTP ユーザーで、別のアドレス (kurosu@ など) を差出人にして送ろうとして
+    断られたときは、そのアドレスの送信用のユーザー・パスワードを入れるよう案内する。
+    """
+    if not sender_refused(e):
+        return ""
+    sender = sender_address(reply_sender(settings, account)) or "（不明）"
+    label = f"「{account['label']}」" if account else ""
+    if account is not None and str(account.get("smtp_user") or "").strip():
+        return (f"送信サーバに差出人のアドレス（{sender}）を断られました。"
+                f"「設定」の「受信するメールアドレス」の{label}の送信用のユーザーで、"
+                "このアドレスを差出人にして送れるか確かめてください")
+    shared = str(settings.get("smtp_user") or "").strip()
+    if account is not None and _address_key(shared) != sender.lower():
+        return (f"送信サーバに差出人のアドレス（{sender}）を断られました。"
+                f"共通の送信の設定（SMTPユーザー: {shared or '未設定'}）では、"
+                "このアドレスを差出人にして送れないようです。"
+                f"「設定」の「受信するメールアドレス」で{label}の「編集」を押し、"
+                "このアドレスの「送信用のユーザー」と「送信用のパスワード」を入れてください")
+    return (f"送信サーバに差出人のアドレス（{sender}）を断られました。"
+            "「返信の送信（SMTP）」の設定を確かめてください")
+
+
+# ---------- 受信するメールアドレス (複数のアドレスをまとめて受信) ----------
+
+# 登録できるアドレスの数 (1回の受信で順に全部へ接続するので、多すぎないように)
+ACCOUNT_MAX_COUNT = 10
+# 受信箱に出す名前の最大文字数 (server/db.py の _ACCOUNT_LABEL_MAX_CHARS と同じ)
+ACCOUNT_LABEL_MAX_CHARS = 20
+# 届いたアドレスを一覧から削除したメールの表示 (メールは残す)
+DELETED_ACCOUNT_LABEL = "削除したアドレス"
+_ACCOUNT_TEXT_MAX_CHARS = 320      # サーバの名前・ユーザー
+_ACCOUNT_SECRET_MAX_CHARS = 1000   # パスワード
+_ACCOUNT_FOLDER_MAX_CHARS = 200    # フォルダの名前
+_SENDER_NAME_MAX_CHARS = 60        # 差出人の名前 (「株式会社インビックス <…>」の名前)
+_HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# 受信の接続先を決める項目 (変えたら、受信の続きの位置と、記録した失敗を消す)
+ACCOUNT_CONNECTION_KEYS = ("imap_host", "imap_port", "imap_ssl", "imap_user", "imap_folder")
+# 画面から変えられる項目 (保存する形は clean_account)
+ACCOUNT_FIELDS = ("label", "from_addr", "imap_host", "imap_port", "imap_ssl", "imap_user",
+                  "imap_pass", "imap_folder", "imap_sent_folder", "save_sent",
+                  "smtp_user", "smtp_pass", "enabled")
+ACCOUNT_SECRET_FIELDS = ("imap_pass", "smtp_pass")
+_ACCOUNT_DEFAULTS = {"label": "", "from_addr": "", "imap_host": "", "imap_port": "",
+                     "imap_ssl": 1, "imap_user": "", "imap_pass": "", "imap_folder": "INBOX",
+                     "imap_sent_folder": "", "save_sent": 1, "smtp_user": "", "smtp_pass": "",
+                     "enabled": 1}
+
+
+def list_accounts(conn) -> list[dict]:
+    """受信するメールアドレスの一覧 (並び順。パスワードも入っているので画面には account_info で返す)."""
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM mail_accounts ORDER BY sort_order, id")]
+
+
+def get_account(conn, account_id) -> dict | None:
+    if account_id is None:
+        return None
+    row = conn.execute("SELECT * FROM mail_accounts WHERE id = ?", (account_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def receiving_configured(conn) -> bool:
+    """受信するアドレス (止めていないもの) があるか (読むだけ)."""
+    return bool(conn.execute(
+        "SELECT 1 FROM mail_accounts WHERE enabled = 1 LIMIT 1").fetchone())
+
+
+def account_settings(settings: dict, account: dict) -> dict:
+    """そのアドレスの受信サーバの設定を入れた設定 (受信・接続テスト・送信済みフォルダへの保存用).
+
+    受信の処理 (_imap_connect・save_to_sent など) は設定の imap_* を読むので、そこを差し替える。
+    """
+    return {**settings,
+            "imap_host": account["imap_host"], "imap_port": account["imap_port"],
+            "imap_use_ssl": int(bool(account["imap_ssl"])),
+            "imap_user": account["imap_user"], "imap_pass": account["imap_pass"],
+            "imap_folder": account["imap_folder"] or "INBOX",
+            "imap_sent_folder": account["imap_sent_folder"],
+            "mail_save_sent": int(bool(account["save_sent"]))}
+
+
+def smtp_settings(settings: dict, account: dict | None) -> dict:
+    """返信を送るときの SMTP の設定.
+
+    そのアドレスに送信用のユーザーがあればそのユーザー・パスワードでログインし、
+    無ければ共通の設定 (「返信の送信（SMTP）」) のまま。送信サーバは共通。
+    """
+    if account is not None and str(account.get("smtp_user") or "").strip():
+        return {**settings, "smtp_user": account["smtp_user"].strip(),
+                "smtp_pass": account.get("smtp_pass") or ""}
+    return settings
+
+
+def reply_sender(settings: dict, account: dict | None) -> str:
+    """返信の差出人 (届いたアドレス。分からなければ共通の差出人メール、無ければ SMTP ユーザー)."""
+    if account is not None and str(account.get("from_addr") or "").strip():
+        return account["from_addr"].strip()
+    return settings.get("mail_from") or settings.get("smtp_user") or ""
+
+
+def sent_copy_settings(conn, settings: dict, account: dict | None) -> dict | None:
+    """送った返信の控えを残すメールボックスの設定 (残さないなら None).
+
+    届いたアドレスのメールボックスの送信済みフォルダに残す (そのアドレスで「残す」のとき)。
+    届いたアドレスが分からないメール (アドレスを削除した) は共通の差出人で送るので、その差出人と
+    同じアドレスがあれば、そのメールボックスに残す (無ければ残す先が無いので残さない)。
+    アドレスの一覧をまだ使っていない (旧設定の受信サーバだけの) ときは、旧設定のメールボックスに残す。
+    """
+    accounts = list_accounts(conn)
+    if account is None:
+        sender = _address_key(reply_sender(settings, None))
+        account = next((a for a in accounts
+                        if sender and _address_key(a["from_addr"]) == sender), None)
+    if account is not None:
+        s = account_settings(settings, account)
+        return s if should_save_sent(s) else None
+    if accounts or _get_state(conn, db.MAIL_ACCOUNTS_MIGRATED_KEY):
+        return None
+    return settings if should_save_sent(settings) else None
+
+
+def account_secrets(accounts) -> list[str]:
+    """アドレスごとのパスワード (失敗の理由の文から伏せる用)."""
+    return [str(a.get(k) or "") for a in accounts for k in ACCOUNT_SECRET_FIELDS
+            if a.get(k)]
+
+
+def account_label(account: dict | None) -> str:
+    return account["label"] if account else DELETED_ACCOUNT_LABEL
+
+
+def account_info(a: dict, mail_count: int = 0) -> dict:
+    """画面に返すアドレスの情報 (パスワードは返さず、入っているかだけ)."""
+    return {
+        "id": a["id"], "label": a["label"], "from_addr": a["from_addr"],
+        "address": sender_address(a["from_addr"]),
+        "imap_host": a["imap_host"], "imap_port": a["imap_port"],
+        "imap_ssl": bool(a["imap_ssl"]), "imap_user": a["imap_user"],
+        "imap_pass_set": bool(a["imap_pass"]),
+        "imap_folder": a["imap_folder"], "imap_sent_folder": a["imap_sent_folder"],
+        "save_sent": bool(a["save_sent"]),
+        "smtp_user": a["smtp_user"], "smtp_pass_set": bool(a["smtp_pass"]),
+        "enabled": bool(a["enabled"]), "sort_order": a["sort_order"],
+        "created_at": a["created_at"],
+        "last_fetch_at": a["fetch_ok_at"],
+        "last_error": a["fetch_error"],
+        "last_error_at": a["fetch_error_at"] if a["fetch_error"] else None,
+        "mail_count": mail_count,
+    }
+
+
+def _display_address(name: str, addr: str) -> str:
+    """名前とアドレスを「名前 <アドレス>」にする (記号を含む名前は "…" で囲む)."""
+    if not name:
+        return addr
+    if re.search(r'[()<>@,;:\\".\[\]]', name):
+        name = '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return f"{name} <{addr}>"
+
+
+def clean_sender(value) -> str:
+    """差出人の欄 (「info@…」か「株式会社インビックス <info@…>」) を確かめて、保存する形にする.
+
+    空なら ""。おかしければ、画面にそのまま出せる日本語の ValueError。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if _CONTROL_RE.search(text):
+        raise ValueError("メールアドレスに改行などは入れられません")
+    mt = re.fullmatch(r"([^<>]*)<([^<>]*)>", text)
+    if mt:
+        name, addr = " ".join(mt.group(1).split()), mt.group(2).strip()
+        if len(name) >= 2 and name[0] == name[-1] == '"':
+            name = re.sub(r'\\(.)', r"\1", name[1:-1]).strip()
+    else:
+        name, addr = "", text
+    if not valid_address(addr) or len(name) > _SENDER_NAME_MAX_CHARS:
+        shown = text if len(text) <= 60 else text[:60] + "…"
+        raise ValueError(f"メールアドレス「{shown}」が正しくありません"
+                         "（「kurosu@example.com」か「株式会社◯◯ <info@example.com>」の形で入れてください）")
+    return _display_address(name, addr)
+
+
+def clean_account(fields: dict, current: dict | None = None) -> dict:
+    """画面から届いた「受信するメールアドレス」の項目を確かめて、保存する形 (全部の項目) にする.
+
+    fields は送られてきた項目 (None は「変えない」)。current は今の値 (追加のときは None)。
+    パスワードは空なら「変えない」(画面に出さないので、変えるときだけ入れてもらう)。
+    送信用のユーザーを空にしたら、送信用のパスワードも消す。メールアドレスが空なら
+    IMAP ユーザー (アドレスの形なら) を使い、名前が空ならアドレスの @ の前を使う。
+    おかしなところがあれば、画面にそのまま出せる日本語の ValueError にする。
+    """
+    f = {k: v for k, v in fields.items() if k in ACCOUNT_FIELDS and v is not None}
+    out = dict(current or _ACCOUNT_DEFAULTS)
+    texts = (("label", "名前", ACCOUNT_LABEL_MAX_CHARS), ("imap_host", "IMAPサーバ", 253),
+             ("imap_user", "IMAPユーザー", _ACCOUNT_TEXT_MAX_CHARS),
+             ("imap_folder", "フォルダ", _ACCOUNT_FOLDER_MAX_CHARS),
+             ("imap_sent_folder", "送信済みフォルダ", _ACCOUNT_FOLDER_MAX_CHARS),
+             ("smtp_user", "送信用のユーザー", _ACCOUNT_TEXT_MAX_CHARS))
+    for key, label, limit in texts:
+        if key not in f:
+            continue
+        value = str(f[key])
+        if _CONTROL_RE.search(value):
+            raise ValueError(f"{label}に改行などは入れられません")
+        value = " ".join(value.split()) if key == "label" else value.strip()
+        if len(value) > limit:
+            raise ValueError(f"{label}が長すぎます（{limit}文字まで）")
+        out[key] = value
+    if "imap_host" in f and out["imap_host"] and not _HOST_RE.fullmatch(out["imap_host"]):
+        raise ValueError("IMAPサーバの名前が正しくありません（例: imap.example.com）")
+    for key, label in (("imap_pass", "IMAPパスワード"), ("smtp_pass", "送信用のパスワード")):
+        value = str(f.get(key) or "")
+        if not value:
+            continue   # 空は「変えない」
+        if re.search(r"[\r\n\x00]", value):
+            raise ValueError(f"{label}に改行は入れられません")
+        if len(value) > _ACCOUNT_SECRET_MAX_CHARS:
+            raise ValueError(f"{label}が長すぎます")
+        out[key] = value
+    for key in ("imap_ssl", "save_sent", "enabled"):
+        if key in f:
+            out[key] = int(bool(f[key]))
+    if "imap_port" in f:
+        port = str(f["imap_port"]).strip()
+        if port and not (port.isascii() and port.isdigit() and 1 <= int(port) <= 65535):
+            raise ValueError("IMAPポートは1〜65535の数値で指定してください")
+        out["imap_port"] = str(int(port)) if port else ""
+    if "from_addr" in f:
+        out["from_addr"] = clean_sender(f["from_addr"])
+    if not out["smtp_user"]:
+        out["smtp_pass"] = ""   # 送信用のユーザーを使わないなら、パスワードも残さない
+    # 空の欄を埋める (ポートは SSL なら993、そうでなければ143。フォルダは INBOX)
+    out["imap_port"] = out["imap_port"] or ("993" if out["imap_ssl"] else "143")
+    out["imap_folder"] = out["imap_folder"] or "INBOX"
+    if not out["from_addr"] and valid_address(out["imap_user"]):
+        out["from_addr"] = out["imap_user"]
+    for key, problem in (
+            ("from_addr", "メールアドレスを入れてください（このアドレスに届いたメールへの返信の差出人になります）"),
+            ("imap_host", "IMAPサーバを入れてください（例: imap.example.com）"),
+            ("imap_user", "IMAPユーザーを入れてください（ふつうはメールアドレスです）"),
+            ("imap_pass", "IMAPパスワードを入れてください")):
+        if not out[key]:
+            raise ValueError(problem)
+    if out["smtp_user"] and not out["smtp_pass"]:
+        raise ValueError("送信用のパスワードも入れてください"
+                         "（共通の送信の設定で送るときは、送信用のユーザーを空にします）")
+    out["label"] = out["label"] or db.account_label_from(out["from_addr"])
+    return {k: out[k] for k in ACCOUNT_FIELDS}
+
+
+def same_mailbox(a: dict, b: dict) -> bool:
+    """同じメールボックス (受信サーバ・ユーザー・フォルダが同じ) か (大文字・小文字は区別しない)."""
+    return all(str(a.get(k) or "").strip().lower() == str(b.get(k) or "").strip().lower()
+               for k in ("imap_host", "imap_user", "imap_folder"))
+
+
+def delete_account(conn, account_id: int) -> int:
+    """アドレスを一覧から消す (届いたメールは残し、「削除したアドレス」にする。コミットは呼び出し側).
+
+    残したメールの数を返す。前の版に戻っていた間のメールをこのアドレスにしないよう
+    (fill_missing_accounts)、今あるメールまでは確かめ終えたことにする。
+    """
+    kept = conn.execute("SELECT COUNT(*) FROM mails WHERE account_id = ?",
+                        (account_id,)).fetchone()[0]
+    conn.execute("UPDATE mails SET account_id = NULL WHERE account_id = ?", (account_id,))
+    conn.execute("DELETE FROM mail_accounts WHERE id = ?", (account_id,))
+    newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM mails").fetchone()[0]
+    _set_state(conn, db.MAIL_ACCOUNTS_FILLED_KEY, newest)
+    return kept
+
+
+def fill_missing_accounts(conn) -> int:
+    """届いたアドレスが空のメールのうち、前の版に戻っていた間に取り込んだものを、旧設定から作った
+    アドレスにする (起動時)。直したメールの数を返す.
+
+    アドレスが1つだけの前の版は、旧設定の受信サーバ (= 旧設定から作ったアドレス) から受信して
+    アドレスを付けずに入れるため。前の回に確かめ終えた番号より後のメールだけを見る
+    (アドレスを削除したメールは、削除したときに確かめ終えたことにしてあるので変えない)。
+    """
+    try:
+        legacy_id = int(_get_state(conn, db.MAIL_LEGACY_ACCOUNT_KEY) or 0)
+        upto = int(_get_state(conn, db.MAIL_ACCOUNTS_FILLED_KEY, "0") or 0)
+    except ValueError:
+        return 0
+    if not legacy_id or get_account(conn, legacy_id) is None:
+        return 0
+    newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM mails").fetchone()[0]
+    if newest <= upto:
+        return 0
+    cur = conn.execute(
+        "UPDATE mails SET account_id = ? WHERE id > ? AND id <= ? AND account_id IS NULL",
+        (legacy_id, upto, newest))
+    _set_state(conn, db.MAIL_ACCOUNTS_FILLED_KEY, newest)
+    conn.commit()
+    return cur.rowcount
 
 
 # ---------- IMAP 受信 ----------
@@ -1583,19 +1963,30 @@ def should_save_sent(settings: dict) -> bool:
         bool(int(settings.get("mail_save_sent", 1) or 0))
 
 
-def fetch_new_mail(conn, settings: dict, attachment_dir=None) -> list[dict]:
+def fetch_new_mail(conn, settings: dict, attachment_dir=None,
+                   account: dict | None = None) -> list[dict]:
     """IMAP から新着メールを取り込み、追加した行 (分類済み) を返す.
 
-    UIDVALIDITY と最終取得 UID を settings テーブルに記録して差分だけ読む。
-    重複は message_id の UNIQUE 制約でも防ぐ (INSERT OR IGNORE)。
+    UIDVALIDITY と最終取得 UID を記録して差分だけ読む。account (受信するメールアドレス) を
+    渡すと、記録はそのアドレスの行に持ち、取り込んだメールにそのアドレスを付ける
+    (settings は account_settings で、そのアドレスの受信サーバにしたもの)。
+    account が無ければ、旧設定のとおり settings テーブルに記録する。
+    重複は message_id の UNIQUE 制約でも防ぐ (INSERT OR IGNORE。kurosu@ と info@ の両方に
+    届いた同じメールは、先に受信したアドレスの1通だけになる)。
     受信箱は変更しない (readonly・既読フラグも付けない)。
     attachment_dir を渡すと、新しく入れたメールの添付ファイルをそこに保存する。
     """
     folder = settings.get("imap_folder") or "INBOX"
+    if account is not None:
+        saved_uv = str(account.get("state_uidvalidity") or "")
+        saved_uid = account.get("state_last_uid") or 0
+    else:
+        saved_uv = _get_state(conn, "mail_state_uidvalidity")
+        saved_uid = _get_state(conn, "mail_state_last_uid", "0")
     m = _imap_connect(settings)
     raws: list[tuple[int, bytes]] = []
     try:
-        typ, _ = m.select(f'"{folder}"', readonly=True)
+        typ, _ = m.select(_quote_mailbox(folder), readonly=True)
         if typ != "OK":
             raise RuntimeError(f"フォルダを開けません: {folder}")
         uv = ""
@@ -1603,9 +1994,9 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None) -> list[dict]:
         if resp and resp[0]:
             uv = resp[0].decode("ascii", "replace")
         last_uid = 0
-        if uv and uv == _get_state(conn, "mail_state_uidvalidity"):
+        if uv and uv == saved_uv:
             try:
-                last_uid = int(_get_state(conn, "mail_state_last_uid", "0"))
+                last_uid = int(saved_uid)
             except ValueError:
                 last_uid = 0
         if last_uid:
@@ -1641,10 +2032,9 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None) -> list[dict]:
         except Exception:  # noqa: BLE001
             pass
 
-    # パースと既知メールの除外 (まだ書き込まない)
-    own = {a.strip().lower()
-           for a in (settings.get("mail_from", ""), settings.get("smtp_user", ""))
-           if a and a.strip()}
+    # パースと既知メールの除外 (まだ書き込まない)。自分たちが送ったメールの控えは、
+    # どのアドレスから送ったものでも取り込まない (kurosu@ から info@ に CC したものなど)
+    own = own_send_addresses(settings, list_accounts(conn))
     parsed: list[tuple[int, dict, bytes]] = []
     for uid, raw in raws:
         try:
@@ -1715,13 +2105,23 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None) -> list[dict]:
                 stored = stage_attachments(attachment_dir, staging, str(i), items, stored)
                 attachments.append(items)
         _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
-                      added, written)
+                      added, written, account["id"] if account is not None else None)
         # 取得に成功した UID までだけ進める (途中で break した分は次回再試行)
         max_uid = max([u for u, _ in raws], default=0)
         if max_uid > last_uid:
-            if uv:
-                _set_state(conn, "mail_state_uidvalidity", uv)
-            _set_state(conn, "mail_state_last_uid", max_uid)
+            if account is not None:
+                # 受信している間に接続先 (サーバ・ユーザー・フォルダ) を変えていたら書かない
+                # (変えたときに続きの位置は消してあり、新しい接続先には当てはまらないため)
+                conn.execute(
+                    "UPDATE mail_accounts SET state_uidvalidity = ?, state_last_uid = ?"
+                    " WHERE id = ? AND imap_host = ? AND imap_port = ? AND imap_ssl = ?"
+                    " AND imap_user = ? AND imap_folder = ?",
+                    (uv or saved_uv, max_uid, account["id"],
+                     *(account[k] for k in ACCOUNT_CONNECTION_KEYS)))
+            else:
+                if uv:
+                    _set_state(conn, "mail_state_uidvalidity", uv)
+                _set_state(conn, "mail_state_last_uid", max_uid)
         conn.commit()
     except BaseException:
         # DB を元に戻し、書いた添付ファイルも消す (DB に無いファイルを残さない)
@@ -1737,11 +2137,12 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None) -> list[dict]:
 
 
 def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
-                  added: list, written: list) -> None:
+                  added: list, written: list, account_id: int | None = None) -> None:
     """分類済みのメールを DB に入れ、一時フォルダの添付ファイルを保存先へ移す.
 
     コミットは呼び出し側。added には入れたメール、written には添付を移したメールの
     番号を足していく (失敗したときに呼び出し側で元に戻せるように)。
+    account_id は届いたアドレス (旧設定のまま受信したときは None)。
     """
     for i, (uid, p, _raw, prio, reason, source, category, draft, draft_source,
             drafted_at) in enumerate(rows):
@@ -1751,12 +2152,12 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
             " from_name, to_addr, cc_addr, subject, body, received_at, fetched_at,"
             " priority, priority_reason, priority_source, category,"
             " assignee_user_id, draft_reply, draft_source, draft_generated_at,"
-            " references_hdr)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " references_hdr, account_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
              p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
              reason, source, category, assignee, draft, draft_source, drafted_at,
-             p["references_hdr"]),
+             p["references_hdr"], account_id),
         )
         if not cur.rowcount:
             continue  # 同じメールが既にある (添付も保存しない)
@@ -1768,7 +2169,7 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
             written.append(cur.lastrowid)
             save_attachments(conn, attachment_dir, cur.lastrowid, items, now)
         added.append({**p, "priority": prio, "category": category,
-                      "assignee_user_id": assignee})
+                      "assignee_user_id": assignee, "account_id": account_id})
 
 
 # ---------- 受信の重なり防止と、受信の様子 (最終受信・失敗) ----------
@@ -1777,8 +2178,9 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
 # 二重に AI で判定したり (料金も二重)、添付を二重に書いたりするので、このサーバの中では
 # 同時に1つだけ受信する
 _fetch_lock = threading.Lock()
-# 受信の様子 (settings テーブルの非公開キー。設定画面・API の設定には出ない)。
-# 再起動しても「最終受信」が分かるよう DB に残す
+# 旧設定 (受信サーバが1つだけ) のときの受信の様子 (settings テーブルの非公開キー)。
+# 今の受信の様子は、受信するアドレスごとに mail_accounts に記録する。旧設定の分は、
+# 旧設定から1つ目のアドレスを作るときに引き継ぐ (db.migrate_mail_accounts)
 FETCH_OK_AT_KEY = "mail_state_fetch_ok_at"          # 最後に受信できた時刻 (UTC ISO)
 FETCH_ERROR_KEY = "mail_state_fetch_error"          # 直近の受信の失敗の理由 (成功したら空)
 FETCH_ERROR_AT_KEY = "mail_state_fetch_error_at"    # その失敗の時刻
@@ -1831,61 +2233,117 @@ def fetch_error_text(e: BaseException) -> str:
     return str(e) or e.__class__.__name__
 
 
-def _record_fetch(conn, error: str = "") -> None:
-    """受信の結果を記録してすぐ確定する (error が空なら成功).
+def _record_account_fetch(conn, account_id: int, error: str = "") -> None:
+    """そのアドレスの受信の結果を記録してすぐ確定する (error が空なら成功).
 
     記録に失敗しても (DB が混んでいる等)、受信そのものの結果は変えない。
     """
     now = tz.utc_iso(datetime.now(timezone.utc))
     try:
         if error:
-            _set_state(conn, FETCH_ERROR_KEY, error)
-            _set_state(conn, FETCH_ERROR_AT_KEY, now)
+            conn.execute("UPDATE mail_accounts SET fetch_error = ?, fetch_error_at = ?"
+                         " WHERE id = ?", (error, now, account_id))
         else:
-            _set_state(conn, FETCH_OK_AT_KEY, now)
-            if _get_state(conn, FETCH_ERROR_KEY):
-                _set_state(conn, FETCH_ERROR_KEY, "")
+            conn.execute("UPDATE mail_accounts SET fetch_ok_at = ?, fetch_error = '',"
+                         " fetch_error_at = NULL WHERE id = ?", (now, account_id))
         conn.commit()
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         print(f"受信の結果を記録できませんでした: {e}")
 
 
-def clear_fetch_error(conn) -> None:
-    """記録した受信の失敗を消す (受信サーバの設定を変えたとき。コミットは呼び出し側)."""
-    _set_state(conn, FETCH_ERROR_KEY, "")
+def clear_fetch_error(conn, account_id: int | None = None) -> None:
+    """記録した受信の失敗を消す (受信の設定を変えたとき。コミットは呼び出し側).
+
+    account_id を渡すとそのアドレスの分だけ、渡さなければ全部 (旧設定の分も) を消す。
+    """
+    if account_id is None:
+        _set_state(conn, FETCH_ERROR_KEY, "")
+        conn.execute("UPDATE mail_accounts SET fetch_error = '', fetch_error_at = NULL"
+                     " WHERE fetch_error != ''")
+    else:
+        conn.execute("UPDATE mail_accounts SET fetch_error = '', fetch_error_at = NULL"
+                     " WHERE id = ?", (account_id,))
 
 
 def fetch_state(conn) -> dict:
-    """受信の様子 (最後に受信できた時刻・直近の受信の失敗・今受信中か)."""
-    error = _get_state(conn, FETCH_ERROR_KEY)
+    """受信の様子 (最後に受信できた時刻・直近の受信の失敗・今受信中か・アドレスごとの様子).
+
+    読むだけ (メール画面が1分ごとに聞くので、書き込みのロックを取らない)。止めているアドレスは
+    数えない。アドレスが複数あるときの「最後に受信できた時刻」は一番前のもの (どのアドレスも
+    その時刻までは受信できている)。失敗は、失敗しているアドレスのうち一番長く受信できていない
+    ものを出し (どのアドレスかは last_error_account)、失敗しているアドレスの数を error_count に入れる。
+    """
+    rows = conn.execute(
+        "SELECT id, label, enabled, fetch_ok_at, fetch_error, fetch_error_at"
+        " FROM mail_accounts ORDER BY sort_order, id").fetchall()
+    active = [r for r in rows if r["enabled"]]
+    oks = [r["fetch_ok_at"] for r in active if r["fetch_ok_at"]]
+    failing = [r for r in active if r["fetch_error"]]
+    # 一度も受信できていないアドレス (時刻が空) が一番前になる
+    worst = min(failing, key=lambda r: (r["fetch_ok_at"] or "", r["fetch_error_at"] or ""),
+                default=None)
     return {
-        "last_fetch_at": _get_state(conn, FETCH_OK_AT_KEY) or None,
-        "last_error": error,
-        "last_error_at": (_get_state(conn, FETCH_ERROR_AT_KEY) or None) if error else None,
+        "last_fetch_at": min(oks) if oks else None,
+        "last_error": worst["fetch_error"] if worst else "",
+        "last_error_at": worst["fetch_error_at"] if worst else None,
+        "last_error_account": worst["label"] if worst else "",
+        "error_count": len(failing),
         "fetching": fetching(),
+        "accounts": [{
+            "id": r["id"], "label": r["label"], "enabled": bool(r["enabled"]),
+            "last_fetch_at": r["fetch_ok_at"],
+            "last_error": r["fetch_error"],
+            "last_error_at": r["fetch_error_at"] if r["fetch_error"] else None,
+        } for r in rows],
     }
 
 
 def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
-                      wait: float = 0) -> list[dict]:
-    """ほかの受信と重ならないように受信し、結果 (最終受信・失敗の理由) を記録する.
+                      wait: float = 0, failures: list | None = None) -> list[dict]:
+    """ほかの受信と重ならないように、受信するアドレスを1つずつ受信し、結果を記録する.
 
     ほかの受信が終わるのを wait 秒まで待ち、それでも終わらなければ FetchBusy。
-    受信に失敗したら理由を記録してから、その例外をそのまま送出する。
+    止めているアドレスは受信しない。1つのアドレスで失敗しても (パスワードの間違い・
+    受信サーバの不調など)、ほかのアドレスは受信する。失敗したアドレスは理由を記録し、
+    failures (渡したとき) に {"account_id", "label", "error"} を足す。
+    全部のアドレスで失敗したときは、最初の失敗の例外をそのまま送出する。
     """
     from . import notify  # 循環を避けるため遅延インポート
 
     if not _fetch_lock.acquire(timeout=max(wait, 0)):
         raise FetchBusy()
     try:
-        try:
-            added = fetch_new_mail(conn, settings, attachment_dir=attachment_dir)
-        except Exception as e:
-            _record_fetch(conn, error=notify.safe_error(
-                RuntimeError(fetch_error_text(e)), settings) or "受信できませんでした")
-            raise
-        _record_fetch(conn)
+        accounts = list_accounts(conn)
+        secrets = account_secrets(accounts)
+        added: list[dict] = []
+        errors: list[Exception] = []
+        tried = 0
+        for acc in accounts:
+            if not acc["enabled"]:
+                continue
+            tried += 1
+            acc_settings = account_settings(settings, acc)
+            try:
+                got = fetch_new_mail(conn, acc_settings, attachment_dir=attachment_dir,
+                                     account=acc)
+            except Exception as e:  # noqa: BLE001  ほかのアドレスの受信は続ける
+                conn.rollback()
+                if get_account(conn, acc["id"]) is None:
+                    continue   # 受信している間に、このアドレスが一覧から削除された
+                text = notify.safe_error(RuntimeError(fetch_error_text(e)), acc_settings,
+                                         secrets) or "受信できませんでした"
+                _record_account_fetch(conn, acc["id"], text)
+                print(f"メールの受信に失敗しました（{acc['label']}）: {text}")
+                errors.append(e)
+                if failures is not None:
+                    failures.append({"account_id": acc["id"], "label": acc["label"],
+                                     "error": text})
+                continue
+            _record_account_fetch(conn, acc["id"])
+            added += got
+        if errors and len(errors) == tried:
+            raise errors[0]
         return added
     finally:
         _fetch_lock.release()
@@ -1894,7 +2352,7 @@ def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
 def check_mail(conn, notifier=None, attachment_dir=None) -> int:
     """バックグラウンドの受信処理。取り込んだ新着件数を返す.
 
-    IMAP 未設定・自動受信OFFなら何もしない。「今すぐ受信」などで受信中なら、
+    受信するアドレスが無い (全部止めている)・自動受信OFFなら何もしない。「今すぐ受信」などで受信中なら、
     この回は受信しない (次の回に受信する)。優先度[高]の新着は通知する
     (notifier を差し替え可能にしてテストしやすくする)。
     attachment_dir は添付ファイルの保存先 (fetch_new_mail に渡す)。
@@ -1902,7 +2360,7 @@ def check_mail(conn, notifier=None, attachment_dir=None) -> int:
     from . import notify  # 循環を避けるため遅延インポート
 
     s = db.get_settings(conn)
-    if not str(s.get("imap_host", "")).strip() or not s.get("mail_fetch_enabled"):
+    if not s.get("mail_fetch_enabled") or not receiving_configured(conn):
         return 0
     try:
         added = fetch_mail_locked(conn, s, attachment_dir=attachment_dir)

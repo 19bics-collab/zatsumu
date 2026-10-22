@@ -737,7 +737,7 @@ def test_fetch_endpoint_saves_attachments(client, users, tmp_path, monkeypatch):
     client.patch("/api/settings", headers=auth(admin), json={"imap_host": "imap.example.com"})
     monkeypatch.setattr(mail, "_imap_connect", lambda s: FakeIMAP({5: mail_with_files()}))
     r = client.post("/api/mail/fetch", headers=auth(admin))
-    assert r.status_code == 200 and r.json() == {"fetched": 1}
+    assert r.status_code == 200 and r.json() == {"fetched": 1, "errors": []}
     mid = client.get("/api/mail", headers=auth(admin)).json()[0]["id"]
     atts = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()["attachments"]
     assert [a["filename"] for a in atts] == ["見積書.pdf", "間取り図.png"]

@@ -196,6 +196,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             conn.rollback()
             print(f"メールのつながりを記録できませんでした: {e}")
+        # 自動更新で前の版 (受信するアドレスが1つだけの版) に戻っていた間に取り込んだメールに、
+        # 届いたアドレス (旧設定から作ったもの) を付ける。失敗しても起動は止めない
+        try:
+            filled = mail.fill_missing_accounts(conn)
+            if filled:
+                print(f"メール {filled} 通に届いたアドレスを記録しました")
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            print(f"メールの届いたアドレスを記録できませんでした: {e}")
         # 保存済みのタイムゾーン設定を適用する
         tz.set_tz(db.get_settings(conn)["timezone"])
     finally:
@@ -466,6 +475,27 @@ class MailTemplateBody(BaseModel):
 class MailTemplatePatch(BaseModel):
     name: str | None = None
     body: str | None = None
+    move: str | None = None     # "up" / "down" (並び順を1つ上/下へ)
+
+
+class MailAccountBody(BaseModel):
+    """受信するメールアドレス (パスワードは空なら「変えない」)."""
+    label: str | None = None            # 受信箱に出す名前 (空ならアドレスの @ の前)
+    from_addr: str | None = None        # 返信の差出人 (「名前 <アドレス>」も可)
+    imap_host: str | None = None
+    imap_port: str | None = None
+    imap_ssl: bool | None = None
+    imap_user: str | None = None
+    imap_pass: str | None = None
+    imap_folder: str | None = None
+    imap_sent_folder: str | None = None
+    save_sent: bool | None = None
+    smtp_user: str | None = None        # 空なら共通の SMTP 設定で送る
+    smtp_pass: str | None = None
+    enabled: bool | None = None
+
+
+class MailAccountPatch(MailAccountBody):
     move: str | None = None     # "up" / "down" (並び順を1つ上/下へ)
 
 
@@ -894,7 +924,9 @@ SETTING_LABELS = {
     "mail_report_weekday": "週ごとのまとめを送る曜日（0=月曜〜6=日曜）",
     "mail_report_hour": "週ごとのまとめを送る時刻（時）",
 }
-# 変えたら、記録してある受信の失敗を消す設定 (前の設定での失敗は当てにならないので)
+# 変えたら、記録してある受信の失敗を消す設定 (前の設定での失敗は当てにならないので)。
+# imap_* は旧設定 (受信サーバが1つだけの頃) のもの。今はアドレスごとに設定する
+# (/api/mail/accounts) が、前の版の画面から送られてきても受け付ける
 IMAP_SETTING_KEYS = ("imap_host", "imap_port", "imap_user", "imap_pass",
                      "imap_folder", "imap_use_ssl", "mail_fetch_enabled")
 
@@ -1103,21 +1135,40 @@ def test_email(
     return {"sent": to}
 
 
-@app.post("/api/settings/test-imap")
-def test_imap(_admin=Depends(require_admin), conn=Depends(get_conn)):
-    """IMAP設定の疎通確認 (接続・ログイン・フォルダ選択まで試す)."""
-    s = db.get_settings(conn)
-    if not str(s.get("imap_host", "")).strip():
-        raise HTTPException(400, "IMAPが未設定です。受信サーバ等を保存してください")
+def _imap_test_result(s: dict, secrets) -> dict:
+    """IMAP の接続テスト (接続・ログイン・フォルダ選択・送信済みフォルダ) の結果.
+
+    失敗は 502 (理由は秘密値を伏せて返す)。接続している間は DB の書き込みロックを持たない。
+    """
     try:
         result = mail.test_imap(s)
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
-        raise HTTPException(502, f"接続に失敗しました: {notify.safe_error(e, s)}")
+        # 失敗の理由は、受信の失敗と同じ分かりやすい言葉にする (分からない失敗はそのまま)
+        reason = notify.safe_error(RuntimeError(mail.fetch_error_text(e)), s, secrets)
+        raise HTTPException(502, f"接続に失敗しました: {reason}")
     return {"ok": True, "count": result["count"],
             "sent_folder": result["sent_folder"],
             "sent_folder_error": notify.safe_error(
-                RuntimeError(result["sent_folder_error"]), s)
+                RuntimeError(result["sent_folder_error"]), s, secrets)
             if result["sent_folder_error"] else ""}
+
+
+@app.post("/api/settings/test-imap")
+def test_imap(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """IMAP設定の疎通確認 (接続・ログイン・フォルダ選択まで試す).
+
+    受信するアドレスの一覧があれば、その先頭のアドレスで試す (アドレスごとの接続テストは
+    POST /api/mail/accounts/{id}/test)。一覧がまだ無ければ旧設定の受信サーバで試す。
+    """
+    s = db.get_settings(conn)
+    accounts = mail.list_accounts(conn)
+    if accounts:
+        acc = next((a for a in accounts if a["enabled"]), accounts[0])
+        s = mail.account_settings(s, acc)
+    elif not str(s.get("imap_host", "")).strip():
+        raise HTTPException(400, "IMAPが未設定です。受信サーバ等を保存してください")
+    conn.commit()   # 接続 (時間がかかる) の間、DB の書き込みロックを持たない
+    return _imap_test_result(s, mail.account_secrets(accounts))
 
 
 @app.post("/api/settings/test-ai")
@@ -2242,6 +2293,9 @@ def audit_csv(
         "mail_update": "メール状態変更",
         "mail_report_send": "メールの週ごとのまとめを送信",
         "mail_notion": "メールをNotionに登録",
+        "mail_account_create": "受信するメールアドレスを追加",
+        "mail_account_update": "受信するメールアドレスを変更",
+        "mail_account_delete": "受信するメールアドレスを削除",
         "device_code_sent": "端末確認コード送信",
         "device_code_send_fail": "端末確認コード送信失敗",
         "device_verify_ok": "端末確認成功",
@@ -2288,17 +2342,21 @@ def purge_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
 # (並べ替えより先に数える)。一覧は出す行の相手ごとにまとめて数える (_thread_counts)
 _MAIL_LIST_SELECT = (
     "SELECT m.*, u.name AS assignee_name, lower(m.from_addr) AS from_key,"
+    " ac.label AS account_label,"
     " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count"
     " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
+    " LEFT JOIN mail_accounts ac ON ac.id = m.account_id"
 )
 # 1通だけ取るとき用。thread_count は同じ相手 (差出人のアドレス。大文字・小文字は区別しない)
-# から届いたほかのメールの数 (「やり取り N件」用。索引 idx_mails_from_lower で数える)
+# から届いたほかのメールの数 (「やり取り N件」用。索引 idx_mails_from_lower で数える)。
+# account_label は届いたアドレスの名前 (そのアドレスを削除していれば NULL)
 _MAIL_SELECT = (
-    "SELECT m.*, u.name AS assignee_name,"
+    "SELECT m.*, u.name AS assignee_name, ac.label AS account_label,"
     " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count,"
     " CASE WHEN m.from_addr = '' THEN 0 ELSE (SELECT COUNT(*) FROM mails t"
     " WHERE lower(t.from_addr) = lower(m.from_addr) AND t.id != m.id) END AS thread_count"
     " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
+    " LEFT JOIN mail_accounts ac ON ac.id = m.account_id"
 )
 
 
@@ -2341,6 +2399,9 @@ def _mail_summary(r, thread_count: int | None = None) -> dict:
         "category": r["category"],
         "assignee_user_id": r["assignee_user_id"],
         "assignee_name": r["assignee_name"] or "",
+        # 届いたアドレス (null=そのアドレスを削除した。画面では「削除したアドレス」)
+        "account_id": r["account_id"],
+        "account_label": r["account_label"] or "",
     }
 
 
@@ -2357,13 +2418,15 @@ def list_mail(
     priority: int | None = None,
     category: str | None = None,
     assignee: str | None = None,
+    account: str | None = None,
     admin=Depends(require_admin),
     conn=Depends(get_conn),
 ):
     """受信メール一覧 (優先度[高]が上・同一優先度は新しい順).
 
     category は種類の名前 (none で未分類)、assignee は担当の人の番号
-    (none で担当なし、me で自分の担当) で絞り込む。
+    (none で担当なし、me で自分の担当)、account は届いたアドレスの番号
+    (none で削除したアドレス) で絞り込む。
     """
     where, params = [], []
     if status:
@@ -2392,6 +2455,14 @@ def list_mail(
                 raise HTTPException(400, "assignee は担当の人の番号か none / me で指定してください")
             where.append("m.assignee_user_id = ?")
             params.append(uid)
+    if account:
+        if account == "none":
+            where.append("m.account_id IS NULL")
+        elif account.isascii() and account.isdigit():
+            where.append("m.account_id = ?")
+            params.append(int(account))
+        else:
+            raise HTTPException(400, "account は届いたアドレスの番号か none で指定してください")
     sql = _MAIL_LIST_SELECT
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -2410,18 +2481,33 @@ def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
     受信する。それでも終わらなければ 409 (少し待ってから押してもらう)。
     """
     s = db.get_settings(conn)
-    if not str(s.get("imap_host", "")).strip():
-        raise HTTPException(400, "IMAPが未設定です。設定画面で受信サーバを保存してください")
+    accounts = mail.list_accounts(conn)
+    if not any(a["enabled"] for a in accounts):
+        raise HTTPException(400, "受信するメールアドレスを全部止めています。設定画面の"
+                                 "「受信するメールアドレス」で「受信する」に戻してください"
+                            if accounts else
+                            "受信するメールアドレスが未設定です。設定画面の"
+                            "「受信するメールアドレス」で追加してください")
     conn.commit()   # 受信 (時間がかかる) の間、DB の書き込みロックを持たない
+    failures: list[dict] = []
     try:
         added = mail.fetch_mail_locked(conn, s, attachment_dir=MAIL_ATTACHMENT_DIR,
-                                       wait=FETCH_WAIT_SEC)
+                                       wait=FETCH_WAIT_SEC, failures=failures)
     except mail.FetchBusy as e:
         raise HTTPException(409, str(e))
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
-        reason = notify.safe_error(RuntimeError(mail.fetch_error_text(e)), s)
+        if len(failures) > 1:
+            # どのアドレスで、なぜ受信できなかったか (理由は記録した分かりやすい言葉)
+            reason = "／".join(f"{f['label']}: {f['error']}" for f in failures)
+        elif failures:
+            reason = failures[0]["error"]
+        else:
+            reason = notify.safe_error(RuntimeError(mail.fetch_error_text(e)), s,
+                                       mail.account_secrets(accounts))
         raise HTTPException(502, f"受信に失敗しました: {reason}")
-    return {"fetched": len(added)}
+    # 一部のアドレスだけ受信できなかったときは、どのアドレスかと理由も返す
+    return {"fetched": len(added),
+            "errors": [{"label": f["label"], "error": f["error"]} for f in failures]}
 
 
 # ----- 受信の様子 (メール画面が1分ごとに聞く) -----
@@ -2433,17 +2519,23 @@ def mail_status(_admin=Depends(require_admin), conn=Depends(get_conn)):
 
     未対応の数と一番新しいメールの番号 (どちらかが変わったら画面が受信箱を取り直す)、
     最後に受信できた時刻、直近の受信が失敗していればその理由 (分かりやすい言葉) を返す。
+    受信するアドレスが複数あるときは、アドレスごとの様子 (accounts) も返す (mail.fetch_state)。
     1分ごと・タブごとに呼ばれるので、DB は読むだけにする (書き込みのロックを取らない)。
     """
     s = db.get_settings(conn)
     unhandled, newest = conn.execute(
         "SELECT (SELECT COUNT(*) FROM mails WHERE status = 'unhandled'),"
         " (SELECT MAX(id) FROM mails)").fetchone()
-    imap_set = bool(str(s.get("imap_host") or "").strip())
+    state = mail.fetch_state(conn)
+    # 受信するアドレス (止めていないもの) があるか
+    imap_set = any(a["enabled"] for a in state["accounts"])
+    # 一覧から削除したアドレスに届いたメールの数 (受信箱の「アドレス」の絞り込みに出すか決める用)
+    deleted = conn.execute("SELECT COUNT(*) FROM mails WHERE account_id IS NULL").fetchone()[0]
     return {
         "unhandled": unhandled,
         "newest_id": newest,
-        **mail.fetch_state(conn),
+        **state,
+        "deleted_mail_count": deleted,
         "imap_set": imap_set,
         "auto_fetch": imap_set and bool(s["mail_fetch_enabled"]),
         "interval_min": s["mail_fetch_interval_min"],
@@ -2580,6 +2672,167 @@ def list_mail_assignees(_admin=Depends(require_admin), conn=Depends(get_conn)):
         "SELECT id, name FROM users WHERE active = 1 ORDER BY name, id")]
 
 
+# ----- 受信するメールアドレス (複数のアドレスをまとめて受信) -----
+# /api/mail/accounts... は /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)
+
+def _account_or_404(conn, account_id: int) -> dict:
+    acc = mail.get_account(conn, account_id)
+    if acc is None:
+        raise HTTPException(404, "受信するメールアドレスが見つかりません")
+    return acc
+
+
+def _account_mail_counts(conn) -> dict:
+    """アドレスごとの、残っているメールの数 {番号 (削除したアドレスは None): 通数}."""
+    return dict(conn.execute(
+        "SELECT account_id, COUNT(*) FROM mails GROUP BY account_id").fetchall())
+
+
+def _check_account_unique(conn, fields: dict, account_id: int | None = None) -> None:
+    """名前・メールボックスがほかのアドレスと同じなら 409 (同じメールを二重に受信しない)."""
+    for other in mail.list_accounts(conn):
+        if other["id"] == account_id:
+            continue
+        if mail.same_mailbox(other, fields):
+            raise HTTPException(409, f"同じメールボックスが「{other['label']}」として"
+                                     "もう登録されています")
+        if other["label"].strip().lower() == fields["label"].strip().lower():
+            raise HTTPException(409, f"「{fields['label']}」という名前のアドレスがもうあります"
+                                     "（受信箱で見分けられるよう、別の名前にしてください）")
+
+
+def _account_audit(fields: dict, keys) -> str:
+    """操作の記録に残す変更 (パスワードは *** にする)."""
+    return ", ".join(f"{k}=***" if k in mail.ACCOUNT_SECRET_FIELDS else f"{k}={fields[k]}"
+                     for k in keys)
+
+
+@app.get("/api/mail/accounts")
+def list_mail_accounts(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """受信するメールアドレスの一覧 (パスワードは返さず、入っているかだけ).
+
+    それぞれの受信の様子 (最後に受信できた時刻・失敗の理由) と残っているメールの数、
+    削除したアドレスに届いたメールの数 (deleted_mail_count) も返す。
+    """
+    counts = _account_mail_counts(conn)
+    return {"accounts": [mail.account_info(a, counts.get(a["id"], 0))
+                         for a in mail.list_accounts(conn)],
+            "deleted_mail_count": counts.get(None, 0),
+            "max_count": mail.ACCOUNT_MAX_COUNT}
+
+
+@app.post("/api/mail/accounts")
+def create_mail_account(
+    body: MailAccountBody, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """受信するメールアドレスを追加する (一覧の一番下に入る。次の受信から受信する).
+
+    初めて受信するアドレスは、設定の「初回に遡る日数」の分だけ前のメールから取り込む。
+    """
+    try:
+        fields = mail.clean_account(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if len(mail.list_accounts(conn)) >= mail.ACCOUNT_MAX_COUNT:
+        raise HTTPException(400, f"受信するメールアドレスは{mail.ACCOUNT_MAX_COUNT}個までです")
+    _check_account_unique(conn, fields)
+    cols = list(mail.ACCOUNT_FIELDS)
+    cur = conn.execute(
+        f"INSERT INTO mail_accounts ({', '.join(cols)}, sort_order, created_at)"
+        f" VALUES ({', '.join('?' * len(cols))},"
+        " (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM mail_accounts), ?)",
+        (*(fields[c] for c in cols), now_iso()),
+    )
+    # 一覧を使い始めたので、旧設定の受信サーバから作り直すことはしない
+    db.set_setting(conn, db.MAIL_ACCOUNTS_MIGRATED_KEY, "1")
+    _audit(conn, admin, "mail_account_create",
+           detail=f"account={cur.lastrowid} " + _account_audit(
+               fields, ("label", "from_addr", "imap_host", "imap_user", "smtp_user")))
+    return mail.account_info(_account_or_404(conn, cur.lastrowid))
+
+
+@app.patch("/api/mail/accounts/{account_id}")
+def patch_mail_account(
+    account_id: int, body: MailAccountPatch, admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """受信するメールアドレスの変更・止める/受信する (enabled)・並び順 (move: up / down).
+
+    パスワードは送られてきたときだけ変える。受信の接続先 (サーバ・ポート・SSL・ユーザー・
+    フォルダ) を変えたら、受信の続きの位置を消す (新しい接続先は初回と同じく日数で遡り、
+    取り込み済みのメールは同じ Message-ID なので二重には入らない)。接続先やパスワード・
+    止める/受信するを変えたら、記録した受信の失敗も消す (次の受信で、うまくいかなければまた記録される)。
+    """
+    current = _account_or_404(conn, account_id)
+    sent = {k: v for k, v in body.model_dump(exclude={"move"}).items() if v is not None}
+    if not sent and body.move is None:
+        raise HTTPException(400, "変更内容がありません")
+    if body.move is not None and body.move not in ("up", "down"):
+        raise HTTPException(400, "move は up か down で指定してください")
+    changed = []
+    if sent:
+        try:
+            fields = mail.clean_account(sent, current)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        changed = [k for k in mail.ACCOUNT_FIELDS if fields[k] != current[k]]
+    if changed:
+        _check_account_unique(conn, fields, account_id)
+        conn.execute(
+            "UPDATE mail_accounts SET " + ", ".join(f"{k} = ?" for k in changed)
+            + " WHERE id = ?", (*(fields[k] for k in changed), account_id))
+        if any(k in mail.ACCOUNT_CONNECTION_KEYS for k in changed):
+            conn.execute("UPDATE mail_accounts SET state_uidvalidity = '', state_last_uid = 0"
+                         " WHERE id = ?", (account_id,))
+        if any(k in (*mail.ACCOUNT_CONNECTION_KEYS, "imap_pass", "enabled") for k in changed):
+            mail.clear_fetch_error(conn, account_id)
+        _audit(conn, admin, "mail_account_update",
+               detail=f"account={account_id} {current['label']}: "
+                      + _account_audit(fields, changed))
+    if body.move:
+        # 隣と入れ替えて、全体を 0,1,2… と振り直す (定型文と同じ)
+        ids = [a["id"] for a in mail.list_accounts(conn)]
+        i = ids.index(account_id)
+        j = i - 1 if body.move == "up" else i + 1
+        if 0 <= j < len(ids):
+            ids[i], ids[j] = ids[j], ids[i]
+        conn.executemany("UPDATE mail_accounts SET sort_order = ? WHERE id = ?",
+                         [(n, x) for n, x in enumerate(ids)])
+    counts = _account_mail_counts(conn)
+    return mail.account_info(_account_or_404(conn, account_id), counts.get(account_id, 0))
+
+
+@app.delete("/api/mail/accounts/{account_id}")
+def delete_mail_account(
+    account_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """受信するメールアドレスを一覧から消す (そのアドレスに届いたメールは消さない).
+
+    残したメールは受信箱で「削除したアドレス」と出る (返信は共通の差出人で送る)。
+    """
+    acc = _account_or_404(conn, account_id)
+    kept = mail.delete_account(conn, account_id)
+    _audit(conn, admin, "mail_account_delete",
+           detail=f"account={account_id} {acc['label']} {mail.sender_address(acc['from_addr'])}"
+                  f" mails_kept={kept}")
+    return {"deleted": account_id, "mails_kept": kept}
+
+
+@app.post("/api/mail/accounts/{account_id}/test")
+def test_mail_account(
+    account_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """そのアドレスの保存済みの受信サーバに、接続・ログイン・フォルダ選択まで試す.
+
+    受信フォルダのメール数と、返信の控えを残す送信済みフォルダの名前を返す。
+    """
+    acc = _account_or_404(conn, account_id)
+    s = mail.account_settings(db.get_settings(conn), acc)
+    secrets = mail.account_secrets(mail.list_accounts(conn))
+    conn.commit()   # 接続 (時間がかかる) の間、DB の書き込みロックを持たない
+    return {**_imap_test_result(s, secrets), "label": acc["label"]}
+
+
 # ----- 週ごとのまとめ -----
 # /api/mail/report/... は /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)
 
@@ -2670,6 +2923,9 @@ def mail_detail(
     # 同じ相手とのやり取り (新しい順。こちらが送った返信も付く)
     history = (mail.mail_thread(conn, r) if thread
                else {"thread": [], "thread_total": 0})
+    s = db.get_settings(conn)
+    accounts = mail.list_accounts(conn)
+    acc = next((a for a in accounts if a["id"] == r["account_id"]), None)
     return {
         **_mail_summary(r),
         "to_addr": r["to_addr"],
@@ -2678,8 +2934,12 @@ def mail_detail(
         "draft_reply": r["draft_reply"],
         "draft_source": r["draft_source"],
         "draft_generated_at": r["draft_generated_at"],
-        # 「全員に返信」で CC に入れる候補 (元の To・Cc の人。自分たちと差出人は除く)
-        "reply_cc_candidates": mail.reply_all_cc(db.get_settings(conn), dict(r)),
+        # 届いたアドレスと、返信の差出人 (届いたアドレス。削除したアドレスなら共通の差出人)
+        "account_address": mail.sender_address(acc["from_addr"]) if acc else "",
+        "reply_from": mail.reply_sender(s, acc),
+        # 「全員に返信」で CC に入れる候補 (元の To・Cc の人。自分たち (受信するアドレス全部) と
+        # 差出人は除く)
+        "reply_cc_candidates": mail.reply_all_cc(s, dict(r), accounts),
         "reply_subject": r["reply_subject"],
         "reply_body": r["reply_body"],
         "reply_cc": mail.split_addresses(r["reply_cc"]),
@@ -2962,6 +3222,9 @@ def mail_send(
 
     cc / bcc を渡すと CC・BCC にも送る (全員に返信)。アドレスはここで確かめ、
     おかしなものがあれば何も送らずに 400 を返す。
+    差出人は元メールが届いたアドレス (kurosu@ に届いたら kurosu@ から返す)。送信のログインは
+    そのアドレスの送信用のユーザーがあればそれ、無ければ共通の SMTP 設定。控えは
+    そのアドレスのメールボックスの送信済みフォルダに残す。
     """
     r = _mail_or_404(conn, mail_id)
     if r["status"] == "replied":
@@ -2978,6 +3241,12 @@ def mail_send(
     s = db.get_settings(conn)
     if not s.get("smtp_host"):
         raise HTTPException(400, "SMTPが未設定です。設定画面で送信サーバを保存してください")
+    # 届いたアドレス (削除したアドレスなら None。差出人は共通の設定、控えは残さない)
+    acc = mail.get_account(conn, r["account_id"])
+    send_settings = mail.smtp_settings(s, acc)
+    sender = mail.reply_sender(s, acc)
+    copy_settings = mail.sent_copy_settings(conn, s, acc)
+    secrets = mail.account_secrets(mail.list_accounts(conn))
     subject = (body.subject or "").strip() or mail.reply_subject(r["subject"])
     # 先に「返信済み」へ原子的に更新・コミットしてから送信する (二重送信防止:
     # 同じメールへ同時に送信した場合、後の方は rowcount=0 になり 409 で止まる)。
@@ -3005,9 +3274,9 @@ def mail_send(
     refused: list[str] = []
     try:
         raw = mail.send_reply(
-            s, r["from_addr"], subject, text,
+            send_settings, r["from_addr"], subject, text,
             in_reply_to=r["message_id"], references=r["references_hdr"],
-            cc=cc, bcc=bcc,
+            cc=cc, bcc=bcc, sender=sender,
         )
     except mail.SomeRecipientsRefused as e:
         # 一部の送り先だけ送信サーバに断られた (ほかの人には届いている)
@@ -3015,7 +3284,13 @@ def mail_send(
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
         back_to_unhandled()
         conn.commit()
-        raise HTTPException(502, f"送信に失敗しました: {notify.safe_error(e, s)}")
+        reason = notify.safe_error(e, send_settings, secrets)
+        # 送信サーバに差出人 (共通のユーザーで kurosu@ から送るなど) を断られたときは、
+        # 何をすればよいかを先に書く (サーバの返事はその後ろに添える)
+        hint = mail.sender_refused_text(e, s, acc)
+        if hint:
+            reason = f"{hint}（送信サーバの返事: {reason}）"
+        raise HTTPException(502, f"送信に失敗しました: {reason}")
     refused_keys = {a.strip().lower() for a in refused}
     if r["from_addr"].strip().lower() in refused_keys:
         # 肝心の相手 (元メールの差出人) に届いていない。CC・BCC の人には届いているが、
@@ -3026,9 +3301,9 @@ def mail_send(
         # 閉じたときに、届いた文がどこにも残らなくなる)。
         # 控えの保存 (IMAP) は、DB に書く前にする (書き込みロックを持ったまま待たない)
         saved = ""
-        if delivered and raw and mail.should_save_sent(s):
+        if delivered and raw and copy_settings:
             try:
-                sent_folder = mail.save_to_sent(s, raw)
+                sent_folder = mail.save_to_sent(copy_settings, raw)
                 saved = f" saved={sent_folder}" if sent_folder else ""
             except Exception:  # noqa: BLE001  控えの失敗で知らせ方は変えない
                 saved = " saved=failed"
@@ -3060,13 +3335,13 @@ def mail_send(
     # 相手には届いているので、ここで失敗しても送信は成功として扱う
     # (失敗扱いにすると画面から再送され、相手に二重に届いてしまう)
     sent_folder, save_error = "", ""
-    if raw and mail.should_save_sent(s):
+    if raw and copy_settings:
         try:
-            sent_folder = mail.save_to_sent(s, raw)
+            sent_folder = mail.save_to_sent(copy_settings, raw)
         except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
-            save_error = notify.safe_error(e, s)
-    # 誰に送ったかを後から確かめられるよう、CC・BCC のアドレスと合計の件数も残す
-    detail = f"to={r['from_addr']}"
+            save_error = notify.safe_error(e, copy_settings, secrets)
+    # 誰に送ったかを後から確かめられるよう、差出人と CC・BCC のアドレスと合計の件数も残す
+    detail = f"to={r['from_addr']} from={mail.sender_address(sender) or sender}"
     if cc:
         detail += f" cc={','.join(cc)}"
     if bcc:
@@ -3080,6 +3355,6 @@ def mail_send(
         detail += " saved=failed"
     _audit(conn, admin, "mail_send", detail=detail)
     return {"sent": r["from_addr"], "cc": cc, "bcc": bcc, "refused": refused,
-            "subject": subject,
+            "subject": subject, "from": sender,
             "saved_to_sent": bool(sent_folder), "sent_folder": sent_folder,
             "sent_save_error": save_error}
