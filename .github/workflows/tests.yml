@@ -4,7 +4,10 @@ name: テスト
 # GitHub 側で必ずテストが走るようにする。
 on:
   push:
-    branches: [main]
+    # サーバの自動更新係 (deploy/auto-update) は、追いかけるブランチの各コミットに
+    # pytest の結果が付くのを待ってから反映する。PR の有無に関係なく結果が付くよう、
+    # claude/ で始まるブランチへの push でも走らせる
+    branches: [main, 'claude/**']
   pull_request:
   workflow_dispatch:
 
