@@ -168,22 +168,26 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
     # 宛先の info@ は自分たちの受信箱なので、全員に返信の CC 候補から外れるよう差出人に入れる
     db.set_setting(conn, "mail_from", "info@example.com")
 
+    # 種類ごとの担当の確認用 (運営代行のご相談は管理者が担当)
+    db.set_setting(conn, "mail_category_assignees", "運営代行のご相談: 管理者")
+
     def add_mail(mins_ago, from_name, from_addr, subject, body, prio, reason,
-                 draft="", status="unhandled", cc=""):
+                 draft="", status="unhandled", cc="", category="", assignee=None):
         received = (now_utc - timedelta(minutes=mins_ago)).isoformat()
         return conn.execute(
             "INSERT INTO mails (message_id, from_addr, from_name, to_addr,"
             " cc_addr, subject, body, received_at, fetched_at, priority,"
             " priority_reason, priority_source, status, draft_reply,"
-            " draft_source, draft_generated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " draft_source, draft_generated_at, category, assignee_user_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (f"<demo-{mins_ago}@example.com>", from_addr, from_name,
              "info@example.com", cc, subject, body, received,
              now_utc.isoformat(), prio, reason, "rule", status, draft,
              "template" if draft else "",
-             now_utc.isoformat() if draft else None),
+             now_utc.isoformat() if draft else None, category, assignee),
         ).lastrowid
 
+    # 種類を入れていないメール (この機能より前に取り込んだメール =「未分類」の表示の確認用)
     add_mail(20, "山本 商事", "yamamoto@example.com",
              "【至急】納品物の不具合について",
              "本日納品いただいた製品に不具合がありました。\n"
@@ -202,7 +206,8 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
         "お見積もりのご相談ありがとうございます。\n"
         "候補日程を確認のうえ、改めてご連絡差し上げます。",
         # 全員に返信 (CC) の確認用
-        cc="佐々木 部長 <sasaki-bucho@example.com>, keiri@example.com")
+        cc="佐々木 部長 <sasaki-bucho@example.com>, keiri@example.com",
+        category="運営代行のご相談", assignee=ids["管理者"])
     if attachment_dir is not None:
         # 添付ファイルの確認用 (画像は縮小表示される・大きすぎる動画は保存していない例)
         plan = _fake_floor_plan()
@@ -215,11 +220,11 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
     add_mail(240, "業界ニュース配信", "no-reply@newsletter.example.com",
              "【メルマガ】今週の業界トピックス",
              "今週の業界ニュースをお届けします。配信停止はこちら。",
-             3, "自動配信・お知らせ")
+             3, "自動配信・お知らせ", category="営業・宣伝")
     add_mail(1500, "高橋", "takahashi@example.com",
              "先日の打ち合わせのお礼",
              "先日はお時間をいただきありがとうございました。",
-             2, "通常", status="replied")
+             2, "通常", status="replied", category="その他")
 
     conn.commit()
     return True

@@ -54,6 +54,15 @@
   .mail-row { cursor: pointer; }
   .mail-row.done td { color: #9ca3af; }
   .mail-row:hover { background: #f0fdf4; }
+  /* 絞り込み (状態・種類・担当) */
+  .flt { padding: .4rem; border: 1px solid #ccc; border-radius: 6px; font-size: .9rem;
+         background: #fff; max-width: 14rem; margin: .2rem 0 .2rem .4rem; }
+  /* 問い合わせの種類 (一覧のバッジ) */
+  .cat { display: inline-block; font-size: .75rem; line-height: 1.5; padding: 0 .45rem;
+         border-radius: 99px; background: #e0f2fe; color: #075985; margin-right: .35rem;
+         white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+         vertical-align: 1px; }
+  .cat.none { background: #f3f4f6; color: #6b7280; }
   /* 設定 */
   .settings-grid { display: grid; gap: 1rem;
                    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
@@ -112,6 +121,10 @@
             border-radius: 6px; font-size: .9rem; }
   #m-tpl { max-width: 100%; padding: .35rem; border: 1px solid #ccc; border-radius: 6px;
            font-size: .9rem; background: #fff; }
+  /* 返信画面の 優先度・種類・担当 */
+  .m-field { font-size: .85rem; color: #374151; max-width: 100%; }
+  .m-field select { padding: .35rem; border: 1px solid #ccc; border-radius: 6px;
+                    font-size: .9rem; background: #fff; max-width: 14rem; }
   /* 返信の宛先 (宛先・全員に返信・CC・BCC) */
   .rcpt { margin-top: .8rem; display: flex; flex-direction: column; gap: .35rem;
           font-size: .88rem; color: #374151; }
@@ -204,22 +217,25 @@
 
 <section id="inbox" hidden>
   <h2>受信箱
-    <select id="filter" style="margin-left:1rem;padding:.4rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem">
+    <select id="filter" class="flt" aria-label="状態" style="margin-left:1rem">
       <option value="unhandled">未対応</option>
       <option value="replied">返信済み</option>
       <option value="archived">対応不要</option>
       <option value="">すべて</option>
     </select>
+    <select id="filter-cat" class="flt" aria-label="種類"><option value="">種類：すべて</option></select>
+    <select id="filter-asg" class="flt" aria-label="担当"><option value="">担当：すべて</option></select>
     <button id="fetch-now" class="ghost" style="margin-left:.6rem">今すぐ受信</button>
     <span id="fetch-msg" style="margin-left:.6rem;font-size:.85rem"></span>
   </h2>
   <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
+  問い合わせの種類（清掃のご依頼など）と担当は自動で入り、返信画面で変えられます。
   受信サーバ（IMAP）とAIの設定は「設定」画面で行ってください。</small></p>
   <p id="ai-warn" class="error" hidden><small>⚠ AIを使えていないため、キーワードでの判定と定型文の下書きで動いています。
   理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
   <div class="table-wrap"><table id="mail-table">
-    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>下書き</th></tr></thead>
+    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th></tr></thead>
     <tbody></tbody>
   </table></div>
 </section>
@@ -285,7 +301,8 @@
         <select id="set-anthropic-model"></select></label>
       <label class="set-row"><span>優先度の判定に使うモデル</span>
         <select id="set-anthropic-classify-model"></select></label>
-      <p class="set-help"><small>優先度の判定は届いたメール全部に使うので、安くて速い「低価格」がおすすめです。
+      <p class="set-help"><small>優先度の判定は届いたメール全部に使うので、安くて速い「低価格」がおすすめです
+      （問い合わせの種類も、このとき一緒に選びます）。
       「受信時に下書きを自動生成」がONだと、メール1通ごとに返信文用のモデルも使います
       （費用を抑えたいときはOFFにして、必要なメールだけ「返信文を生成」を押してください）。</small></p>
       <button class="ghost" id="set-test-ai">AI接続テスト</button>
@@ -326,6 +343,32 @@
         <button class="ghost" id="set-test-email">テスト送信</button>
       </div>
       <span id="test-email-msg" style="font-size:.85rem"></span>
+    </div>
+    <div class="set-card" id="cat-card">
+      <h3>種類と担当（問い合わせの自動仕分け）</h3>
+      <label style="display:block;margin:.2rem 0;font-size:.9rem" for="set-mail-categories">種類の一覧（1行に1つ）</label>
+      <textarea id="set-mail-categories" rows="7"></textarea>
+      <p class="set-help"><small>届いたメールを、この中のどれか1つに自動で仕分けます。
+      上から順に、受信箱と返信画面の選択欄に並びます。
+      「その他」（どれにも当てはまらないとき）は、消しても最後に自動で入ります。</small></p>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="set-mail-category-keywords">種類を決める言葉</label>
+      <textarea id="set-mail-category-keywords" rows="8"
+        placeholder="清掃のご依頼: 清掃, クリーニング, リネン"></textarea>
+      <p class="set-help"><small>1行に「種類: 言葉, 言葉」の形で書きます。
+      件名・本文・差出人にその言葉が入っていると、その種類にします。
+      上の行から順に調べ、最初に当てはまった種類になります（どれにも当てはまらなければ「その他」）。
+      AI（Claude）を使っているときは AI が種類を選び、ここに書いた言葉は選ぶときの目安として伝えます。</small></p>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="set-mail-category-assignees">種類ごとの担当</label>
+      <textarea id="set-mail-category-assignees" rows="3"
+        placeholder="運営代行のご相談: 黒須"></textarea>
+      <p class="set-help"><small>1行に「種類: 名前」の形で書くと、その種類のメールが届いたときに
+      担当が自動で入ります（1つの種類に1人まで。書いていない種類は担当なし）。
+      名前は、このサーバに登録されている人の名前と同じにしてください。
+      <span id="asg-names"></span></small></p>
+      <p><small>種類と担当は、受信箱の上の「種類」「担当」で絞り込めます。返信画面で
+      メールごとに変えることもできます（担当がいないメールの種類を変えると、その種類の担当が入ります）。
+      この機能を入れる前に届いたメールは「未分類」と出ます。
+      変えた内容は下の「保存」を押すと保存され、これから届くメールから使われます。</small></p>
     </div>
     <div class="set-card" id="tpl-card">
       <h3>定型文（よく使う返信文）</h3>
@@ -368,11 +411,13 @@
     <div class="mail-body" id="m-body"></div>
     <div class="atts" id="m-atts" hidden></div>
     <div style="display:flex;gap:.6rem;align-items:center;margin-top:.8rem;flex-wrap:wrap">
-      <label style="font-size:.85rem;color:#374151">優先度
-        <select id="m-priority" style="padding:.35rem;border:1px solid #ccc;border-radius:6px">
+      <label class="m-field">優先度
+        <select id="m-priority">
           <option value="1">高</option><option value="2">中</option><option value="3">低</option>
         </select>
       </label>
+      <label class="m-field">種類 <select id="m-category"></select></label>
+      <label class="m-field">担当 <select id="m-assignee"></select></label>
       <span id="m-reason" style="font-size:.8rem;color:#6b7280"></span>
     </div>
     <div class="rcpt">
@@ -420,7 +465,9 @@ const PR = { 1: "高", 2: "中", 3: "低" };
 const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応不要" };
 // cursorSet: 返信文の欄を一度でもタップしたか (定型文をカーソル位置に入れてよいかの判断用)
 // ccCandidates: 全員に返信の CC 候補 / ccSaved: 「CCの人にも送る」を外す前の CC の欄
-const EMPTY_MODAL = { id: null, savedDraft: "", cursorSet: false, ccCandidates: "", ccSaved: "" };
+// category / assigneeId / assigneeName: 保存済みの種類と担当 (変えられなかったときに選択欄を戻す用)
+const EMPTY_MODAL = { id: null, savedDraft: "", cursorSet: false, ccCandidates: "", ccSaved: "",
+                      category: "", assigneeId: null, assigneeName: "" };
 let modal = { ...EMPTY_MODAL };
 let viewName = "inbox";
 
@@ -493,6 +540,7 @@ async function showApp() {
   $("login").hidden = true;
   $("app").hidden = false;
   fillSettings(appSettings);
+  loadAssignees();   // 担当の選択肢は後から入る (受信箱を開くのを待たせない)
   showInbox();
 }
 
@@ -516,25 +564,92 @@ async function refreshBadge() {
 }
 
 /* ---------- 受信箱 ---------- */
+// 種類のバッジ。種類が空 (この機能より前に届いたメール) は「未分類」。種類の名前は esc() を通す
+const catBadge = c => c ? `<span class="cat">${esc(c)}</span>` : '<span class="cat none">未分類</span>';
+
 async function showInbox() {
   switchView("inbox");
-  const status = $("filter").value;
-  const list = await apiJson("/api/mail" + (status ? `?status=${status}` : ""));
+  // 絞り込み (状態・種類・担当)。値は URLSearchParams で URL に入れる
+  const q = new URLSearchParams();
+  for (const [key, id] of [["status", "filter"], ["category", "filter-cat"], ["assignee", "filter-asg"]]) {
+    if ($(id).value) q.set(key, $(id).value);
+  }
+  const list = await apiJson("/api/mail" + (q.toString() ? "?" + q : ""));
+  const filtered = $("filter-cat").value || $("filter-asg").value;
   document.querySelector("#mail-table tbody").innerHTML = list.map(m => `
-    <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}" data-id="${m.id}">
+    <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}" data-id="${Number(m.id)}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
       <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong></td>
-      <td data-label="件名">${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
+      <td data-label="件名">${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
       <td data-label="状態" class="st-${m.status}">${ST[m.status] || m.status}</td>
+      <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
       <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
     </tr>`).join("") ||
-    `<tr><td colspan="6"><small>メールはありません（「今すぐ受信」または設定画面のIMAP設定を確認してください）</small></td></tr>`;
+    (filtered
+      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の「種類」「担当」を「すべて」に戻すと全部見られます）</small></td></tr>`
+      : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」または設定画面のIMAP設定を確認してください）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
     tr.onclick = () => openMail(+tr.dataset.id));
   refreshBadge();
 }
 $("filter").onchange = () => showInbox();
+$("filter-cat").onchange = () => showInbox();
+$("filter-asg").onchange = () => showInbox();
+
+/* 種類・担当の選択肢。名前 (設定や登録した人の名前) は textContent で入れる */
+let assignees = [];   // 担当に選べる人 [{id, name}]
+const categories = () => appSettings.mail_category_list || [];
+
+function setOptions(sel, opts, value) {
+  sel.textContent = "";
+  for (const [v, label] of opts) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = label;
+    sel.appendChild(o);
+  }
+  // 選んでいた値が無くなったら (種類を消した等)「すべて」などの先頭に戻す
+  sel.value = opts.some(([v]) => v === value) ? value : opts[0][0];
+}
+
+function renderCategoryFilter() {
+  setOptions($("filter-cat"),
+    [["", "種類：すべて"], ...categories().map(c => [c, c]), ["none", "未分類"]],
+    $("filter-cat").value);
+}
+
+async function loadAssignees() {
+  try {
+    const r = await api("/api/mail/assignees");
+    if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
+    assignees = await r.json();
+  } catch { return; }
+  setOptions($("filter-asg"),
+    [["", "担当：すべて"], ["me", "自分の担当"], ["none", "担当なし"],
+     ...assignees.map(u => [String(u.id), u.name])],
+    $("filter-asg").value);
+  // 設定の「種類ごとの担当」に書ける名前の案内
+  $("asg-names").textContent = assignees.length
+    ? "登録されている名前: " + assignees.map(u => u.name).join("、") : "";
+  if (modal.id) fillAssigneeSelect(modal.assigneeId, modal.assigneeName);
+}
+
+function fillCategorySelect(value) {
+  const opts = [["", "未分類"], ...categories().map(c => [c, c])];
+  // 一覧から消した種類のメールは、その種類を「今の種類」として残す
+  if (value && !categories().includes(value)) opts.push([value, value + "（今の種類）"]);
+  setOptions($("m-category"), opts, value || "");
+}
+
+function fillAssigneeSelect(id, name) {
+  const opts = [["", "担当なし"], ...assignees.map(u => [String(u.id), u.name])];
+  // 無効にした人などが担当のままのメールは、その人を「今の担当」として残す
+  if (id && !assignees.some(u => u.id === id)) {
+    opts.push([String(id), (name || "（名前が分かりません）") + "（今の担当）"]);
+  }
+  setOptions($("m-assignee"), opts, id ? String(id) : "");
+}
 
 $("fetch-now").onclick = async () => {
   const b = $("fetch-now");
@@ -574,6 +689,11 @@ async function openMail(id) {
   $("m-body").textContent = m.body || "（本文なし）";
   renderAttachments(id, m);
   $("m-priority").value = m.priority;
+  modal.category = m.category || "";
+  modal.assigneeId = m.assignee_user_id || null;
+  modal.assigneeName = m.assignee_name || "";
+  fillCategorySelect(modal.category);
+  fillAssigneeSelect(modal.assigneeId, modal.assigneeName);
   $("m-reason").textContent = m.priority_reason
     ? `判定理由: ${m.priority_reason}（${{ ai: "AI", rule: "ルール", manual: "手動" }[m.priority_source] || m.priority_source}）` : "";
   $("m-draft").value = m.status === "replied" ? m.reply_body : (m.draft_reply || "");
@@ -603,6 +723,32 @@ $("m-priority").onchange = async () => {
     $("m-reason").textContent = "判定理由: 手動変更（手動）";
     showInbox();
   } catch {}
+};
+
+/* 種類・担当の変更 (すぐ保存する)。担当がいないメールの種類を変えると、
+   その種類の担当 (設定) が入るので、返ってきた担当に選択欄をそろえる */
+async function patchMail(fields) {
+  const r = await apiJson(`/api/mail/${modal.id}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  modal.category = r.category || "";
+  modal.assigneeId = r.assignee_user_id || null;
+  modal.assigneeName = r.assignee_name || "";
+  fillCategorySelect(modal.category);
+  fillAssigneeSelect(modal.assigneeId, modal.assigneeName);
+  showInbox();
+}
+$("m-category").onchange = async () => {
+  if (!modal.id) return;
+  try { await patchMail({ category: $("m-category").value }); }
+  catch { fillCategorySelect(modal.category); }   // 変えられなかったら元に戻す
+};
+$("m-assignee").onchange = async () => {
+  if (!modal.id) return;
+  const v = $("m-assignee").value;
+  try { await patchMail({ assignee_user_id: v ? Number(v) : null }); }
+  catch { fillAssigneeSelect(modal.assigneeId, modal.assigneeName); }
 };
 
 $("m-gen").onclick = async () => {
@@ -888,6 +1034,7 @@ async function openSettings() {
   fillSettings(appSettings);
   loadDevices();
   loadTemplates();
+  loadAssignees();   // 登録されている名前 (種類ごとの担当の案内) を取り直す
 }
 
 function fillSettings(s) {
@@ -916,6 +1063,10 @@ function fillSettings(s) {
   $("set-mail-instructions").value = s.mail_reply_instructions;
   $("set-mail-vip").value = s.mail_vip_addresses;
   $("set-mail-keywords").value = s.mail_urgent_keywords;
+  $("set-mail-categories").value = s.mail_categories;
+  $("set-mail-category-keywords").value = s.mail_category_keywords;
+  $("set-mail-category-assignees").value = s.mail_category_assignees;
+  renderCategoryFilter();   // 種類の一覧を変えたら、受信箱の絞り込みもそろえる
   $("set-smtp-host").value = s.smtp_host;
   $("set-smtp-port").value = s.smtp_port;
   $("set-smtp-user").value = s.smtp_user;
@@ -995,6 +1146,9 @@ $("set-save").onclick = async () => {
     mail_reply_instructions: $("set-mail-instructions").value,
     mail_vip_addresses: $("set-mail-vip").value,
     mail_urgent_keywords: $("set-mail-keywords").value,
+    mail_categories: $("set-mail-categories").value,
+    mail_category_keywords: $("set-mail-category-keywords").value,
+    mail_category_assignees: $("set-mail-category-assignees").value,
   };
   // SMTP は勤怠画面と共通。この画面で実際に変えた項目だけ送り、
   // 表示していた古い値で相手側の変更を消さないようにする

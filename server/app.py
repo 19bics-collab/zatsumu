@@ -352,12 +352,17 @@ class SettingsPatch(BaseModel):
     mail_reply_instructions: str | None = None
     mail_vip_addresses: str | None = None
     mail_urgent_keywords: str | None = None
+    mail_categories: str | None = None
+    mail_category_keywords: str | None = None
+    mail_category_assignees: str | None = None
 
 
 class MailPatch(BaseModel):
     draft_reply: str | None = None
     priority: int | None = None
     status: str | None = None
+    category: str | None = None           # 問い合わせの種類 ("" で未分類に戻す)
+    assignee_user_id: int | None = None   # 担当の人 (null で担当なし)
 
 
 class MailDraftBody(BaseModel):
@@ -777,6 +782,8 @@ def _mask_settings(s: dict) -> dict:
         {**e, "message": notify.safe_error(RuntimeError(e["message"]), s)}
         for e in mail.ai_errors()
     ] if str(s.get("anthropic_api_key") or "").strip() else []
+    # 今使う種類の一覧 (読み取り専用。メール画面の選択欄用。「その他」は必ず入っている)
+    s["mail_category_list"] = mail.category_list(s)
     for key in ("smtp_pass", "imap_pass", "anthropic_api_key"):
         s[f"{key}_set"] = bool(s.get(key))
         s[key] = ""
@@ -863,6 +870,26 @@ def patch_settings(
                     400, "モデル名の形式が正しくありません（例: claude-opus-5-5）")
 
     current = db.get_settings(conn)
+    cat_keys = ("mail_categories", "mail_category_keywords", "mail_category_assignees")
+    if any(k in changes for k in cat_keys):
+        # 種類と担当の3つは互いに関係する (キーワード・担当の行は種類の一覧にある種類だけ)
+        # ので、保存済みの値と合わせて確かめる。担当の名前が登録されているかは、
+        # 担当の欄を変えたときだけ確かめる (後から無効にした人がいても、ほかの設定は保存できる)
+        merged = {k: changes.get(k, current[k]) for k in cat_keys}
+        users = None
+        if mail.normalize_newlines(merged["mail_category_assignees"]).strip() != \
+                mail.normalize_newlines(current["mail_category_assignees"]).strip():
+            users = conn.execute(
+                "SELECT id, name FROM users WHERE active = 1 ORDER BY id").fetchall()
+        try:
+            cleaned = mail.clean_category_settings(
+                merged["mail_categories"], merged["mail_category_keywords"],
+                merged["mail_category_assignees"], users=users)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        for key, value in zip(cat_keys, cleaned):
+            if key in changes:
+                changes[key] = value
     if any(k in changes and str(changes[k]) != str(current.get(k, ""))
            for k in ("anthropic_api_key", "anthropic_model", "anthropic_classify_model")):
         # キーやモデルを変えたら、前の設定での AI の失敗の記録は当てにならないので消す
@@ -1219,6 +1246,9 @@ def delete_user(
     for tbl in ("screenshots", "sessions", "journals", "leave_requests", "corrections",
                 "device_tokens", "device_challenges"):
         conn.execute(f"DELETE FROM {tbl} WHERE user_id = ?", (user_id,))
+    # その人が担当のメールは消さずに「担当なし」に戻す
+    conn.execute("UPDATE mails SET assignee_user_id = NULL WHERE assignee_user_id = ?",
+                 (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     _audit(conn, admin, "user_delete", detail=target["name"])
     return {"deleted": user_id, "name": target["name"]}
@@ -2063,7 +2093,17 @@ def purge_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
 
 # ===================== メール (受信箱・優先度・AI返信) =====================
 
+# 一覧・詳細で使う SELECT (担当の人の名前と、添付ファイルの数も一緒に取る。
+# 添付は保存しなかったものも数える。一覧で 📎 を出す用)
+_MAIL_SELECT = (
+    "SELECT m.*, u.name AS assignee_name,"
+    " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count"
+    " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
+)
+
+
 def _mail_summary(r) -> dict:
+    """一覧に出す項目 (r は _MAIL_SELECT で取った行)."""
     return {
         "id": r["id"],
         "from_addr": r["from_addr"],
@@ -2076,6 +2116,11 @@ def _mail_summary(r) -> dict:
         "status": r["status"],
         "has_draft": bool(r["draft_reply"]),
         "replied_at": r["replied_at"],
+        "attachment_count": r["attachment_count"],
+        # 種類 (空=未分類。この機能より前に取り込んだメール) と担当
+        "category": r["category"],
+        "assignee_user_id": r["assignee_user_id"],
+        "assignee_name": r["assignee_name"] or "",
     }
 
 
@@ -2090,29 +2135,48 @@ def _mail_or_404(conn, mail_id: int):
 def list_mail(
     status: str | None = None,
     priority: int | None = None,
-    _admin=Depends(require_admin),
+    category: str | None = None,
+    assignee: str | None = None,
+    admin=Depends(require_admin),
     conn=Depends(get_conn),
 ):
-    """受信メール一覧 (優先度[高]が上・同一優先度は新しい順)."""
+    """受信メール一覧 (優先度[高]が上・同一優先度は新しい順).
+
+    category は種類の名前 (none で未分類)、assignee は担当の人の番号
+    (none で担当なし、me で自分の担当) で絞り込む。
+    """
     where, params = [], []
     if status:
         if status not in mail.MAIL_STATUSES:
             raise HTTPException(400, f"不明な状態です: {status}")
-        where.append("status = ?")
+        where.append("m.status = ?")
         params.append(status)
     if priority is not None:
         if priority not in (1, 2, 3):
             raise HTTPException(400, "priority は 1〜3 で指定してください")
-        where.append("priority = ?")
+        where.append("m.priority = ?")
         params.append(priority)
-    # 添付ファイルの数 (一覧で 📎 を出す用。保存しなかったものも数える)
-    sql = ("SELECT m.*, (SELECT COUNT(*) FROM mail_attachments a"
-           " WHERE a.mail_id = m.id) AS attachment_count FROM mails m")
+    if category:
+        # 一覧から消した種類のメールも探せるよう、設定の一覧とは照らし合わせない
+        where.append("m.category = ?")
+        params.append("" if category == "none" else category)
+    if assignee:
+        if assignee == "none":
+            where.append("m.assignee_user_id IS NULL")
+        else:
+            if assignee == "me":
+                uid = admin["id"]
+            elif assignee.isascii() and assignee.isdigit():
+                uid = int(assignee)
+            else:
+                raise HTTPException(400, "assignee は担当の人の番号か none / me で指定してください")
+            where.append("m.assignee_user_id = ?")
+            params.append(uid)
+    sql = _MAIL_SELECT
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY priority, received_at DESC LIMIT 500"
-    return [{**_mail_summary(r), "attachment_count": r["attachment_count"]}
-            for r in conn.execute(sql, params)]
+    sql += " ORDER BY m.priority, m.received_at DESC LIMIT 500"
+    return [_mail_summary(r) for r in conn.execute(sql, params)]
 
 
 @app.post("/api/mail/fetch")
@@ -2244,6 +2308,20 @@ def delete_mail_template(
     return {"deleted": tid}
 
 
+# ----- 担当に選べる人 -----
+# /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)
+
+@app.get("/api/mail/assignees")
+def list_mail_assignees(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """担当に選べる人 (有効な人) の番号と名前 (メール画面の選択欄用).
+
+    メール専用サーバでは Caddy の許可リストが /api/users を通さないので、
+    メール画面にはここで返す (トークンなどは返さない)。
+    """
+    return [{"id": r["id"], "name": r["name"]} for r in conn.execute(
+        "SELECT id, name FROM users WHERE active = 1 ORDER BY name, id")]
+
+
 @app.get("/api/mail/{mail_id}/templates")
 def mail_templates_for_mail(
     mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
@@ -2266,7 +2344,9 @@ def mail_templates_for_mail(
 
 @app.get("/api/mail/{mail_id}")
 def mail_detail(mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)):
-    r = _mail_or_404(conn, mail_id)
+    r = conn.execute(_MAIL_SELECT + " WHERE m.id = ?", (mail_id,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Not found")
     atts = conn.execute("SELECT * FROM mail_attachments WHERE mail_id = ? ORDER BY id",
                         (mail_id,)).fetchall()
     return {
@@ -2359,22 +2439,55 @@ def mail_patch(
     mail_id: int, body: MailPatch, admin=Depends(require_admin),
     conn=Depends(get_conn),
 ):
-    """下書きの保存・優先度の手動変更・状態変更 (対応不要など)."""
-    _mail_or_404(conn, mail_id)
+    """下書きの保存・優先度の手動変更・状態変更 (対応不要など)・種類と担当の変更.
+
+    種類を変えたとき、担当がまだいなければ、その種類の担当 (設定) を入れる。
+    返り値には変更後の種類と担当を入れる (画面の選択欄をそろえる用)。
+    """
+    row = _mail_or_404(conn, mail_id)
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    # 担当は null (担当なし) にするのも変更なので、送られてきたかどうかで見る
+    if "assignee_user_id" in body.model_fields_set:
+        changes["assignee_user_id"] = body.assignee_user_id
     if not changes:
         raise HTTPException(400, "変更内容がありません")
+    # 先にすべて確かめてから書き込む
+    if "priority" in changes and changes["priority"] not in (1, 2, 3):
+        raise HTTPException(400, "priority は 1〜3 で指定してください")
+    if "status" in changes and changes["status"] not in mail.MAIL_STATUSES:
+        raise HTTPException(400, f"不明な状態です: {changes['status']}")
+    s = db.get_settings(conn)
+    if "category" in changes:
+        category = " ".join(changes["category"].split())
+        # 一覧から消した種類のままにしておく (変えない) のは認める
+        if category and category != row["category"]:
+            found = mail.find_category(category, mail.category_list(s))
+            if not found:
+                raise HTTPException(
+                    400, f"「{category}」は種類の一覧にありません"
+                         "（設定の「種類と担当」で追加できます）")
+            category = found
+        changes["category"] = category
+    if "assignee_user_id" in changes:
+        uid = changes["assignee_user_id"]
+        # 今の担当のままにしておく (後から無効にした人でも) のは認める
+        if uid is not None and uid != row["assignee_user_id"] and not conn.execute(
+                "SELECT 1 FROM users WHERE id = ? AND active = 1", (uid,)).fetchone():
+            raise HTTPException(400, "担当に選んだ人が見つかりません（無効にした人は選べません）")
+    elif (changes.get("category") and changes["category"] != row["category"]
+          and row["assignee_user_id"] is None):
+        # 種類を変えて、担当がまだいないときは、その種類の担当 (設定) を入れる
+        uid = mail.default_assignees(conn, s).get(changes["category"])
+        if uid is not None:
+            changes["assignee_user_id"] = uid
+
     if "priority" in changes:
-        if changes["priority"] not in (1, 2, 3):
-            raise HTTPException(400, "priority は 1〜3 で指定してください")
         conn.execute(
             "UPDATE mails SET priority = ?, priority_reason = ?,"
             " priority_source = 'manual' WHERE id = ?",
             (changes["priority"], "手動変更", mail_id),
         )
     if "status" in changes:
-        if changes["status"] not in mail.MAIL_STATUSES:
-            raise HTTPException(400, f"不明な状態です: {changes['status']}")
         conn.execute(
             "UPDATE mails SET status = ? WHERE id = ?",
             (changes["status"], mail_id),
@@ -2384,10 +2497,28 @@ def mail_patch(
             "UPDATE mails SET draft_reply = ? WHERE id = ?",
             (changes["draft_reply"], mail_id),
         )
-    if "priority" in changes or "status" in changes:
-        _audit(conn, admin, "mail_update", detail=f"mail={mail_id} " + ", ".join(
-            f"{k}={v}" for k, v in changes.items() if k != "draft_reply"))
-    return {"updated": mail_id}
+    if "category" in changes:
+        conn.execute("UPDATE mails SET category = ? WHERE id = ?",
+                     (changes["category"], mail_id))
+    if "assignee_user_id" in changes:
+        conn.execute("UPDATE mails SET assignee_user_id = ? WHERE id = ?",
+                     (changes["assignee_user_id"], mail_id))
+    r = conn.execute(_MAIL_SELECT + " WHERE m.id = ?", (mail_id,)).fetchone()
+    logged = []
+    for k, v in changes.items():
+        if k == "draft_reply":
+            continue
+        if k == "category":
+            v = v or "未分類"
+        elif k == "assignee_user_id":
+            # 後から名前を見て分かるよう、番号と一緒に名前も残す
+            k, v = "assignee", f"{r['assignee_name']}({v})" if v is not None else "なし"
+        logged.append(f"{k}={v}")
+    if logged:
+        _audit(conn, admin, "mail_update", detail=f"mail={mail_id} " + ", ".join(logged))
+    return {"updated": mail_id, "category": r["category"],
+            "assignee_user_id": r["assignee_user_id"],
+            "assignee_name": r["assignee_name"] or ""}
 
 
 @app.post("/api/mail/{mail_id}/send")

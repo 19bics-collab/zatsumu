@@ -108,7 +108,10 @@ CREATE TABLE IF NOT EXISTS mails (
     references_hdr TEXT NOT NULL DEFAULT '',  -- スレッド返信用 References ヘッダ
     cc_addr TEXT NOT NULL DEFAULT '',         -- 受信メールの Cc ヘッダ (全員に返信の候補)
     reply_cc TEXT NOT NULL DEFAULT '',        -- 実際に CC で送ったアドレス (", " 区切り)
-    reply_bcc TEXT NOT NULL DEFAULT ''        -- 実際に BCC で送ったアドレス (", " 区切り)
+    reply_bcc TEXT NOT NULL DEFAULT '',       -- 実際に BCC で送ったアドレス (", " 区切り)
+    category TEXT NOT NULL DEFAULT '',        -- 問い合わせの種類 (空=未分類。この機能より前のメール)
+    -- 担当の人 (NULL=担当なし)。その人を削除したら担当なしに戻す
+    assignee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
 );
 -- 受信メールの添付ファイル (server/mail.py)。中身はデータフォルダの
 -- mail_attachments/<mail_id>/<id> に置く (元のファイル名は保存先のパスに使わない)。
@@ -234,6 +237,25 @@ STR_SETTINGS = {
     "mail_vip_addresses": "",      # 常に優先度[高]にする差出人 (カンマ区切り)
     # 件名/本文に含まれると優先度[高]にするキーワード (カンマ区切り)
     "mail_urgent_keywords": "至急,緊急,大至急,クレーム,苦情,障害,トラブル,重要,締切,期限,本日中,urgent,asap",
+    # 問い合わせの種類 (1行に1つ。カンマ区切りも可)。受信時に AI かキーワードでどれか1つに
+    # 仕分ける。「その他」は一覧から消しても必ず最後に入る (server/mail.py)
+    "mail_categories": "\n".join([
+        "清掃のご依頼", "予約・宿泊のお問い合わせ", "請求・お支払い",
+        "運営代行のご相談", "営業・宣伝", "その他",
+    ]),
+    # 種類を決める言葉 (1行に「種類: 言葉, 言葉」)。AI を使わないときは上の行から順に調べ、
+    # 件名・本文・差出人に最初に当てはまった種類にする。AI を使うときは判定の目安として伝える
+    "mail_category_keywords": "\n".join([
+        "清掃のご依頼: 清掃, クリーニング, リネン, シーツ, タオル, 掃除",
+        "予約・宿泊のお問い合わせ: 予約, 宿泊, チェックイン, チェックアウト, キャンセル,"
+        " ゲスト, airbnb, booking.com",
+        "請求・お支払い: 請求, 支払, 振込, 振り込み, 入金, 領収書, インボイス",
+        "運営代行のご相談: 運営代行, 民泊運営, 管理代行, 開業, 届出",
+        "営業・宣伝: セミナー, キャンペーン, 配信停止, メルマガ, 広告, unsubscribe",
+    ]),
+    # 種類ごとの担当 (1行に「種類: 名前」)。その種類のメールが届いたら、登録されている
+    # 同じ名前の人を担当にする (空なら担当は自動で入らない)
+    "mail_category_assignees": "",
 }
 
 # 後方互換: 旧名を参照しているコード向け
@@ -353,6 +375,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("cc_addr", "reply_cc", "reply_bcc"):
         if col not in mcols:
             conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    # 問い合わせの種類と担当。以前に取り込んだメールは種類が空 (画面では「未分類」)・担当なし
+    if "category" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+    if "assignee_user_id" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN assignee_user_id INTEGER"
+                     " REFERENCES users(id) ON DELETE SET NULL")
+    # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
     _seed_mail_templates(conn)

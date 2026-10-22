@@ -160,6 +160,11 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   写真は縮小表示、ほかは「ダウンロード」。1つ15MB・1通で合わせて40MBまで保存し、
   それより大きいものは「大きすぎるため保存していません」と名前だけ出る。
   この機能を入れた後に届いたメールから保存）。
+  届いたメールは**問い合わせの種類**（清掃のご依頼・予約・宿泊のお問い合わせ・
+  請求・お支払い・運営代行のご相談・営業・宣伝・その他）に自動で仕分け、
+  種類ごとの**担当**も自動で入ります（AI を使うときは優先度と同じ1回の依頼で種類も選び、
+  使わないときは設定の言葉で決める。受信箱の「種類」「担当」で絞り込め、返信画面で変えられる。
+  種類の一覧・言葉・担当は設定画面の「種類と担当」で変えられる）。
   勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
   **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
   メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
@@ -227,12 +232,13 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
-| GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority で絞り込み） |
+| GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority/category/assignee で絞り込み。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
 | GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧） |
 | GET | `/api/mail/{id}/attachments/{添付id}` | admin | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
 | POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み |
 | POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
-| PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態の変更 |
+| PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更 |
+| GET | `/api/mail/assignees` | admin | 担当に選べる人（有効な人の番号と名前） |
 | POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る） |
 | GET/POST | `/api/mail/templates` | admin | 定型文の一覧・追加 |
 | PATCH/DELETE | `/api/mail/templates/{id}` | admin | 定型文の変更・並べ替え（`move: up/down`）・削除 |
