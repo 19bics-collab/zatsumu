@@ -5,6 +5,7 @@ ZATSUMU_DEMO=1 で起動すると、DB が空の場合に固定トークンの�
 (トークンが公知のため)。
 
   管理者: demo-admin / メンバー: demo-tanaka, demo-suzuki, demo-sato
+  (田中 はメール担当者。demo-tanaka でメール画面に入ると、下書きと「確認をお願いする」だけできる)
 """
 import io
 import random
@@ -83,6 +84,9 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
                  (team_ids["営業部"], ids["田中"], ids["佐藤"]))
     conn.execute("UPDATE users SET team_id = ? WHERE id = ?",
                  (team_ids["開発部"], ids["鈴木"]))
+    # メール担当者 (メール画面で下書きを作り、管理者に「確認をお願いする」) の確認用
+    conn.execute("UPDATE users SET mail_role = ? WHERE id = ?",
+                 (db.MAIL_ROLE_STAFF, ids["田中"]))
 
     now_utc = datetime.now(timezone.utc)
     now = now_utc.astimezone(tz.TZ)
@@ -281,6 +285,21 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              "【メルマガ】今週の業界トピックス",
              "今週の業界ニュースをお届けします。配信停止はこちら。",
              3, "自動配信・お知らせ", category="営業・宣伝")
+    # 確認待ちの確認用: メール担当者の田中さんが下書きを作り、「確認をお願いする」を押したメール
+    pending_id = add_mail(
+        70, "伊藤", "ito@example.com", "チェックインの時間について",
+        "来週の土曜日に宿泊予定の伊藤です。\n到着が20時ごろになりそうですが、"
+        "チェックインはできますでしょうか。", 2, "通常",
+        "伊藤 様\n\nお問い合わせいただき、ありがとうございます。\n"
+        "20時ごろのご到着でも、チェックインいただけます。\n"
+        "玄関横のキーボックスの暗証番号は、ご到着の前日にお送りいたします。\n"
+        "どうぞよろしくお願いいたします。",
+        category="予約・宿泊のお問い合わせ")
+    conn.execute(
+        "UPDATE mails SET status = 'pending_approval', requested_by = ?, requested_at = ?,"
+        " approval_note = ? WHERE id = ?",
+        ("田中", (now_utc - timedelta(minutes=10)).isoformat(),
+         "遅い時間のチェックインで大丈夫か、確かめてください", pending_id))
     add_mail(1500, "高橋", "takahashi@example.com",
              "先日の打ち合わせのお礼",
              "先日はお時間をいただきありがとうございました。",

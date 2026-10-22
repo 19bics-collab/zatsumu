@@ -133,10 +133,10 @@ def deliver(settings: dict, text: str, subject: str = "zatsumu 通知") -> list[
     return sent
 
 
-def deliver_async(settings: dict, text: str) -> None:
-    """呼び出し元をブロックせずに送信する (着席/退席など)."""
+def deliver_async(settings: dict, text: str, subject: str = "zatsumu 通知") -> None:
+    """呼び出し元をブロックせずに送信する (着席/退席・メールの確認のお願いなど)."""
     if not channels(settings):
         return
     threading.Thread(
-        target=deliver, args=(dict(settings), text), daemon=True
+        target=deliver, args=(dict(settings), text, subject), daemon=True
     ).start()

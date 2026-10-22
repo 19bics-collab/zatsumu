@@ -3,6 +3,8 @@
 
     python manage.py add-user 田中        # 一般ユーザー作成(トークン表示)
     python manage.py add-user 管理者 --admin
+    python manage.py add-user 田中 --mail-staff  # メール担当者として作成 (メール画面で
+                                               # 下書きと「確認をお願いする」ができる。送信はできない)
     python manage.py list-users
     python manage.py reset-token 管理者    # トークンを再発行(紛失時の復旧用)
     python manage.py make-admin 田中        # 既存ユーザーを管理者に昇格
@@ -13,6 +15,7 @@
     python manage.py device-revoke 3           # 端末 3 番を取り消す (all で全部)
     python manage.py issue-device 管理者       # メールが届かないときの復旧用に
                                                # 端末トークンを発行して表示する
+                                               # (メール担当者にも発行できる)
 """
 import argparse
 import secrets
@@ -37,6 +40,8 @@ def main() -> None:
     add = sub.add_parser("add-user")
     add.add_argument("name")
     add.add_argument("--admin", action="store_true")
+    add.add_argument("--mail-staff", action="store_true",
+                     help="メール担当者にする (メール画面の設定「メール担当者」でも切り替えられる)")
     sub.add_parser("list-users")
     rt = sub.add_parser("reset-token")
     rt.add_argument("name")
@@ -54,11 +59,17 @@ def main() -> None:
     with db.get_db() as conn:
         if args.cmd == "add-user":
             user = db.create_user(conn, args.name, is_admin=args.admin)
+            if args.mail_staff and not args.admin:
+                conn.execute("UPDATE users SET mail_role = ? WHERE id = ?",
+                             (db.MAIL_ROLE_STAFF, user["id"]))
             print(f"作成しました: {user['name']} (admin={user['is_admin']})")
+            if args.mail_staff and not args.admin:
+                print("メール担当者にしました（メール画面にこのトークンでログインできます）。")
             print(f"トークン: {user['token']}")
         elif args.cmd == "list-users":
-            for r in conn.execute("SELECT id, name, is_admin FROM users"):
-                role = "admin" if r["is_admin"] else "user"
+            for r in conn.execute("SELECT id, name, is_admin, mail_role FROM users"):
+                role = ("admin" if r["is_admin"] else
+                        "mail-staff" if r["mail_role"] == db.MAIL_ROLE_STAFF else "user")
                 print(f"{r['id']}\t{r['name']}\t{role}")
         elif args.cmd in ("reset-token", "make-admin"):
             row = conn.execute(
@@ -117,13 +128,14 @@ def main() -> None:
                 print(f"端末 {row['id']} を取り消しました。")
         elif args.cmd == "issue-device":
             row = conn.execute(
-                "SELECT id, name, is_admin FROM users WHERE name = ?", (args.name,)
+                "SELECT id, name, is_admin, mail_role FROM users WHERE name = ?", (args.name,)
             ).fetchone()
             if not row:
                 print(f"ユーザーが見つかりません: {args.name}")
                 raise SystemExit(1)
-            if not row["is_admin"]:
-                print(f"{row['name']} は管理者ではありません（端末の確認は管理者だけ）")
+            if not db.mail_role(row):
+                print(f"{row['name']} は管理者でもメール担当者でもありません"
+                      "（端末の確認は管理者とメール担当者だけ）")
                 raise SystemExit(1)
             token = devices.issue_device(conn, row["id"], "manage.py issue-device")
             _audit_cli(conn, row["id"], "device_issue", "issue-device")

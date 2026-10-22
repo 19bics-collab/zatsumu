@@ -1,4 +1,4 @@
-"""新しい端末からの管理者ログインに、メールでの確認コードを必須にする (機能フラグ).
+"""新しい端末からの管理者 (とメール担当者) のログインに、メールでの確認コードを必須にする (機能フラグ).
 
 環境変数 ZATSUMU_LOGIN_VERIFY_EMAIL に宛先メールアドレスを設定したときだけ有効。
 未設定・空なら何もしない (既存の挙動は一切変わらない)。Web の設定画面・API
@@ -13,6 +13,9 @@
 
 端末トークン・確認コードは DB に sha256 のハッシュだけを保存する (DB が
 漏れても使えない)。一般メンバー (PC アプリの打刻など) は対象外。
+メール担当者 (users.mail_role='staff') は、メール画面の API (app.require_mail_user) を
+使うときだけ確認が要る (打刻は今までどおり)。コードは同じ宛先に届くので、宛先の人
+(管理者) が本人に伝える。
 """
 import hashlib
 import hmac
@@ -211,14 +214,28 @@ def _check_rate(conn, user_id: int, now: datetime) -> None:
 
 def _build_mail(settings: dict, user, code: str, ip: str, label: str,
                 now: datetime) -> tuple[str, str]:
-    """確認メールの件名と本文。管理者トークン・端末トークンなどの秘密は入れない."""
+    """確認メールの件名と本文。管理者トークン・端末トークンなどの秘密は入れない.
+
+    メール担当者 (管理者ではない) のときは、メール画面へのログインとして書き、
+    コードは宛先の人 (管理者) から本人に伝えてもらう。
+    """
     company = settings.get("company_name") or "zatsumu"
     when = now.astimezone(tz.TZ).strftime("%Y年%m月%d日 %H:%M")
     # 件名にはコードを入れない (スマホのロック画面の通知に出てしまうため)
-    subject = f"【{company}】管理画面ログインの確認コード"
+    if user["is_admin"]:
+        subject = f"【{company}】管理画面ログインの確認コード"
+        intro = ("新しい端末から管理画面へのログインがありました。\n"
+                 "画面に次の確認コードを入力してください。\n")
+    else:
+        # 名前は件名 (ヘッダ) にも入れるので1行にする
+        name = " ".join(str(user["name"]).split())
+        subject = f"【{company}】メール画面ログインの確認コード（{name}）"
+        intro = (f"メール担当者の {name} さんが、新しい端末からメール画面に"
+                 "ログインしようとしています。\n"
+                 "本人からのログインで間違いなければ、次の確認コードを本人に伝えてください"
+                 "（本人が画面に入力します）。\n")
     body = (
-        f"新しい端末から管理画面へのログインがありました。\n"
-        f"画面に次の確認コードを入力してください。\n"
+        intro +
         f"\n"
         f"  確認コード: {code}\n"
         f"  （{int(CODE_TTL.total_seconds() // 60)}分以内・1回だけ有効）\n"
@@ -229,7 +246,7 @@ def _build_mail(settings: dict, user, code: str, ip: str, label: str,
         f"ブラウザ: {label or '不明'}\n"
         f"\n"
         f"心当たりが無ければ、このコードは誰にも教えないでください。\n"
-        f"合言葉（管理者トークン）が他人に知られている可能性があります。\n"
+        f"合言葉（{'管理者' if user['is_admin'] else ''}トークン）が他人に知られている可能性があります。\n"
         f"サーバの担当者に連絡して、合言葉を作り直してください"
         f"（python manage.py reset-token {user['name']}）。\n"
     )

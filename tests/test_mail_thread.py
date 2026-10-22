@@ -527,7 +527,7 @@ def test_list_counts_thread_without_reading_every_sender_mail_per_row(
             return 0
         conn.set_progress_handler(count, 1000)   # 1000 命令ごとに1回呼ばれる
         rows = app_module.list_mail(status=None, priority=None, category=None,
-                                    assignee=None, admin=dict(admin), conn=conn)
+                                    assignee=None, user=dict(admin), conn=conn)
         conn.set_progress_handler(None, 0)
     finally:
         conn.close()

@@ -401,8 +401,8 @@ def test_message_content_is_sanitized(tmp_path):
     assert "・[低] (件名なし) — news@example.com" in lines
     assert "　　届いてから2日1時間／未分類／担当なし" in lines
     assert "受信箱を開く: https://desk.example.com/mail" in lines
-    assert lines[-1] == ("（優先度[高]は2時間、[中]・[低]は24時間たっても「未対応」のままの"
-                         "メールを、1通につき1回お知らせしています）")
+    assert lines[-1] == ("（優先度[高]は2時間、[中]・[低]は24時間たっても「未対応」や「確認待ち」の"
+                         "ままのメールを、1通につき1回お知らせしています）")
     conn.close()
 
 

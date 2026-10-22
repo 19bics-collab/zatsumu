@@ -268,16 +268,18 @@ def test_fetches_never_overlap(client, imap_on, tmp_path, monkeypatch):
 def test_status_counts_and_newest(client, users, tmp_path):
     worker, admin = users
     s = status(client, admin)
-    assert s == {"unhandled": 0, "newest_id": None, "last_fetch_at": None,
+    assert s == {"unhandled": 0, "pending_approval": 0, "newest_id": None, "last_fetch_at": None,
                  "last_error": "", "last_error_at": None, "last_error_account": "",
                  "error_count": 0, "fetching": False, "accounts": [], "deleted_mail_count": 0,
                  "imap_set": False, "auto_fetch": False, "interval_min": 5}
     _add_mail(tmp_path, n=1)
     _add_mail(tmp_path, n=2, status="replied")
     newest = _add_mail(tmp_path, n=3)
+    _add_mail(tmp_path, n=4, status="pending_approval")
     s = status(client, admin)
-    assert s["unhandled"] == 2 and s["newest_id"] == newest
-    # 管理者だけ
+    assert s["unhandled"] == 2 and s["newest_id"] == newest + 1
+    assert s["pending_approval"] == 1
+    # 管理者 (とメール担当者) だけ
     assert client.get("/api/mail/status", headers=auth(worker)).status_code == 403
     assert client.get("/api/mail/status").status_code == 401
     # 自動受信の有無 (受信サーバ・自動受信の設定)

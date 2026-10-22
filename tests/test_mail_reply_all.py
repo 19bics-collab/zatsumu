@@ -458,8 +458,10 @@ def test_reply_all_cc_is_off_until_chosen(client):
     page = client.get("/mail").text
     i = page.index("async function openMail(id)")
     block = page[i:page.index("\n}\n", i)]
-    assert '$("m-cc").value = replied ? (m.reply_cc || []).join(", ") : "";' in block
-    assert '$("m-cc-all").checked = replied && !!$("m-cc").value;' in block
+    # 入れるのは、送った CC か、メール担当者が確認をお願いしたときに自分で選んだ CC だけ
+    assert ('$("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc) : "";'
+            in block)
+    assert '$("m-cc-all").checked = !!$("m-cc").value;' in block
     assert ": modal.ccCandidates;" not in block
     # チェックを付けたときに候補を入れる
     assert 'if ($("m-cc-all").checked) cc.value = modal.ccSaved || modal.ccCandidates;' in page

@@ -209,6 +209,14 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   ほかのアドレスは受信し、受信箱の注意書きにどのアドレスかを出す。アドレスを削除しても届いたメールは
   残り「削除したアドレス」と出る。それまでの受信サーバの設定は、更新後の最初の起動で1つ目の
   アドレスになり、続きから受信する）。
+  **スタッフ（メール担当者）に下書きを任せる**こともできます（設定画面の「メール担当者」で、
+  登録されている人を「担当にする」。その人は自分のトークンでメール画面に入り、受信箱を見て
+  返信文を作れる（生成・定型文・CC・BCC・種類と担当も使える）が、**送信はできない**。
+  「確認をお願いする」を押すと「確認待ち」になり、Slack・通知先メールに知らせが届く。
+  管理者は受信箱の「確認待ち」から開き、返信文を確かめて（直してもよい）「承認して送信」するか、
+  コメントを書いて「差し戻す」（未対応に戻り、メール担当者の返信画面にコメントが出る）。
+  設定・定型文の管理・Notion・対応不要にするは管理者だけ。どれもサーバ側でも止める。
+  人の追加とトークンは勤怠の管理画面か `python manage.py add-user 名前 --mail-staff`）。
   勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
   **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
   メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
@@ -276,31 +284,36 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
-| GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
-| GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧・この相手とのやり取り `thread`（新しい順に30件まで。送った返信付き）と全部の件数 `thread_total`。`?thread=false` でやり取りを省く） |
-| GET | `/api/mail/{id}/attachments/{添付id}` | admin | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
-| POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み（受信するアドレスを順に。一部のアドレスだけ失敗したら `errors` に理由。ほかの受信の途中で、少し待っても終わらなければ 409） |
-| GET | `/api/mail/status` | admin | 受信の様子（未対応の数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗とどのアドレスか・アドレスごとの様子 `accounts`）。メール画面が 1 分ごとに呼ぶ |
+| GET | `/api/mail` | admin・メール担当者 | 受信メール一覧（優先度順、status（`pending_approval`=確認待ち）/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
+| GET | `/api/mail/{id}` | admin・メール担当者 | メール詳細（確認のお願い・差し戻しの中身も。本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧・この相手とのやり取り `thread`（新しい順に30件まで。送った返信付き）と全部の件数 `thread_total`。`?thread=false` でやり取りを省く） |
+| GET | `/api/mail/{id}/attachments/{添付id}` | admin・メール担当者 | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
+| POST | `/api/mail/fetch` | admin・メール担当者 | 今すぐ IMAP から新着を取り込み（受信するアドレスを順に。一部のアドレスだけ失敗したら `errors` に理由。ほかの受信の途中で、少し待っても終わらなければ 409） |
+| GET | `/api/mail/status` | admin・メール担当者 | 受信の様子（未対応・確認待ちの数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗とどのアドレスか・アドレスごとの様子 `accounts`）。メール画面が 1 分ごとに呼ぶ |
 | GET/POST | `/api/mail/accounts` | admin | 受信するメールアドレスの一覧・追加（パスワードは返さず `imap_pass_set` などだけ） |
 | PATCH/DELETE | `/api/mail/accounts/{id}` | admin | アドレスの変更・止める（`enabled`）・並べ替え（`move: up/down`）・削除（届いたメールは残す） |
 | POST | `/api/mail/accounts/{id}/test` | admin | そのアドレスの保存済みの受信サーバに接続テスト |
-| POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
-| POST | `/api/mail/{id}/events` | admin | このメールの日付から予定の候補を作る（`events`: 名前・日付・開始/終了・終日・場所・メモ。AI / ルール。DB には書かない。Google への登録は画面がする） |
+| POST | `/api/mail/{id}/draft` | admin・メール担当者 | 返信下書きの(再)生成（AI / 定型文） |
+| POST | `/api/mail/{id}/events` | admin・メール担当者 | このメールの日付から予定の候補を作る（`events`: 名前・日付・開始/終了・終日・場所・メモ。AI / ルール。DB には書かない。Google への登録は画面がする） |
 | POST | `/api/mail/{id}/notion` | admin | このメールを Notion のデータベースに1行で登録（本文・添付ファイル付き。登録済みなら 409、`{"again": true}` でもう1行作る） |
-| PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更 |
-| GET | `/api/mail/assignees` | admin | 担当に選べる人（有効な人の番号と名前） |
-| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る） |
+| PATCH | `/api/mail/{id}` | admin・メール担当者 | 下書き保存・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更（メール担当者は状態を変えられず、確認待ちの下書きも変えられない） |
+| GET | `/api/mail/assignees` | admin・メール担当者 | 担当に選べる人（有効な人の番号と名前） |
+| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る。確認待ちのメールなら「承認して送信」になり `approved_by` を残す） |
+| POST | `/api/mail/{id}/request-approval` | admin・メール担当者 | 「確認をお願いする」（`body` `cc` `bcc` `note`。確認待ちにして Slack・通知先メールに知らせる。設定 `mail_require_approval` がオフなら 400） |
+| POST | `/api/mail/{id}/send-back` | admin | 確認待ちを「差し戻す」（`note` が必要。未対応に戻し、コメントをメール担当者に見せる） |
+| GET | `/api/mail/me` | admin・メール担当者 | ログインした人の役割（`admin` / `staff`）と、画面の表示に使う設定（秘密は入れない） |
+| GET | `/api/mail/staff` | admin | メール担当者にできる人の一覧 |
+| PATCH | `/api/mail/staff/{id}` | admin | メール担当者にする / 外す（`{"staff": true}`） |
 | GET/POST | `/api/mail/templates` | admin | 定型文の一覧・追加 |
 | PATCH/DELETE | `/api/mail/templates/{id}` | admin | 定型文の変更・並べ替え（`move: up/down`）・削除 |
-| GET | `/api/mail/{id}/templates` | admin | このメール用に差し込みを置き換えた定型文 |
+| GET | `/api/mail/{id}/templates` | admin・メール担当者 | このメール用に差し込みを置き換えた定型文 |
 | POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認（受信するアドレスがあれば先頭のアドレスで） |
 | POST | `/api/settings/test-email` | admin | 指定アドレスへメールのテスト送信 |
 | POST | `/api/settings/test-notion` | admin | Notion のデータベースを読めるか確かめ、列の一覧と何を入れるかを返す（Notion には書き込まない） |
 | GET | `/api/mail/report/preview` | admin | 週ごとのまとめの見本（昨日までの7日間の分の件名・本文、期間、次に送る日時、いまの送り先。送ったことにはしない） |
 | POST | `/api/mail/report/send-now` | admin | 週ごとのまとめ（昨日までの7日間の分）を、保存済みの送り先へすぐ送る（試す用。決まった曜日に送る分はそのまま） |
 | POST | `/api/settings/test-remind` | admin | 返事をしていないメールのお知らせを、保存済みの送り先（Slack・通知先メール）へ試しに送る（今の未対応のメールを見本に並べる。お知らせ済みにはしない） |
-| POST | `/api/device/start` | admin（端末確認は不要） | 新しい端末の確認コードをメールで送る（機能が有効なときだけ） |
-| POST | `/api/device/verify` | admin（端末確認は不要） | 確認コードが合えば端末トークンを返す |
+| POST | `/api/device/start` | admin・メール担当者（端末確認は不要） | 新しい端末の確認コードをメールで送る（機能が有効なときだけ） |
+| POST | `/api/device/verify` | admin・メール担当者（端末確認は不要） | 確認コードが合えば端末トークンを返す |
 | GET | `/api/devices` | admin | 確認済みの端末の一覧 |
 | DELETE | `/api/devices/{id}` | admin | 確認済みの端末を取り消す |
 | GET | `/admin` | — | 勤怠管理の画面（データ取得は Bearer 認証の API 経由） |
@@ -313,7 +326,9 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 サーバの `.env` に `ZATSUMU_LOGIN_VERIFY_EMAIL=you@example.com` を書くと、管理者が
 初めて使う端末（パソコン・スマホ）からログインしたとき、そのアドレスに 6 桁の確認コードを
 メールで送り、入力するまで使えなくなります（2段階認証）。空なら無効で、今までどおりです。
-メンバーの打刻は対象外です。
+メンバーの打刻は対象外です。メール担当者（スタッフ）も、メール画面を初めて使う端末では
+確認コードが要ります（コードは同じアドレスに届くので、本人からのログインか確かめてから伝える。
+打刻は今までどおり確認なし）。
 
 - 確認できた端末には「端末トークン」（端末用の合言葉）を渡し、画面はそれを
   `X-Device-Token` ヘッダで毎回送ります。90 日使わなければ失効します。

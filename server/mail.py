@@ -77,7 +77,8 @@ FETCH_LIMIT = 200
 BODY_MAX_CHARS = 100_000
 
 PRIORITY_LABELS = {1: "高", 2: "中", 3: "低"}
-MAIL_STATUSES = ("unhandled", "replied", "archived")
+# pending_approval = 確認待ち (メール担当者が「確認をお願いする」を押し、管理者の確認を待っている)
+MAIL_STATUSES = ("unhandled", "replied", "archived", "pending_approval")
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -2525,12 +2526,13 @@ def _remind_part(value, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
-# お知らせに並べるメールを読む SELECT (担当の人の名前も一緒に取る)
+# お知らせに並べるメールを読む SELECT (担当の人の名前も一緒に取る)。
+# 確認待ち (メール担当者の下書きが管理者の確認を待っている) も、お客様にはまだ返事をしていないので入れる
 _REMIND_SELECT = (
     "SELECT m.id, m.subject, m.from_addr, m.from_name, m.priority, m.category,"
-    " m.fetched_at, u.name AS assignee_name"
+    " m.fetched_at, m.status, m.requested_by, u.name AS assignee_name"
     " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
-    " WHERE m.status = 'unhandled'"
+    " WHERE m.status IN ('unhandled', 'pending_approval')"
 )
 
 
@@ -2547,9 +2549,13 @@ def _remind_line(r, now: datetime) -> str:
     category = _remind_part(r["category"], CATEGORY_NAME_MAX_CHARS) or "未分類"
     assignee = _remind_part(r["assignee_name"], REMIND_NAME_MAX_CHARS)
     label = PRIORITY_LABELS.get(r["priority"], "中")
+    pending = ""
+    if r["status"] == "pending_approval":
+        who = _remind_part(r["requested_by"], REMIND_NAME_MAX_CHARS)
+        pending = f"／確認待ち（{who}さんの下書き）" if who else "／確認待ち"
     return (f"・[{label}] {subject} — {sender}\n"
             f"　　届いてから{waited}／{category}／"
-            + (f"担当: {assignee}" if assignee else "担当なし"))
+            + (f"担当: {assignee}" if assignee else "担当なし") + pending)
 
 
 def _remind_rule(settings: dict) -> str:
@@ -2563,7 +2569,7 @@ def _remind_rule(settings: dict) -> str:
         parts.append(f"[中]・[低]は{normal}時間")
     if not parts:
         return ""
-    return ("（優先度" + "、".join(parts) + "たっても「未対応」のままのメールを、"
+    return ("（優先度" + "、".join(parts) + "たっても「未対応」や「確認待ち」のままのメールを、"
             "1通につき1回お知らせしています）")
 
 
@@ -2678,6 +2684,38 @@ def remind_unanswered(conn, notifier=None, now: datetime | None = None) -> int:
     return len(rows)
 
 
+# ---------- メール担当者の「確認をお願いする」 ----------
+
+# 管理者へのひとこと・差し戻すときのコメントの最大文字数
+APPROVAL_NOTE_MAX_CHARS = 500
+# お知らせに載せるひとことの文字数 (長いものは縮める。全文は返信画面で見る)
+APPROVAL_NOTE_NOTIFY_CHARS = 200
+
+
+def approval_request_message(settings: dict, mail: dict, requested_by: str,
+                             note: str = "") -> tuple[str, str]:
+    """「確認をお願いする」が押されたときの、管理者へのお知らせの (件名, 本文).
+
+    返信文そのものは載せない (お客様あての文を Slack などに広げない。返信画面で見てもらう)。
+    外から来た文字 (件名・差出人) と、メール担当者の名前・ひとことは _remind_part で無害な1行にする。
+    """
+    who = _remind_part(requested_by, REMIND_NAME_MAX_CHARS) or "メール担当者"
+    subject = _remind_part(mail.get("subject"), REMIND_SUBJECT_MAX_CHARS) or "(件名なし)"
+    name = _remind_part(mail.get("from_name"), REMIND_NAME_MAX_CHARS)
+    addr = _remind_part(mail.get("from_addr"), 100)
+    sender = f"{name}（{addr}）" if name and addr else (name or addr or "差出人不明")
+    lines = [f"📝 {who}さんから、メールの返信の確認のお願いが届きました",
+             f"・{subject} — {sender}"]
+    note = _remind_part(note, APPROVAL_NOTE_NOTIFY_CHARS)
+    if note:
+        lines.append(f"・ひとこと: {note}")
+    lines.append("返信画面で返信文を確かめて、「承認して送信」か「差し戻す」を押してください。")
+    url = mail_page_url(settings)
+    if url:
+        lines.append(f"受信箱を開く: {url}")
+    return f"返信の確認のお願い（{who}さん）", "\n".join(lines)
+
+
 def remind_test_message(conn, settings: dict, admin_name: str,
                         now: datetime | None = None) -> tuple[str, str]:
     """「テスト送信」用のお知らせ (今の未対応のメールを、時間に関係なく並べる。読むだけ)."""
@@ -2788,6 +2826,8 @@ def weekly_stats(conn, start: datetime, end: datetime, now: datetime) -> dict:
     unhandled, unhandled_high, oldest = conn.execute(
         "SELECT COUNT(*), COALESCE(SUM(priority = 1), 0), MIN(fetched_at) FROM mails"
         " WHERE status = 'unhandled'").fetchone()
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM mails WHERE status = 'pending_approval'").fetchone()[0]
     oldest_at = _parse_time(oldest) if oldest else None
     return {
         "received": len(received),
@@ -2800,6 +2840,8 @@ def weekly_stats(conn, start: datetime, end: datetime, now: datetime) -> dict:
         "archived": archived,
         "unhandled": unhandled,
         "unhandled_high": unhandled_high,
+        # 確認待ち (メール担当者の下書きが、管理者の確認を待っている)
+        "pending_approval": pending,
         "oldest_wait_sec": max((now - oldest_at).total_seconds(), 0.0) if oldest_at else None,
         # AI を使った数 (分かる分だけ): 優先度と種類を AI が決めたメール (人が優先度を直したものは
         # 入らない) と、返信したメールのうち AI の下書きがあったもの
@@ -2878,6 +2920,9 @@ def weekly_report_message(stats: dict, settings: dict, day: date,
                      f"一番長く待っているメールは、届いてから{wait_text(stats['oldest_wait_sec'])}）")
     else:
         lines.append("■ いま未対応のメールはありません")
+    if stats.get("pending_approval"):
+        lines.append(f"■ いま確認待ちの返信: {stats['pending_approval']}通"
+                     "（メール担当者の下書きが、管理者の確認を待っています）")
     ai = []
     if stats["ai_classified"]:
         ai.append(f"AI が優先度と種類を判定したメール {stats['ai_classified']}通")

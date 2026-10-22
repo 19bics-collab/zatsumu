@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS mails (
     priority INTEGER NOT NULL DEFAULT 2,      -- 1=高 2=中 3=低
     priority_reason TEXT NOT NULL DEFAULT '',
     priority_source TEXT NOT NULL DEFAULT '', -- 'ai' / 'rule'
-    status TEXT NOT NULL DEFAULT 'unhandled', -- unhandled/replied/archived
+    status TEXT NOT NULL DEFAULT 'unhandled', -- unhandled/replied/archived/pending_approval(確認待ち)
     draft_reply TEXT NOT NULL DEFAULT '',
     draft_source TEXT NOT NULL DEFAULT '',    -- 'ai' / 'template'
     draft_generated_at TEXT,
@@ -128,7 +128,20 @@ CREATE TABLE IF NOT EXISTS mails (
     notion_registered_by TEXT NOT NULL DEFAULT '',
     -- 届いたアドレス (mail_accounts)。NULL=そのアドレスを一覧から削除した
     -- (メールは残す。画面では「削除したアドレス」)
-    account_id INTEGER REFERENCES mail_accounts(id) ON DELETE SET NULL
+    account_id INTEGER REFERENCES mail_accounts(id) ON DELETE SET NULL,
+    -- スタッフ (メール担当者) の下書きの「確認をお願いする」(status='pending_approval')。
+    -- 頼んだ人 (名前のスナップショット)・時刻・ひとこと と、頼んだときの CC・BCC (", " 区切り)。
+    -- 返信文は draft_reply に入る。管理者が「承認して送信」したら approved_by に名前を残す
+    requested_by TEXT NOT NULL DEFAULT '',
+    requested_at TEXT,
+    approval_note TEXT NOT NULL DEFAULT '',
+    draft_cc TEXT NOT NULL DEFAULT '',
+    draft_bcc TEXT NOT NULL DEFAULT '',
+    approved_by TEXT NOT NULL DEFAULT '',
+    -- 管理者が「差し戻す」した人・時刻・コメント (スタッフの返信画面に出す。次に頼んだら消す)
+    returned_by TEXT NOT NULL DEFAULT '',
+    returned_at TEXT,
+    return_note TEXT NOT NULL DEFAULT ''
 );
 -- 受信するメールアドレス (kurosu@・info@ など。server/mail.py)。1つずつ IMAP で受信して
 -- 1つの受信箱にまとめ、返信は届いたアドレスを差出人にして送る。
@@ -235,6 +248,17 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
 # 休暇の種別
 LEAVE_TYPES = ["有給休暇", "半休", "欠勤", "特別休暇", "その他"]
 
+# メール画面の役割 (users.mail_role)。'staff' = メール担当者 (受信箱を見て下書きを作り、
+# 管理者に「確認をお願いする」。送信・設定はできない)。管理者はこの値に関係なく全部使える
+MAIL_ROLE_STAFF = "staff"
+
+
+def mail_role(user) -> str:
+    """メール画面での役割: 'admin' (管理者) / 'staff' (メール担当者) / '' (使えない)."""
+    if user["is_admin"]:
+        return "admin"
+    return "staff" if user["mail_role"] == MAIL_ROLE_STAFF else ""
+
 # 全社設定の既定値 (整数)。settings テーブルの値で上書きされる
 INT_SETTINGS = {
     "capture_min_interval": 300,   # 撮影の最短間隔(秒)
@@ -273,6 +297,9 @@ INT_SETTINGS = {
     "mail_report_hour": 9,         # 送る時刻 (時。集計と同じタイムゾーン=既定は日本時間)
     # Notion に登録するとき、AI に案件名とほかの列も入れてもらうか (AI のキーがあるときだけ)
     "notion_ai_fill": 1,
+    # メール担当者 (スタッフ) の返信は、管理者が確認してから送る (「確認をお願いする」を使う)。
+    # オフでもスタッフは送信できない (下書きを保存して、管理者に伝える)
+    "mail_require_approval": 1,
 }
 
 # 全社設定の既定値 (文字列)
@@ -432,6 +459,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
     if "team_id" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN team_id INTEGER")
+    # メール画面の役割 (''=使えない / 'staff'=メール担当者。管理者はこの値に関係なく使える)
+    if "mail_role" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN mail_role TEXT NOT NULL DEFAULT ''")
     shcols = [r["name"] for r in conn.execute("PRAGMA table_info(screenshots)")]
     if "sig" not in shcols:
         conn.execute("ALTER TABLE screenshots ADD COLUMN sig TEXT")
@@ -492,6 +522,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "account_id" not in mcols:
         conn.execute("ALTER TABLE mails ADD COLUMN account_id INTEGER"
                      " REFERENCES mail_accounts(id) ON DELETE SET NULL")
+    # スタッフの下書きの確認 (確認のお願い・承認・差し戻し)。以前のメールは「頼んでいない」
+    for col in ("requested_by", "approval_note", "draft_cc", "draft_bcc", "approved_by",
+                "returned_by", "return_note"):
+        if col not in mcols:
+            conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    for col in ("requested_at", "returned_at"):
+        if col not in mcols:
+            conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT")
     # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
     # アドレスでの絞り込み・アドレスを削除したときの付け替え用

@@ -288,11 +288,44 @@ def require_admin(user=Depends(auth_user)):
     return user
 
 
-def require_admin_token(user=Depends(token_user)):
-    """管理者トークンだけを確かめる (端末の確認コードを受け取る API 用)."""
-    if not user["is_admin"]:
-        raise HTTPException(403, "Admin only")
+# メール画面を使えない人 (管理者でもメール担当者でもない) のときの 403 の理由。
+# 画面はこの固定文字列を見てログイン画面に戻す (メール担当者から外されたときなど)
+MAIL_ACCESS_REQUIRED = "mail_access_required"
+
+
+def require_mail_token(user=Depends(token_user)):
+    """メール画面を使える人 (管理者・メール担当者) のトークンだけを確かめる.
+
+    端末の確認コードを受け取る API 用 (まだ確認していない端末から呼ぶので、端末トークンは見ない)。
+    """
+    if not db.mail_role(user):
+        raise HTTPException(403, MAIL_ACCESS_REQUIRED)
     return user
+
+
+def require_mail_user(
+    user=Depends(token_user),
+    x_device_token: str = Header(None),
+    conn=Depends(get_conn),
+):
+    """メール画面の API を使える人 (管理者・メール担当者) だけを通す.
+
+    新しい端末のメール確認 (ZATSUMU_LOGIN_VERIFY_EMAIL 設定時) は、管理者と同じく
+    メール担当者にも求める (メール担当者もお客様のメールを読めるため)。勤怠の打刻
+    (PC アプリ・/me) は、メール担当者でも今までどおり確認なしで使える (auth_user)。
+    """
+    if not db.mail_role(user):
+        raise HTTPException(403, MAIL_ACCESS_REQUIRED)
+    if devices.enabled():
+        if not devices.check_device(conn, user["id"], x_device_token):
+            raise HTTPException(401, devices.REQUIRED_DETAIL)
+        conn.commit()   # 使った時刻の書き込みを確定する (auth_user と同じ理由)
+    return user
+
+
+def _is_mail_staff(user) -> bool:
+    """メール担当者 (管理者ではない) か。送信・設定などはできない."""
+    return db.mail_role(user) == "staff"
 
 
 def _with_member_email(settings: dict, email: str | None) -> dict:
@@ -442,6 +475,7 @@ class SettingsPatch(BaseModel):
     notion_database_id: str | None = None
     notion_property_map: str | None = None
     notion_ai_fill: bool | None = None
+    mail_require_approval: bool | None = None
 
 
 class MailPatch(BaseModel):
@@ -461,6 +495,22 @@ class MailSendBody(BaseModel):
     subject: str | None = None  # 省略時は「Re: 元の件名」
     cc: list[str] | None = None   # CC のアドレス (全員に返信。省略時は CC なし)
     bcc: list[str] | None = None  # BCC のアドレス (ヘッダには出ない)
+
+
+class MailApprovalBody(BaseModel):
+    """メール担当者の「確認をお願いする」(この返信文・CC・BCC で送ってよいか管理者に頼む)."""
+    body: str
+    cc: list[str] | None = None
+    bcc: list[str] | None = None
+    note: str = ""               # 管理者へのひとこと (任意。例:「料金のところを見てください」)
+
+
+class MailSendBackBody(BaseModel):
+    note: str                    # 差し戻すときのコメント (どこを直してほしいか。メール担当者に出す)
+
+
+class MailStaffBody(BaseModel):
+    staff: bool                  # メール担当者にする / 外す
 
 
 class MailNotionBody(BaseModel):
@@ -975,6 +1025,7 @@ def patch_settings(
         "mail_report_weekday": mail.REPORT_WEEKDAY_RANGE,
         "mail_report_hour": mail.REPORT_HOUR_RANGE,
         "notion_ai_fill": (0, 1),
+        "mail_require_approval": (0, 1),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -1228,46 +1279,50 @@ def _require_device_feature() -> None:
 
 @app.post("/api/device/start")
 def device_start(
-    request: Request, admin=Depends(require_admin_token), conn=Depends(get_conn)
+    request: Request, user=Depends(require_mail_token), conn=Depends(get_conn)
 ):
-    """確認コードを宛先へメールする (管理者トークンのみで呼べる・端末トークン不要)."""
+    """確認コードを宛先へメールする (管理者・メール担当者のトークンのみで呼べる・端末トークン不要).
+
+    コードは誰が頼んでも決まった宛先 (ZATSUMU_LOGIN_VERIFY_EMAIL) に届く。メール担当者の
+    ときは staff=true を返す (画面で「管理者に聞いて入力してください」と案内する)。
+    """
     _require_device_feature()
     ip = devices.client_ip(request)
     ua = request.headers.get("user-agent")
     try:
-        out = devices.start_challenge(conn, admin, ip, ua)
+        out = devices.start_challenge(conn, user, ip, ua)
     except devices.RateLimited as e:
         raise HTTPException(429, str(e))
     except devices.SendUnavailable:
-        _audit(conn, admin, "device_code_send_fail", admin["id"], detail=f"ip={ip}")
+        _audit(conn, user, "device_code_send_fail", user["id"], detail=f"ip={ip}")
         conn.commit()
         # 中身の例外や設定値は出さない (原因はサーバのログに残している)
         raise HTTPException(
             503, "確認コードのメールを送れませんでした。サーバの担当者に連絡してください"
         )
-    _audit(conn, admin, "device_code_sent", admin["id"], detail=f"ip={ip}")
-    return out
+    _audit(conn, user, "device_code_sent", user["id"], detail=f"ip={ip}")
+    return {**out, "staff": _is_mail_staff(user)}
 
 
 @app.post("/api/device/verify")
 def device_verify(
     body: DeviceVerifyBody,
     request: Request,
-    admin=Depends(require_admin_token),
+    user=Depends(require_mail_token),
     conn=Depends(get_conn),
 ):
     """確認コードが合えば端末トークンを返す (平文を返すのはこの1回だけ)."""
     _require_device_feature()
     ip = devices.client_ip(request)
     try:
-        devices.verify_challenge(conn, admin, body.request_id, body.code)
+        devices.verify_challenge(conn, user, body.request_id, body.code)
     except devices.VerifyError as e:
-        _audit(conn, admin, "device_verify_fail", admin["id"], detail=f"ip={ip}")
+        _audit(conn, user, "device_verify_fail", user["id"], detail=f"ip={ip}")
         conn.commit()  # 試行回数を残す (例外で巻き戻らないように)
         raise HTTPException(400, str(e))
     label = request.headers.get("user-agent") or ""
-    token = devices.issue_device(conn, admin["id"], label, ip)
-    _audit(conn, admin, "device_verify_ok", admin["id"],
+    token = devices.issue_device(conn, user["id"], label, ip)
+    _audit(conn, user, "device_verify_ok", user["id"],
            detail=f"ip={ip} {devices.clean_label(label)}")
     return {"device_token": token}
 
@@ -2296,6 +2351,9 @@ def audit_csv(
         "mail_account_create": "受信するメールアドレスを追加",
         "mail_account_update": "受信するメールアドレスを変更",
         "mail_account_delete": "受信するメールアドレスを削除",
+        "mail_approval_request": "メール返信の確認のお願い",
+        "mail_approval_return": "メール返信の差し戻し",
+        "mail_staff": "メール担当者の変更",
         "device_code_sent": "端末確認コード送信",
         "device_code_send_fail": "端末確認コード送信失敗",
         "device_verify_ok": "端末確認成功",
@@ -2402,6 +2460,10 @@ def _mail_summary(r, thread_count: int | None = None) -> dict:
         # 届いたアドレス (null=そのアドレスを削除した。画面では「削除したアドレス」)
         "account_id": r["account_id"],
         "account_label": r["account_label"] or "",
+        # 確認のお願い (確認待ちのとき、頼んだメール担当者の名前) と、
+        # 差し戻されて未対応に戻ったか (一覧に「差し戻し」を出す)
+        "requested_by": r["requested_by"] if r["status"] == "pending_approval" else "",
+        "returned": r["status"] == "unhandled" and bool(r["return_note"]),
     }
 
 
@@ -2412,6 +2474,25 @@ def _mail_or_404(conn, mail_id: int):
     return row
 
 
+# メール担当者が、確認待ちのメールの返信文を変えようとしたとき (管理者が見ている文を変えない)
+PENDING_LOCKED = ("確認待ちの間は、返信文を変えられません"
+                  "（直したいときは、管理者に「差し戻す」を頼んでください）")
+
+
+def _clean_note(text: str | None, label: str) -> str:
+    """確認のお願いのひとこと・差し戻すときのコメントを整える (改行はそろえ、長すぎれば 400)."""
+    note = mail.normalize_newlines(text or "").strip()
+    if len(note) > mail.APPROVAL_NOTE_MAX_CHARS:
+        raise HTTPException(400, f"{label}は{mail.APPROVAL_NOTE_MAX_CHARS}文字以内にしてください")
+    return note
+
+
+def _audit_note(note: str) -> str:
+    """操作の記録に残すひとこと・コメント (1行にして縮める)."""
+    one = " ".join(note.split())
+    return one if len(one) <= 100 else one[:100] + "…"
+
+
 @app.get("/api/mail")
 def list_mail(
     status: str | None = None,
@@ -2419,7 +2500,7 @@ def list_mail(
     category: str | None = None,
     assignee: str | None = None,
     account: str | None = None,
-    admin=Depends(require_admin),
+    user=Depends(require_mail_user),
     conn=Depends(get_conn),
 ):
     """受信メール一覧 (優先度[高]が上・同一優先度は新しい順).
@@ -2448,7 +2529,7 @@ def list_mail(
             where.append("m.assignee_user_id IS NULL")
         else:
             if assignee == "me":
-                uid = admin["id"]
+                uid = user["id"]
             elif assignee.isascii() and assignee.isdigit():
                 uid = int(assignee)
             else:
@@ -2474,7 +2555,7 @@ def list_mail(
 
 
 @app.post("/api/mail/fetch")
-def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
+def fetch_mail_now(_user=Depends(require_mail_user), conn=Depends(get_conn)):
     """今すぐ IMAP から新着を取り込む (メール画面の「今すぐ受信」用).
 
     ほかの受信 (定期受信・別の画面の「今すぐ受信」) の途中なら、終わるのを少し待ってから
@@ -2514,17 +2595,18 @@ def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
 # /api/mail/{mail_id} より先に宣言する (後にすると "status" が mail_id として読まれ、422 になる)
 
 @app.get("/api/mail/status")
-def mail_status(_admin=Depends(require_admin), conn=Depends(get_conn)):
+def mail_status(_user=Depends(require_mail_user), conn=Depends(get_conn)):
     """受信の様子 (開いたままのメール画面が新着に気付くための、軽い問い合わせ).
 
-    未対応の数と一番新しいメールの番号 (どちらかが変わったら画面が受信箱を取り直す)、
+    未対応・確認待ちの数と一番新しいメールの番号 (どれかが変わったら画面が受信箱を取り直す)、
     最後に受信できた時刻、直近の受信が失敗していればその理由 (分かりやすい言葉) を返す。
     受信するアドレスが複数あるときは、アドレスごとの様子 (accounts) も返す (mail.fetch_state)。
     1分ごと・タブごとに呼ばれるので、DB は読むだけにする (書き込みのロックを取らない)。
     """
     s = db.get_settings(conn)
-    unhandled, newest = conn.execute(
+    unhandled, pending, newest = conn.execute(
         "SELECT (SELECT COUNT(*) FROM mails WHERE status = 'unhandled'),"
+        " (SELECT COUNT(*) FROM mails WHERE status = 'pending_approval'),"
         " (SELECT MAX(id) FROM mails)").fetchone()
     state = mail.fetch_state(conn)
     # 受信するアドレス (止めていないもの) があるか
@@ -2533,6 +2615,8 @@ def mail_status(_admin=Depends(require_admin), conn=Depends(get_conn)):
     deleted = conn.execute("SELECT COUNT(*) FROM mails WHERE account_id IS NULL").fetchone()[0]
     return {
         "unhandled": unhandled,
+        # 確認待ち (メール担当者が「確認をお願いする」を押して、管理者の確認を待っている) の数
+        "pending_approval": pending,
         "newest_id": newest,
         **state,
         "deleted_mail_count": deleted,
@@ -2662,7 +2746,7 @@ def delete_mail_template(
 # /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)
 
 @app.get("/api/mail/assignees")
-def list_mail_assignees(_admin=Depends(require_admin), conn=Depends(get_conn)):
+def list_mail_assignees(_user=Depends(require_mail_user), conn=Depends(get_conn)):
     """担当に選べる人 (有効な人) の番号と名前 (メール画面の選択欄用).
 
     メール専用サーバでは Caddy の許可リストが /api/users を通さないので、
@@ -2670,6 +2754,79 @@ def list_mail_assignees(_admin=Depends(require_admin), conn=Depends(get_conn)):
     """
     return [{"id": r["id"], "name": r["name"]} for r in conn.execute(
         "SELECT id, name FROM users WHERE active = 1 ORDER BY name, id")]
+
+
+# ----- ログインした人 (管理者・メール担当者) と、メール担当者の一覧 -----
+# /api/mail/me・/api/mail/staff は /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)
+
+@app.get("/api/mail/me")
+def mail_me(user=Depends(require_mail_user), conn=Depends(get_conn)):
+    """ログインした人の役割と、受信箱・返信画面の表示に使う設定 (秘密は入れない).
+
+    メール画面はログインの確認をこれで行う (管理者・メール担当者のどちらでも使える)。
+    メール担当者は設定 (/api/settings) を読めないので、画面に要るものだけここで返す。
+    can_send: 返信を送れるか (管理者だけ)。require_approval: 設定の「確認をお願いする」を使うか。
+    """
+    s = db.get_settings(conn)
+    role = db.mail_role(user)
+    return {
+        "id": user["id"],
+        "name": user["name"],
+        "role": role,
+        "can_send": role == "admin",
+        "require_approval": bool(s["mail_require_approval"]),
+        "company_name": s["company_name"],
+        "timezone": s["timezone"],
+        "mail_category_list": mail.category_list(s),
+    }
+
+
+def _staff_info(r) -> dict:
+    """メール担当者の一覧の1人分 (トークンなどは返さない)."""
+    return {"id": r["id"], "name": r["name"], "is_admin": bool(r["is_admin"]),
+            "active": bool(r["active"]), "staff": r["mail_role"] == db.MAIL_ROLE_STAFF}
+
+
+@app.get("/api/mail/staff")
+def list_mail_staff(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """メール担当者にできる人 (登録されている有効な人) と、今のメール担当者の一覧.
+
+    管理者は、もともとメール画面を全部使えるので一覧に出すだけ (切り替えはできない)。
+    無効にした人は、メール担当者のままのときだけ出す (外せるように)。
+    人の追加・トークン (合言葉) の発行は、勤怠の管理画面か manage.py で行う。
+    """
+    rows = conn.execute(
+        "SELECT id, name, is_admin, active, mail_role FROM users"
+        " WHERE active = 1 OR mail_role = ? ORDER BY is_admin DESC, name, id",
+        (db.MAIL_ROLE_STAFF,)).fetchall()
+    return [_staff_info(r) for r in rows]
+
+
+@app.patch("/api/mail/staff/{user_id}")
+def patch_mail_staff(
+    user_id: int, body: MailStaffBody, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """その人をメール担当者にする / 外す (メール画面の設定「メール担当者」).
+
+    メール担当者は、受信箱を見て返信文を作り、管理者に「確認をお願いする」ができる
+    (送信・設定はできない)。外すと、次の操作からメール画面を使えなくなる。
+    """
+    target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not target:
+        raise HTTPException(404, "その人が見つかりません")
+    if target["is_admin"]:
+        raise HTTPException(400, "管理者は、もともとメール画面を全部使えます")
+    if body.staff and not target["active"]:
+        raise HTTPException(400, "無効にした人はメール担当者にできません"
+                                 "（勤怠の管理画面で有効に戻してください）")
+    role = db.MAIL_ROLE_STAFF if body.staff else ""
+    if target["mail_role"] != role:
+        conn.execute("UPDATE users SET mail_role = ? WHERE id = ?", (role, user_id))
+        _audit(conn, admin, "mail_staff", user_id,
+               detail=f"staff={'on' if body.staff else 'off'} {target['name']}")
+    return _staff_info(conn.execute(
+        "SELECT id, name, is_admin, active, mail_role FROM users WHERE id = ?",
+        (user_id,)).fetchone())
 
 
 # ----- 受信するメールアドレス (複数のアドレスをまとめて受信) -----
@@ -2887,7 +3044,7 @@ def mail_report_send_now(admin=Depends(require_admin), conn=Depends(get_conn)):
 
 @app.get("/api/mail/{mail_id}/templates")
 def mail_templates_for_mail(
-    mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
+    mail_id: int, _user=Depends(require_mail_user), conn=Depends(get_conn)
 ):
     """このメール用に差し込み ({相手の名前} など) を置き換えた定型文 (返信画面用).
 
@@ -2907,7 +3064,7 @@ def mail_templates_for_mail(
 
 @app.get("/api/mail/{mail_id}")
 def mail_detail(
-    mail_id: int, thread: bool = True, _admin=Depends(require_admin),
+    mail_id: int, thread: bool = True, _user=Depends(require_mail_user),
     conn=Depends(get_conn),
 ):
     """メールの詳細 (本文・返信・添付・この相手とのやり取り).
@@ -2953,6 +3110,17 @@ def mail_detail(
         "notion_page_url": r["notion_page_url"],
         "notion_registered_at": r["notion_registered_at"],
         "notion_registered_by": r["notion_registered_by"],
+        # 確認のお願い (頼んだ人・時刻・ひとこと・頼んだときの CC と BCC)、承認して送った人、
+        # 差し戻し (した人・時刻・コメント。次に頼むまで残る)
+        "requested_by": r["requested_by"],
+        "requested_at": r["requested_at"],
+        "approval_note": r["approval_note"],
+        "draft_cc": mail.split_addresses(r["draft_cc"]),
+        "draft_bcc": mail.split_addresses(r["draft_bcc"]),
+        "approved_by": r["approved_by"],
+        "returned_by": r["returned_by"],
+        "returned_at": r["returned_at"],
+        "return_note": r["return_note"],
         **history,
     }
 
@@ -2960,9 +3128,9 @@ def mail_detail(
 @app.get("/api/mail/{mail_id}/attachments/{att_id}")
 def mail_attachment(
     mail_id: int, att_id: int, inline: bool = False,
-    _admin=Depends(require_admin), conn=Depends(get_conn),
+    _user=Depends(require_mail_user), conn=Depends(get_conn),
 ):
-    """添付ファイルの中身 (管理者のみ。そのメールの添付でなければ 404).
+    """添付ファイルの中身 (管理者・メール担当者のみ。そのメールの添付でなければ 404).
 
     画面は fetch で受け取って保存・表示する (トークンを付けるため)。
     中身を見て確かめた画像 (png/jpeg/gif/webp) だけ、その種類で返し、
@@ -2997,14 +3165,19 @@ def mail_attachment(
 def mail_generate_draft(
     mail_id: int,
     body: MailDraftBody,
-    _admin=Depends(require_admin),
+    user=Depends(require_mail_user),
     conn=Depends(get_conn),
 ):
     """返信の下書きを(再)生成する。APIキー未設定時は定型文になる.
 
     APIキーがあるのに AI で作れなかった場合は、定型文と一緒に理由 (ai_error) を返す。
+    メール担当者は、確認待ちのメールの下書きを作り直せない (管理者が見ている返信文を
+    変えてしまわないように。409)。
     """
     r = _mail_or_404(conn, mail_id)
+    staff = _is_mail_staff(user)
+    if staff and r["status"] == "pending_approval":
+        raise HTTPException(409, PENDING_LOCKED)
     s = db.get_settings(conn)
     conn.commit()   # AI の呼び出し (時間がかかる) の間、DB の書き込みロックを持たない
     text, source = mail.generate_reply(s, dict(r), body.instructions)
@@ -3012,17 +3185,22 @@ def mail_generate_draft(
     if source != "ai" and str(s.get("anthropic_api_key") or "").strip():
         ai_error = notify.safe_error(RuntimeError(
             mail.last_ai_error("draft") or "AIで返信文を作れませんでした"), s)
-    conn.execute(
+    # 作っている間に確認をお願いしていたら、メール担当者の分は書き込まない
+    cur = conn.execute(
         "UPDATE mails SET draft_reply = ?, draft_source = ?,"
-        " draft_generated_at = ? WHERE id = ?",
+        " draft_generated_at = ? WHERE id = ?"
+        + (" AND status != 'pending_approval'" if staff else ""),
         (text, source, now_iso(), mail_id),
     )
+    if not cur.rowcount:
+        _mail_or_404(conn, mail_id)   # 作っている間に消えた (保存日数) なら 404
+        raise HTTPException(409, PENDING_LOCKED)
     return {"draft_reply": text, "draft_source": source, "ai_error": ai_error}
 
 
 @app.post("/api/mail/{mail_id}/events")
 def mail_find_events(
-    mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
+    mail_id: int, _user=Depends(require_mail_user), conn=Depends(get_conn)
 ):
     """このメールに書かれた日付から、カレンダーに入れる予定の候補を作る (返信画面用).
 
@@ -3124,15 +3302,19 @@ def mail_to_notion(
 
 @app.patch("/api/mail/{mail_id}")
 def mail_patch(
-    mail_id: int, body: MailPatch, admin=Depends(require_admin),
+    mail_id: int, body: MailPatch, user=Depends(require_mail_user),
     conn=Depends(get_conn),
 ):
     """下書きの保存・優先度の手動変更・状態変更 (対応不要など)・種類と担当の変更.
 
     種類を変えたとき、担当がまだいなければ、その種類の担当 (設定) を入れる。
     返り値には変更後の種類と担当を入れる (画面の選択欄をそろえる用)。
+    メール担当者は状態を変えられない (403。対応不要にするかは管理者が決める) し、
+    確認待ちのメールの下書きも変えられない (409)。「確認待ち」にするのは
+    POST /api/mail/{id}/request-approval だけ (頼んだ人などを残すため)。
     """
     row = _mail_or_404(conn, mail_id)
+    staff = _is_mail_staff(user)
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     # 担当は null (担当なし) にするのも変更なので、送られてきたかどうかで見る
     if "assignee_user_id" in body.model_fields_set:
@@ -3144,6 +3326,12 @@ def mail_patch(
         raise HTTPException(400, "priority は 1〜3 で指定してください")
     if "status" in changes and changes["status"] not in mail.MAIL_STATUSES:
         raise HTTPException(400, f"不明な状態です: {changes['status']}")
+    if "status" in changes and staff:
+        raise HTTPException(403, "メールの状態（対応不要など）を変えられるのは管理者だけです")
+    if changes.get("status") == "pending_approval":
+        raise HTTPException(400, "「確認待ち」には、返信画面の「確認をお願いする」からしてください")
+    if staff and "draft_reply" in changes and row["status"] == "pending_approval":
+        raise HTTPException(409, PENDING_LOCKED)
     s = db.get_settings(conn)
     if "category" in changes:
         category = " ".join(changes["category"].split())
@@ -3169,6 +3357,15 @@ def mail_patch(
         if uid is not None:
             changes["assignee_user_id"] = uid
 
+    if "draft_reply" in changes:
+        # メール担当者の分は、確かめた後に確認をお願いしていたら書き込まない (ほかの変更もしない)
+        cur = conn.execute(
+            "UPDATE mails SET draft_reply = ? WHERE id = ?"
+            + (" AND status != 'pending_approval'" if staff else ""),
+            (changes["draft_reply"], mail_id),
+        )
+        if staff and not cur.rowcount:
+            raise HTTPException(409, PENDING_LOCKED)
     if "priority" in changes:
         conn.execute(
             "UPDATE mails SET priority = ?, priority_reason = ?,"
@@ -3184,11 +3381,6 @@ def mail_patch(
             # 対応不要にした時刻も残す (週ごとのまとめの「対応不要にした」の数)
             conn.execute("UPDATE mails SET archived_at = ? WHERE id = ?",
                          (now_iso(), mail_id))
-    if "draft_reply" in changes:
-        conn.execute(
-            "UPDATE mails SET draft_reply = ? WHERE id = ?",
-            (changes["draft_reply"], mail_id),
-        )
     if "category" in changes:
         conn.execute("UPDATE mails SET category = ? WHERE id = ?",
                      (changes["category"], mail_id))
@@ -3207,7 +3399,7 @@ def mail_patch(
             k, v = "assignee", f"{r['assignee_name']}({v})" if v is not None else "なし"
         logged.append(f"{k}={v}")
     if logged:
-        _audit(conn, admin, "mail_update", detail=f"mail={mail_id} " + ", ".join(logged))
+        _audit(conn, user, "mail_update", detail=f"mail={mail_id} " + ", ".join(logged))
     return {"updated": mail_id, "category": r["category"],
             "assignee_user_id": r["assignee_user_id"],
             "assignee_name": r["assignee_name"] or ""}
@@ -3225,6 +3417,8 @@ def mail_send(
     差出人は元メールが届いたアドレス (kurosu@ に届いたら kurosu@ から返す)。送信のログインは
     そのアドレスの送信用のユーザーがあればそれ、無ければ共通の SMTP 設定。控えは
     そのアドレスのメールボックスの送信済みフォルダに残す。
+    送れるのは管理者だけ。確認待ち (メール担当者が確認をお願いした) のメールを送ると
+    「承認して送信」になり、送った管理者の名前を approved_by に残す (送れなかったら確認待ちに戻す)。
     """
     r = _mail_or_404(conn, mail_id)
     if r["status"] == "replied":
@@ -3251,21 +3445,27 @@ def mail_send(
     # 先に「返信済み」へ原子的に更新・コミットしてから送信する (二重送信防止:
     # 同じメールへ同時に送信した場合、後の方は rowcount=0 になり 409 で止まる)。
     # CC・BCC も実際に送ったものとして一緒に残す
+    # 確認待ちだったら (同じ書き込みの中で決めるので、同時に確認をお願いされても食い違わない)
+    # 「承認して送信」として、送った管理者の名前を残す
     cur = conn.execute(
         "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
-        " reply_cc = ?, reply_bcc = ?, replied_at = ?, replied_by = ?"
+        " reply_cc = ?, reply_bcc = ?, replied_at = ?, replied_by = ?,"
+        " approved_by = CASE WHEN status = 'pending_approval' THEN ? ELSE '' END"
         " WHERE id = ? AND status != 'replied'",
         (subject, text, ", ".join(cc), ", ".join(bcc), now_iso(), admin["name"],
-         mail_id),
+         admin["name"], mail_id),
     )
     if not cur.rowcount:
         raise HTTPException(409, "このメールには返信済みです")
+    approval = conn.execute("SELECT approved_by, requested_by FROM mails WHERE id = ?",
+                            (mail_id,)).fetchone()
     conn.commit()
 
     def back_to_unhandled():
-        # 送信できなかったら未対応に戻し、画面から再試行できるようにする
+        # 送信できなかったら未対応 (確認待ちだったものは確認待ち) に戻し、画面から再試行できるようにする
         conn.execute(
-            "UPDATE mails SET status = 'unhandled', reply_subject = '',"
+            "UPDATE mails SET status = CASE WHEN approved_by != '' THEN 'pending_approval'"
+            " ELSE 'unhandled' END, approved_by = '', reply_subject = '',"
             " reply_body = '', reply_cc = '', reply_bcc = '', replied_at = NULL,"
             " replied_by = '', reply_message_id = '' WHERE id = ?",
             (mail_id,),
@@ -3349,6 +3549,9 @@ def mail_send(
     if refused:
         detail += f" refused={','.join(refused)}"
     detail += f" recipients={1 + len(cc) + len(bcc)} subject={subject}"
+    if approval and approval["approved_by"]:
+        # メール担当者の下書きを確認して送った (誰の下書きか)
+        detail += f" approved_draft_by={approval['requested_by']}"
     if sent_folder:
         detail += f" saved={sent_folder}"
     elif save_error:
@@ -3357,4 +3560,100 @@ def mail_send(
     return {"sent": r["from_addr"], "cc": cc, "bcc": bcc, "refused": refused,
             "subject": subject, "from": sender,
             "saved_to_sent": bool(sent_folder), "sent_folder": sent_folder,
-            "sent_save_error": save_error}
+            "sent_save_error": save_error,
+            "approved_by": approval["approved_by"] if approval else ""}
+
+
+# ----- メール担当者の「確認をお願いする」と、管理者の「差し戻す」 -----
+# 「承認して送信」は、確認待ちのメールをいつもの送信 (POST /api/mail/{id}/send) で送ること
+
+@app.post("/api/mail/{mail_id}/request-approval")
+def mail_request_approval(
+    mail_id: int, body: MailApprovalBody, user=Depends(require_mail_user),
+    conn=Depends(get_conn),
+):
+    """返信文・CC・BCC を残して「確認待ち」にし、管理者にお知らせする (「確認をお願いする」).
+
+    宛先・CC・BCC は送るときと同じように確かめる (管理者が送るときに失敗しないように)。
+    設定の「確認をお願いする」がオフなら 400、返信済み・もう確認待ちなら 409。
+    お知らせ (Slack・通知先メール) は、確定した後に別のスレッドで送る (送れなくても、
+    頼んだことは残る。受信箱の「確認待ち」で分かる)。返信文そのものはお知らせに載せない。
+    """
+    r = _mail_or_404(conn, mail_id)
+    s = db.get_settings(conn)
+    if not s["mail_require_approval"]:
+        raise HTTPException(
+            400, "いまは「確認をお願いする」を使わない設定です。"
+                 "返信文は閉じると下書きに残るので、管理者に送信を頼んでください")
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(400, "返信文を入力するか「返信文を生成」を押してください")
+    if "@" not in (r["from_addr"] or ""):
+        raise HTTPException(400, "差出人アドレスが不明なため返信できません")
+    try:
+        cc, bcc = mail.check_reply_recipients(r["from_addr"], body.cc, body.bcc)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    note = _clean_note(body.note, "管理者へのひとこと")
+    if r["status"] == "replied":
+        raise HTTPException(409, "このメールには返信済みです")
+    if r["status"] == "pending_approval":
+        raise HTTPException(409, "このメールは、もう確認をお願いしています（管理者の確認を待っています）")
+    now = now_iso()
+    # 前の差し戻しのコメントは消す (直して頼み直した)。確かめた後に、ほかの画面が送った・
+    # 確認をお願いしたときは書き込まない (409)
+    cur = conn.execute(
+        "UPDATE mails SET status = 'pending_approval', draft_reply = ?, draft_cc = ?,"
+        " draft_bcc = ?, requested_by = ?, requested_at = ?, approval_note = ?,"
+        " approved_by = '', returned_by = '', returned_at = NULL, return_note = ''"
+        " WHERE id = ? AND status IN ('unhandled', 'archived')",
+        (text, ", ".join(cc), ", ".join(bcc), user["name"], now, note, mail_id),
+    )
+    if not cur.rowcount:
+        raise HTTPException(409, "このメールは、ほかの画面で返信したか、確認をお願いしたところです"
+                                 "（閉じて開き直してください）")
+    detail = f"mail={mail_id} to={r['from_addr']}"
+    if cc:
+        detail += f" cc={','.join(cc)}"
+    if bcc:
+        detail += f" bcc={','.join(bcc)}"
+    if note:
+        detail += f" note={_audit_note(note)}"
+    _audit(conn, user, "mail_approval_request", detail=detail)
+    conn.commit()   # お知らせを送る前に確定する
+    subject, message = mail.approval_request_message(s, dict(r), user["name"], note)
+    notify.deliver_async(s, message, subject)
+    return {"updated": mail_id, "status": "pending_approval", "requested_by": user["name"],
+            "requested_at": now, "notified": notify.channels(s)}
+
+
+@app.post("/api/mail/{mail_id}/send-back")
+def mail_send_back(
+    mail_id: int, body: MailSendBackBody, admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """確認待ちのメールを差し戻す (未対応に戻し、コメントをメール担当者の返信画面に出す).
+
+    返信文 (下書き)・CC・BCC はそのまま残す (メール担当者が直して、もう一度頼めるように)。
+    コメントは必ず入れてもらう (どこを直せばよいか分かるように)。確認待ちでなければ 409
+    (ほかの管理者が先に送った・差し戻したなど)。
+    """
+    _mail_or_404(conn, mail_id)
+    note = _clean_note(body.note, "差し戻すときのコメント")
+    if not note:
+        raise HTTPException(400, "差し戻すときのコメント（どこを直してほしいか）を入れてください")
+    now = now_iso()
+    cur = conn.execute(
+        "UPDATE mails SET status = 'unhandled', returned_by = ?, returned_at = ?,"
+        " return_note = ? WHERE id = ? AND status = 'pending_approval'",
+        (admin["name"], now, note, mail_id),
+    )
+    if not cur.rowcount:
+        raise HTTPException(409, "このメールは確認待ちではありません"
+                                 "（ほかの画面で送信したか、差し戻した可能性があります）")
+    requested_by = conn.execute("SELECT requested_by FROM mails WHERE id = ?",
+                                (mail_id,)).fetchone()[0]
+    _audit(conn, admin, "mail_approval_return",
+           detail=f"mail={mail_id} requested_by={requested_by} note={_audit_note(note)}")
+    return {"updated": mail_id, "status": "unhandled", "returned_by": admin["name"],
+            "returned_at": now, "return_note": note}

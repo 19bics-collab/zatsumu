@@ -50,7 +50,26 @@
   .pr-2 { color: #d97706; }
   .pr-3 { color: #6b7280; }
   .st-replied { color: #0a7d32; } .st-archived { color: #6b7280; }
-  .st-unhandled { color: #d97706; }
+  .st-unhandled { color: #d97706; } .st-pending_approval { color: #7c3aed; font-weight: 600; }
+  /* 確認待ちの数 (受信箱のボタン)・差し戻されたメール (一覧の状態の横) */
+  .ntf.pend { background: #7c3aed; }
+  .mail-row td > span[class^="st-"] { white-space: nowrap; }
+  .ret-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+               border-radius: 99px; background: #fee2e2; color: #991b1b; margin-left: .3rem;
+               white-space: nowrap; vertical-align: 1px; font-weight: normal; }
+  /* ログインしている人 (ヘッダ) */
+  #whoami { font-size: .85rem; opacity: .9; overflow-wrap: anywhere; }
+  /* 確認のお願いが来ている (受信箱の上。管理者だけ) */
+  .appr-banner { display: flex; flex-wrap: wrap; gap: .4rem .8rem; align-items: center;
+                 background: #f5f3ff; border: 1px solid #ddd6fe; color: #4c1d95; border-radius: 8px;
+                 padding: .6rem .9rem; margin: 0 0 .8rem; font-size: .95rem; }
+  .appr-banner[hidden] { display: none; }
+  .appr-banner span { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
+  .appr-banner button { padding: .4rem .8rem; white-space: nowrap; }
+  /* メール担当者への案内 (受信箱・返信画面) */
+  .staff-help { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; color: #14532d;
+                padding: .55rem .8rem; font-size: .88rem; line-height: 1.55; overflow-wrap: anywhere; }
+  .staff-help[hidden] { display: none; }
   .mail-row { cursor: pointer; }
   .mail-row.done td { color: #9ca3af; }
   .mail-row:hover { background: #f0fdf4; }
@@ -147,6 +166,15 @@
   .acct-more { margin: .3rem 0; font-size: .95rem; }
   .acct-more summary { cursor: pointer; color: #374151; padding: .35rem 0; }
   #acct-msg { font-size: .85rem; overflow-wrap: anywhere; }
+  /* メール担当者 (設定)。1行=1人。ボタンは狭い画面では次の行へ */
+  .staff-row { display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+               justify-content: space-between; border-bottom: 1px solid #e5e7eb;
+               padding: .5rem 0; font-size: .9rem; }
+  .staff-row > div { flex: 1 1 10rem; min-width: 0; overflow-wrap: anywhere; }
+  .staff-row small { color: #6b7280; }
+  .staff-row small.on { color: #0a7d32; font-weight: 600; }
+  .staff-row button { padding: .4rem .7rem; margin-left: auto; }
+  #staff-msg { font-size: .85rem; overflow-wrap: anywhere; }
   /* 返信モーダル */
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
            align-items: center; justify-content: center; z-index: 10; }
@@ -164,7 +192,25 @@
   .modal .bar button { white-space: nowrap; }
   #m-status { order: -1; flex-basis: 100%; overflow-wrap: anywhere; }
   #m-status:empty { display: none; }
-  #m-send { margin-left: auto; }
+  #m-send, #m-request { margin-left: auto; }
+  /* 確認のお願い・差し戻し (返信画面) */
+  .appr { margin-top: .8rem; border: 1px solid #ddd6fe; border-radius: 6px; background: #f5f3ff;
+          padding: .6rem .7rem; display: flex; flex-direction: column; gap: .4rem;
+          font-size: .88rem; color: #3b0764; }
+  .appr[hidden], .appr-return[hidden], #m-req-row[hidden] { display: none; }
+  .appr.ret { border-color: #fecaca; background: #fef2f2; color: #7f1d1d; }
+  .appr > div { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .appr-head { font-weight: 600; }
+  .appr-help { color: #4b5563; }
+  .appr-help:empty { display: none; }
+  .appr-return { display: flex; flex-direction: column; gap: .4rem; }
+  #m-return-note { width: 100%; box-sizing: border-box; min-height: 3.6rem; padding: .5rem;
+                   border: 1px solid #ccc; border-radius: 6px; font-size: .9rem; font-family: inherit; }
+  #m-return { align-self: flex-start; padding: .45rem .9rem; }
+  #m-req-row { margin-top: .8rem; display: flex; }
+  #m-req-note { flex: 1; min-width: 0; padding: .45rem; border: 1px solid #ccc; border-radius: 6px;
+                font-size: .9rem; }
+  #m-staff-help { margin: .6rem 0 0; }
   .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; overflow-wrap: anywhere; }
   /* 区切りの無い長い件名 (URL など) でも、スマホで横にはみ出さないように折り返す */
   #m-subject { overflow-wrap: anywhere; }
@@ -325,10 +371,11 @@
 <body>
 <div id="login" hidden>
   <h1>📨 メール対応</h1>
-  <p>管理者トークンを入力してください</p>
-  <input type="password" id="token-input" placeholder="管理者トークン" autocomplete="current-password">
+  <p>トークン（合言葉）を入力してください</p>
+  <input type="password" id="token-input" placeholder="トークン" autocomplete="current-password">
   <button id="login-btn">ログイン</button>
-  <p id="login-error" class="error" hidden>トークンが正しくないか、管理者権限がありません</p>
+  <p id="login-error" class="error" hidden>トークンが正しくないか、メール画面を使う権限がありません
+  （使えるのは管理者と、管理者が「メール担当者」にした人です）</p>
 </div>
 
 <div id="device-verify" hidden>
@@ -344,14 +391,18 @@
   <p id="dv-error" class="error" hidden></p>
   <p><small>この端末で初めてログインするため、登録されたメールアドレスに届いた
   確認コードの入力が必要です（一度確認した端末では、次からは不要です）。</small></p>
+  <p id="dv-staff" hidden><small>メール担当者の確認コードは、管理者のメールに届きます。
+  管理者に聞いて、ここに入力してください。</small></p>
 </div>
 
 <div id="app" hidden>
 <header>
   <h1>📨 <span id="brand">メール対応</span></h1>
-  <button id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span></button>
-  <button id="nav-settings">設定</button>
+  <button id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span><span
+    id="pending-badge" class="ntf pend" title="確認待ち（メール担当者からの確認のお願い）" hidden></span></button>
+  <button id="nav-settings" hidden>設定</button>
   <span class="spacer"></span>
+  <span id="whoami"></span>
   <button id="logout">ログアウト</button>
 </header>
 <main>
@@ -360,6 +411,7 @@
   <h2>受信箱
     <select id="filter" class="flt" aria-label="状態" style="margin-left:1rem">
       <option value="unhandled">未対応</option>
+      <option value="pending_approval">確認待ち</option>
       <option value="replied">返信済み</option>
       <option value="archived">対応不要</option>
       <option value="">すべて</option>
@@ -372,7 +424,10 @@
     <span id="fetch-msg" style="margin-left:.6rem;font-size:.85rem"></span>
   </h2>
   <p id="fetch-error" class="error" hidden><small>⚠ <span id="fetch-error-text"></span>
-  設定は「設定」の「受信するメールアドレス」で確かめられます。</small></p>
+  <span id="fetch-error-hint">設定は「設定」の「受信するメールアドレス」で確かめられます。</span></small></p>
+  <p id="approval-banner" class="appr-banner" hidden><span id="approval-banner-text"></span>
+    <button id="approval-show" class="ghost">確認待ちを見る</button></p>
+  <p id="staff-help" class="staff-help" hidden></p>
   <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
@@ -382,7 +437,7 @@
   返信画面の「この相手とのやり取り」で前のメールと送った返信を見られます。
   受信するメールアドレスが2つ以上あるときは、件名の前にどのアドレスに届いたか（宛先）が出て、
   上の「アドレス」で絞り込めます（返信は、届いたアドレスから送ります）。
-  受信するメールアドレスとAIの設定は「設定」画面で行ってください。</small></p>
+  <span id="admin-help">受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
   <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
   理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
   <div class="table-wrap"><table id="mail-table">
@@ -691,6 +746,29 @@
       （「差し込み」のボタンで入れられます）。【 】の部分は、物件などに合わせて書き換えてください。
       定型文は、このカードのボタンを押したときに保存されます（下の「保存」は要りません）。</small></p>
     </div>
+    <div class="set-card" id="staff-card">
+      <h3>メール担当者（スタッフ）</h3>
+      <p class="set-help"><small>「メール担当者」にした人は、自分のトークン（合言葉）でこの画面に入り、
+      受信箱を見て返信文を作れます（返信文の生成・定型文・CC・BCC・種類と担当も使えます）。
+      <b>送信はできません。</b>返信文ができたら「確認をお願いする」を押すと、管理者に知らせが届き、
+      受信箱の「確認待ち」に入ります。管理者は返信画面で返信文を確かめて（直してもかまいません）
+      「承認して送信」を押すか、コメントを書いて「差し戻す」を押します。
+      設定・定型文の管理・Notionへの登録・「対応不要にする」は、管理者だけができます。</small></p>
+      <label class="set-row"><span>メール担当者の返信は、管理者が確認してから送る（「確認をお願いする」を使う）</span>
+        <input type="checkbox" id="set-require-approval"></label>
+      <p class="set-help"><small>オフにすると「確認をお願いする」のボタンが出なくなり、メール担当者は
+      返信文を下書きに残すだけになります（送信は、オンでもオフでも管理者だけです）。
+      確認のお願いの知らせは、「返事をしていないメールのお知らせ」と同じ送り先（通知先メール・Slack）に届きます。</small></p>
+      <div id="staff-list"></div>
+      <div id="staff-msg"></div>
+      <p><small>一覧は、このサーバに登録されている人です。「担当にする」「外す」は、押したときに保存されます
+      （下の「保存」は要りません。外すと、その人は次の操作からこの画面を使えなくなります）。
+      人の追加とトークン（合言葉）の発行は、勤怠の管理画面の「メンバー」で行います
+      （メール専用のサーバでは、サーバで <b>python manage.py add-user 名前 --mail-staff</b> を実行すると、
+      メール担当者として作ってトークンを表示します）。トークンは本人だけに伝えてください。
+      新しい端末の確認（確認コード）を使っているときは、メール担当者が初めて使う端末でも確認コードが要ります。
+      コードは管理者のメールに届くので、本人からのログインか確かめてから伝えてください。</small></p>
+    </div>
   </div>
   <p style="margin-top:1rem">
     <button id="set-save">保存</button>
@@ -757,6 +835,16 @@
         <input type="text" id="m-bcc" inputmode="email" autocomplete="off" autocapitalize="off"
           spellcheck="false" placeholder="任意（ほかの人には見えません）"></label>
     </div>
+    <div class="appr" id="m-appr" hidden>
+      <div class="appr-head" id="m-appr-head"></div>
+      <div id="m-appr-note"></div>
+      <div class="appr-help" id="m-appr-help"></div>
+      <div class="appr-return" id="m-return-box" hidden>
+        <textarea id="m-return-note" maxlength="500"
+          placeholder="差し戻すときのコメント（どこを直してほしいか。例：料金は2泊分で書いてください）"></textarea>
+        <button id="m-return" class="ghost">↩ 差し戻す</button>
+      </div>
+    </div>
     <div style="display:flex;gap:.5rem;align-items:center;justify-content:space-between;margin-top:.8rem;flex-wrap:wrap">
       <label for="m-draft" style="font-size:.85rem;color:#374151">返信文（編集できます）
         <span id="m-draft-src" style="color:#9ca3af;font-size:.8rem"></span></label>
@@ -768,10 +856,16 @@
       <button id="m-gen" class="ghost">返信文を生成</button>
     </div>
     <div id="m-ai-error" class="error" style="font-size:.8rem;margin-top:.3rem;overflow-wrap:anywhere" hidden></div>
+    <p id="m-staff-help" class="staff-help" hidden></p>
+    <div id="m-req-row" hidden>
+      <input type="text" id="m-req-note" maxlength="500"
+        placeholder="管理者へのひとこと（任意。例：料金のところを見てください）">
+    </div>
     <div class="bar" style="margin-top:.8rem">
       <button id="m-archive" class="ghost">対応不要にする</button>
       <span id="m-status"></span>
       <button id="m-send">返信を送信</button>
+      <button id="m-request" hidden>確認をお願いする</button>
       <button id="m-close" class="ghost">閉じる</button>
     </div>
   </div>
@@ -788,15 +882,17 @@
 const KEY = "zatsumu_token";
 const $ = id => document.getElementById(id);
 const PR = { 1: "高", 2: "中", 3: "低" };
-const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応不要" };
+const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応不要",
+             pending_approval: "確認待ち" };
 // cursorSet: 返信文の欄を人がタップ・キー操作したか (定型文をカーソル位置に入れてよいかの判断用)
 // autoSel: 画面が返信文を入れ替えた直後のカーソルの位置 (ここから動いていれば人が動かした)
 // ccCandidates: 全員に返信の CC 候補 / ccSaved: 「CCの人にも送る」を外す前の CC の欄
 // category / assigneeId / assigneeName: 保存済みの種類と担当 (変えられなかったときに選択欄を戻す用)
 // notion: Notion に登録したページ (notion_page_url・登録した時刻・人。まだなら URL が空)
+// mail: 開いているメール (サーバから受け取った詳細。確認のお願い・差し戻しの表示を直す用)
 const EMPTY_MODAL = { id: null, savedDraft: "", cursorSet: false, autoSel: null,
                       ccCandidates: "", ccSaved: "",
-                      category: "", assigneeId: null, assigneeName: "", notion: {} };
+                      category: "", assigneeId: null, assigneeName: "", notion: {}, mail: null };
 let modal = { ...EMPTY_MODAL };
 let viewName = "inbox";
 
@@ -804,6 +900,8 @@ let viewName = "inbox";
 // 確認済みの端末トークンはログアウトしても消さない (次回また確認コードが要らないように)
 const DKEY = "zatsumu_device";
 const DEVICE_REQUIRED = "device_verification_required";
+// メール画面を使えない (管理者でもメール担当者でもない。メール担当者から外された) ときの 403
+const NO_MAIL_ACCESS = "mail_access_required";
 
 // ?token= / #token= からの移行: 保存して URL から即座に消す(#はアクセスログに残らない)
 // #device=<端末トークン> (サーバで manage.py issue-device が表示) も同じ扱い。両方同時も可
@@ -834,6 +932,12 @@ async function api(path, opts = {}) {
     if (await needsDevice(r)) showDeviceVerify(); else showLogin(true);
     throw new Error("auth");
   }
+  // メール担当者から外されたなど (このトークンではもうメール画面を使えない)
+  if (r.status === 403 &&
+      (await r.clone().json().catch(() => ({}))).detail === NO_MAIL_ACCESS) {
+    showLogin(true);
+    throw new Error("auth");
+  }
   return r;
 }
 async function apiJson(path, opts = {}) {
@@ -859,22 +963,58 @@ function showLogin(withError) {
 
 let appSettings = {};
 let baseTitle = "メール対応";   // タブの名前 (前に未対応の数を付ける)
+// ログインしている人 { name, role: "admin" (管理者) / "staff" (メール担当者), can_send,
+// require_approval (「確認をお願いする」を使う設定か) }。画面はこれでボタンを出し分けるが、
+// できること (送信・設定など) はサーバが必ず確かめる
+let me = { role: "" };
+const isAdmin = () => me.role === "admin";
 async function showApp() {
-  // 管理者専用APIで認証確認をかねて設定を取得する(非管理者は403で弾かれる)
-  const r = await fetch("/api/settings", { headers: headers() });
+  // ログインの確認をかねて、自分の役割と表示に使う設定を聞く (管理者・メール担当者だけが通る)
+  const r = await fetch("/api/mail/me", { headers: headers() });
   if (await needsDevice(r)) { showDeviceVerify(); return; }
   if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
-  appSettings = await r.json();
+  me = await r.json();
+  if (isAdmin()) {
+    // 管理者は設定画面の分も読む (メール担当者は設定を読めない)
+    const r2 = await fetch("/api/settings", { headers: headers() });
+    if (await needsDevice(r2)) { showDeviceVerify(); return; }
+    if (!r2.ok) { showLogin(true); return; }
+    appSettings = await r2.json();
+  } else {
+    appSettings = { company_name: me.company_name, timezone: me.timezone,
+                    mail_category_list: me.mail_category_list };
+  }
   const name = appSettings.company_name || "";
   $("brand").textContent = name ? name + " メール" : "メール対応";
   baseTitle = (name ? name + " " : "") + "メール対応";
   document.title = baseTitle;
   $("login").hidden = true;
   $("app").hidden = false;
-  fillSettings(appSettings);
+  applyRole();
+  if (isAdmin()) fillSettings(appSettings);
+  else renderCategoryFilter();
   loadAssignees();   // 担当の選択肢は後から入る (受信箱を開くのを待たせない)
   showInbox();
   schedulePoll();    // 開いたままでも、新しいメールが届いたら受信箱を新しくする
+}
+
+// 役割に合わせて、出すもの・案内を変える。メール担当者には設定・送信などを出さない
+function applyRole() {
+  const admin = isAdmin();
+  $("nav-settings").hidden = !admin;
+  $("whoami").textContent = me.name ? me.name + (admin ? "" : "（メール担当）") : "";
+  $("admin-help").hidden = !admin;
+  $("fetch-error-hint").textContent = admin
+    ? "設定は「設定」の「受信するメールアドレス」で確かめられます。"
+    : "続くときは管理者に伝えてください。";
+  $("staff-help").hidden = admin;
+  $("staff-help").textContent = admin ? "" : me.require_approval
+    ? "メール担当者としてログインしています。返信の送信は管理者だけができます。返信画面で返信文を作ったら" +
+      "「確認をお願いする」を押してください（管理者が確かめて送ります。管理者が直してほしいところがあると" +
+      "「差し戻し」と出て、返信画面にコメントが出ます）。"
+    : "メール担当者としてログインしています。返信の送信は管理者だけができます。返信文は閉じると" +
+      "下書きに残るので、管理者に送信を頼んでください。";
+  if (!admin) { $("ai-warn").hidden = true; }
 }
 
 function switchView(name) {
@@ -899,9 +1039,10 @@ async function checkStatus() {
   // 受信するアドレスを足した・消した・名前を変えたときも、受信箱 (宛先の表示) を取り直す
   const acctSig = x => (x.accounts || []).map(a => `${a.id}:${a.label}`).join("\n") +
     "|" + (x.deleted_mail_count || 0);
+  // 確認待ちの数が変わった (確認のお願いが来た・送った・差し戻した) ときも取り直す
   const changed = !!mailStatus &&
     (s.newest_id !== mailStatus.newest_id || s.unhandled !== mailStatus.unhandled ||
-     acctSig(s) !== acctSig(mailStatus));
+     s.pending_approval !== mailStatus.pending_approval || acctSig(s) !== acctSig(mailStatus));
   mailStatus = s;
   connLost = false;
   renderStatus();
@@ -939,6 +1080,13 @@ function renderStatus() {
   $("inbox-badge").hidden = n === 0;
   $("inbox-badge").textContent = n;
   document.title = (n ? `(${n}) ` : "") + baseTitle;
+  // 確認待ち (メール担当者からの確認のお願い)。管理者には受信箱の上にも知らせを出す
+  const pend = s.pending_approval || 0;
+  $("pending-badge").hidden = pend === 0;
+  $("pending-badge").textContent = "確認待ち " + pend;
+  $("approval-banner").hidden = !isAdmin() || pend === 0 || $("filter").value === "pending_approval";
+  $("approval-banner-text").textContent =
+    `📝 メール担当者からの確認のお願いが ${pend} 件あります（返信文を確かめて「承認して送信」か「差し戻す」を押してください）`;
   const info = [];
   const accts = s.accounts || [];
   if (mailStatus && !s.imap_set) {
@@ -1071,19 +1219,21 @@ function renderInbox(list, keepPlace) {
   tbody.innerHTML = list.map(m => {
     const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
     return `
-    <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
+    <tr class="mail-row ${["unhandled", "pending_approval"].includes(m.status) ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
       <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong>${threadBadge(m)}</td>
       <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
-      <td data-label="状態" class="st-${m.status}">${ST[m.status] || m.status}</td>
+      <td data-label="状態"><span class="st-${esc(m.status)}">${esc(ST[m.status] || m.status)}</span>${m.status === "pending_approval" && m.requested_by ? `<small>（${esc(m.requested_by)}）</small>` : ""}${m.returned ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : ""}</td>
       <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
       <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
     </tr>`;
   }).join("") ||
     (filtered
       ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の「種類」「担当」「アドレス」を「すべて」に戻すと全部見られます）</small></td></tr>`
-      : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`);
+      : isAdmin()
+        ? `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`
+        : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
     tr.onclick = () => openMail(+tr.dataset.id));
   wrap.scrollLeft = left;
@@ -1092,6 +1242,12 @@ function renderInbox(list, keepPlace) {
   rememberShown(list);
 }
 $("filter").onchange = () => showInbox();
+// 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱のボタンの「確認待ち」から)
+function showPending() {
+  $("filter").value = "pending_approval";
+  showInbox();
+}
+$("approval-show").onclick = () => showPending();
 $("filter-cat").onchange = () => showInbox();
 $("filter-asg").onchange = () => showInbox();
 $("filter-acct").onchange = () => showInbox();
@@ -1213,29 +1369,26 @@ async function openMail(id) {
   }
   const replied = m.status === "replied";
   modal = { ...EMPTY_MODAL, id, savedDraft: m.draft_reply || "",
-            ccCandidates: (m.reply_cc_candidates || []).join(", "), notion: notionOf(m) };
+            ccCandidates: (m.reply_cc_candidates || []).join(", "), notion: notionOf(m), mail: m };
   // 宛先は元メールの差出人。CC は最初は空にしておき、「CCの人にも送る」を選んだときだけ
   // 候補を入れる (元メールの To・Cc は送り主が自由に書けるので、知らない人を黙って CC に
   // 入れて、鍵の番号などを送ってしまわないように)。
-  // 送信済みなら、実際に送った CC・BCC を出す。値は textContent / value で入れる
+  // 送信済みなら、実際に送った CC・BCC を出す。確認待ち・差し戻したメールなら、
+  // メール担当者が確認をお願いしたときの CC・BCC を出す。値は textContent / value で入れる
   $("m-to").textContent = `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}>`;
   // 差出人は、このメールが届いたアドレス (削除したアドレスなら共通の差出人メール)
   $("m-from").textContent = (m.reply_from || "（未設定）") +
     (!m.account_id && showAccounts() ? "（届いたアドレスは削除したため、共通の差出人で送ります）" : "");
   $("m-from-row").hidden = !m.reply_from && !showAccounts();
-  $("m-cc").value = replied ? (m.reply_cc || []).join(", ") : "";
-  $("m-bcc").value = replied ? (m.reply_bcc || []).join(", ") : "";
-  $("m-cc-all").checked = replied && !!$("m-cc").value;
-  $("m-cc-all").disabled = replied;
+  const proposed = !replied && (m.status === "pending_approval" || !!m.return_note);
+  const addrList = a => (a || []).join(", ");
+  $("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc) : "";
+  $("m-bcc").value = replied ? addrList(m.reply_bcc) : proposed ? addrList(m.draft_bcc) : "";
+  $("m-cc-all").checked = !!$("m-cc").value;
   $("m-cc-all-row").hidden = replied || !modal.ccCandidates;
   $("m-cc-count").textContent = modal.ccCandidates
     ? `元のメールの宛先・CC に ${(m.reply_cc_candidates || []).length}人` : "";
-  $("m-cc").readOnly = $("m-bcc").readOnly = replied;
   $("m-subject").textContent = m.subject || "（件名なし）";
-  $("m-meta").textContent =
-    `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}> ・ ` +
-    `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${ST[m.status] || m.status}` +
-    (m.status === "replied" && m.replied_by ? `（${m.replied_by} が送信）` : "");
   $("m-body").textContent = m.body || "（本文なし）";
   renderAttachments(id, m);
   renderThread(m);
@@ -1251,7 +1404,6 @@ async function openMail(id) {
   $("m-reason").textContent = m.priority_reason
     ? `判定理由: ${m.priority_reason}（${{ ai: "AI", rule: "ルール", manual: "手動" }[m.priority_source] || m.priority_source}）` : "";
   $("m-draft").value = m.status === "replied" ? m.reply_body : (m.draft_reply || "");
-  $("m-draft").readOnly = m.status === "replied";
   cursorByProgram($("m-draft"));
   $("m-draft-src").textContent =
     m.status === "replied" ? "（送信済みの本文）"
@@ -1260,15 +1412,78 @@ async function openMail(id) {
   $("m-status").textContent = "";
   $("m-ai-error").hidden = true;
   $("m-inst").value = "";
-  $("m-send").disabled = m.status === "replied";
-  $("m-send").textContent = m.status === "replied" ? "返信済み" : "返信を送信";
-  $("m-gen").disabled = m.status === "replied";
+  $("m-req-note").value = "";
+  $("m-return-note").value = "";
   $("m-gen").textContent = "返信文を生成";   // 前のメールで生成中のまま開いたときも戻す
-  $("m-archive").disabled = m.status !== "unhandled";
+  renderControls(m);
   $("m-back").hidden = !modalHistory.length;
   $("mail-modal").hidden = false;
   $("mail-modal").querySelector(".box").scrollTop = 0;   // やり取りから開いたときは先頭から見せる
   loadModalTemplates(id);   // 一覧は後から入る (開くのを待たせない)
+}
+
+// 返信画面のボタンと欄を、メールの状態と自分の役割 (管理者・メール担当者) に合わせる。
+// 送信・対応不要は管理者だけ、「確認をお願いする」はメール担当者だけ (サーバも確かめる)
+function renderControls(m) {
+  const admin = isAdmin();
+  const replied = m.status === "replied", pending = m.status === "pending_approval";
+  $("m-meta").textContent =
+    `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}> ・ ` +
+    `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${ST[m.status] || m.status}` +
+    (!replied || !m.replied_by ? ""
+      : m.approved_by && m.requested_by ? `（${m.requested_by} さんの下書きを ${m.approved_by} が確認して送信）`
+      : `（${m.replied_by} が送信）`);
+  // 送信済みと、メール担当者が確認待ちの間は、返信文・CC・BCC を変えない (管理者が見ている文なので)
+  const locked = replied || (!admin && pending);
+  $("m-draft").readOnly = locked;
+  $("m-cc").readOnly = $("m-bcc").readOnly = locked;
+  $("m-cc-all").disabled = locked;
+  $("m-gen").disabled = locked;
+  if (locked) $("m-tpl").disabled = true;
+  $("m-send").hidden = !admin;
+  $("m-send").disabled = replied;
+  $("m-send").textContent = replied ? "返信済み" : pending ? "承認して送信" : "返信を送信";
+  $("m-archive").hidden = !admin;
+  $("m-archive").disabled = m.status !== "unhandled";
+  const canRequest = !admin && !!me.require_approval && !replied;
+  $("m-request").hidden = !canRequest;
+  $("m-request").disabled = pending;
+  $("m-request").textContent = pending ? "確認待ち" : "確認をお願いする";
+  $("m-req-row").hidden = !canRequest || pending;
+  $("m-staff-help").hidden = admin || replied;
+  $("m-staff-help").textContent = pending
+    ? "管理者の確認を待っています。確認待ちの間は、返信文を変えられません（直したいときは、管理者に「差し戻す」を頼んでください）。"
+    : me.require_approval
+      ? "送信は管理者だけができます。返信文ができたら「確認をお願いする」を押してください（管理者が確かめて送ります）。"
+      : "送信は管理者だけができます。返信文は閉じると下書きに残るので、管理者に送信を頼んでください。";
+  renderApprovalBox(m);
+}
+
+// 確認のお願い (確認待ち) と差し戻しの知らせ。名前・ひとこと・コメントは textContent で入れる
+function renderApprovalBox(m) {
+  const admin = isAdmin();
+  const pending = m.status === "pending_approval";
+  const returned = !pending && m.status !== "replied" && !!m.return_note;
+  $("m-appr").hidden = !pending && !returned;
+  $("m-appr").className = "appr" + (returned ? " ret" : "");
+  $("m-return-box").hidden = !(admin && pending);
+  let head = "", note = "", help = "";
+  if (pending) {
+    head = `📝 ${m.requested_by || "メール担当者"} さんが確認をお願いしています` +
+      (m.requested_at ? `（${fmtDate(m.requested_at)}）` : "");
+    note = m.approval_note ? "ひとこと: " + m.approval_note : "";
+    help = admin ? "返信文・CC・BCC を確かめて（直してもかまいません）「承認して送信」を押してください。" +
+      "直してほしいところがあるときは、下にコメントを書いて「差し戻す」を押してください。" : "";
+  } else if (returned) {
+    head = "↩ 差し戻されました" +
+      `（${[m.returned_by, m.returned_at ? fmtDate(m.returned_at) : ""].filter(Boolean).join("・")}）`;
+    note = "コメント: " + m.return_note;
+    help = admin ? "" : "コメントを見て返信文を直し、もう一度「確認をお願いする」を押してください。";
+  }
+  $("m-appr-head").textContent = head;
+  $("m-appr-note").textContent = note;
+  $("m-appr-note").hidden = !note;
+  $("m-appr-help").textContent = help;
 }
 
 $("m-priority").onchange = async () => {
@@ -1383,7 +1598,10 @@ $("m-send").onclick = async () => {
   if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
   const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
   // 誰に届くかを送る前に見せる (全員に返信のつもりが無かった、などに気付けるように)
-  if (!confirm("この内容で返信を送信しますか？\n\n" +
+  const approving = !!modal.mail && modal.mail.status === "pending_approval";
+  if (!confirm((approving
+      ? `${modal.mail.requested_by || "メール担当者"} さんの下書きを、この内容で送信しますか？（承認して送信）\n\n`
+      : "この内容で返信を送信しますか？\n\n") +
       ($("m-from-row").hidden ? "" : "差出人: " + $("m-from").textContent + "\n") +
       "宛先: " + $("m-to").textContent +
       (cc.length ? "\nCC: " + cc.join(", ") : "") +
@@ -1406,7 +1624,8 @@ $("m-send").onclick = async () => {
     const counts = [sentCc.length ? `CC ${sentCc.length}件` : "",
                     sentBcc.length ? `BCC ${sentBcc.length}件` : ""].filter(Boolean);
     $("m-status").textContent = `${r.sent} へ送信しました ✓` +
-      (counts.length ? `（${counts.join("・")}）` : "");
+      (counts.length ? `（${counts.join("・")}）` : "") +
+      (r.approved_by ? "（確認待ちの下書きを承認しました）" : "");
     if ((r.refused || []).length) {
       // CC・BCC の一部が相手のメールサーバに断られた (宛先の人には届いている)
       $("m-status").textContent += `（次のアドレスには届きませんでした: ${r.refused.join(", ")}）`;
@@ -1416,6 +1635,10 @@ $("m-send").onclick = async () => {
       $("m-status").textContent += `（送信済みフォルダへの保存はできませんでした: ${r.sent_save_error}）`;
     }
     b.textContent = "返信済み";
+    if (modal.mail) {
+      modal.mail.status = "replied";
+      renderApprovalBox(modal.mail);   // 確認のお願い・差し戻すの欄を閉じる
+    }
     // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)。
     // CC・BCC の欄は実際に送ったもの (重複を除いた後) にする
     $("m-draft").readOnly = true;
@@ -1428,7 +1651,7 @@ $("m-send").onclick = async () => {
     $("m-cc-all").disabled = true;
     showInbox();
   } catch {
-    if (modal.id === id) { b.disabled = false; b.textContent = "返信を送信"; }
+    if (modal.id === id) { b.disabled = false; b.textContent = approving ? "承認して送信" : "返信を送信"; }
   }
 };
 
@@ -1441,6 +1664,69 @@ $("m-archive").onclick = async () => {
     inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
     await closeModal();
   } catch {}
+};
+
+/* メール担当者の「確認をお願いする」: 返信文・CC・BCC を下書きに残して「確認待ち」にし、
+   管理者に知らせる (送るのは管理者)。確認待ちの間は、返信文などを変えられない */
+$("m-request").onclick = async () => {
+  const text = $("m-draft").value.trim();
+  if (!text) { alert("返信文を入力するか「返信文を生成」を押してください"); return; }
+  const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
+  if (!confirm("この返信文で、管理者に確認をお願いしますか？\n\n" +
+      "宛先: " + $("m-to").textContent +
+      (cc.length ? "\nCC: " + cc.join(", ") : "") +
+      (bcc.length ? "\nBCC: " + bcc.join(", ") : "") +
+      "\n\n管理者が確かめてから送ります。確認待ちの間は、返信文を変えられません。")) return;
+  const id = modal.id, b = $("m-request");
+  b.disabled = true; b.textContent = "お願いしています…";
+  try {
+    const r = await apiJson(`/api/mail/${id}/request-approval`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: text, cc, bcc, note: $("m-req-note").value }),
+    });
+    if (modal.id !== id) { showInbox(); return; }
+    modal.savedDraft = text;
+    Object.assign(modal.mail, { status: "pending_approval", requested_by: r.requested_by,
+                                requested_at: r.requested_at, approval_note: $("m-req-note").value.trim(),
+                                draft_cc: cc, draft_bcc: bcc, return_note: "" });
+    renderControls(modal.mail);
+    $("m-status").textContent = "確認をお願いしました ✓（管理者が確かめて送ります）" +
+      ((r.notified || []).length ? "" : "（お知らせの送り先が未設定のため、管理者に一声かけてください）");
+    showInbox();
+  } catch {
+    if (modal.id === id) renderControls(modal.mail);   // ボタンを元に戻す
+  }
+};
+
+/* 管理者の「差し戻す」: 確認待ちから未対応に戻し、コメントをメール担当者の返信画面に出す。
+   直した返信文は下書きに残す (メール担当者がそこから直せるように) */
+$("m-return").onclick = async () => {
+  const note = $("m-return-note").value.trim();
+  if (!note) {
+    alert("差し戻すときのコメント（どこを直してほしいか）を入れてください");
+    $("m-return-note").focus();
+    return;
+  }
+  const id = modal.id, who = (modal.mail && modal.mail.requested_by) || "メール担当者";
+  if (!confirm(`${who} さんに差し戻しますか？\n\n「確認待ち」から「未対応」に戻り、` +
+      "コメントがメール担当者の返信画面に出ます。")) return;
+  const b = $("m-return");
+  b.disabled = true;
+  await saveDraft();
+  if (modal.id !== id) return;         // 保存を待っている間に閉じた
+  try {
+    const r = await apiJson(`/api/mail/${id}/send-back`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    });
+    if (modal.id !== id) { showInbox(); return; }
+    Object.assign(modal.mail, { status: "unhandled", returned_by: r.returned_by,
+                                returned_at: r.returned_at, return_note: r.return_note });
+    renderControls(modal.mail);
+    $("m-status").textContent = `${who} さんに差し戻しました ✓`;
+    showInbox();
+  } catch {}
+  b.disabled = false;
 };
 
 // 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき。送信済みは保存しない)
@@ -2089,6 +2375,7 @@ $("m-tpl").onchange = () => {
 let loaded = {};
 
 async function openSettings() {
+  if (!isAdmin()) return;              // 設定は管理者だけ (メール担当者にはボタンも出さない)
   switchView("settings");
   // SMTP は勤怠画面からも変更されうるので、開くたびに取り直す
   try { appSettings = await apiJson("/api/settings"); } catch { return; }
@@ -2096,6 +2383,7 @@ async function openSettings() {
   loadDevices();
   loadTemplates();
   loadAccounts();
+  loadStaff();
   loadAssignees();   // 登録されている名前 (種類ごとの担当の案内) を取り直す
 }
 
@@ -2131,6 +2419,7 @@ function fillSettings(s) {
   fillRemindSettings(s);
   fillReportSettings(s);
   fillNotionSettings(s);
+  $("set-require-approval").checked = !!s.mail_require_approval;
   $("set-msg").textContent = "";
   $("test-ai-msg").textContent = "";
   $("test-email-msg").textContent = "";
@@ -2460,6 +2749,7 @@ function renderAiStatus(s) {
   $("ai-warn").hidden = !errs.length;
 }
 async function refreshAiStatus() {
+  if (!isAdmin()) return;              // AI の設定は管理者だけが直せる (メール担当者には出さない)
   try {
     const r = await api("/api/settings");
     if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
@@ -2504,6 +2794,7 @@ $("set-save").onclick = async () => {
     notion_database_id: $("set-notion-db").value,
     notion_property_map: $("set-notion-map").value,
     notion_ai_fill: $("set-notion-ai").checked,
+    mail_require_approval: $("set-require-approval").checked,
   };
   // 空の欄は 0 (お知らせしない) と区別がつかないので、入れてもらう
   for (const id of ["set-remind-high", "set-remind-normal"]) {
@@ -2532,6 +2823,7 @@ $("set-save").onclick = async () => {
     body: JSON.stringify(body),
   });
   fillSettings(appSettings);
+  me.require_approval = !!appSettings.mail_require_approval;
   // 受信するメールアドレスの欄は、このボタンでは保存されない (カードのボタンで保存する)
   $("set-msg").textContent = "保存しました ✓" + (acctDirty()
     ? "（「受信するメールアドレス」の入力は、まだ保存されていません。そのカードの「" +
@@ -2804,6 +3096,46 @@ $("acct-list").onclick = async e => {
 };
 resetAcctForm();     // 一覧を読み込めなくても、追加の欄は既定の値 (SSL・993番など) にしておく
 
+/* ---------- メール担当者 (設定) ---------- */
+// 「担当にする」「外す」は押した時点でサーバに保存する (下の「保存」とは別)。名前は esc() を通す
+let staffList = [];
+async function loadStaff() {
+  try { staffList = await apiJson("/api/mail/staff"); } catch { return; }
+  $("staff-list").innerHTML = staffList.length ? staffList.map(u => {
+    const id = Number(u.id);
+    const st = u.is_admin ? "<small>管理者（もともと全部使えます）</small>"
+      : u.staff ? `<small class="on">メール担当者</small>${u.active ? "" : "<small>（無効にした人）</small>"}`
+      : "<small>メール画面は使えません</small>";
+    return `
+    <div class="staff-row"><div><b>${esc(u.name)}</b><br>${st}</div>${u.is_admin ? ""
+      : `<button class="ghost" data-staff="${id}" data-on="${u.staff ? 0 : 1}">${u.staff ? "外す" : "担当にする"}</button>`}</div>`;
+  }).join("") : "<small>登録されている人がいません</small>";
+}
+function staffMsg(text, color) {
+  $("staff-msg").style.color = color || "#0a7d32";
+  $("staff-msg").textContent = text;
+}
+$("staff-list").onclick = async e => {
+  const b = e.target.closest("button[data-staff]");
+  if (!b) return;
+  const u = staffList.find(x => x.id === +b.dataset.staff);
+  if (!u) return;
+  const on = b.dataset.on === "1";
+  if (!confirm(on
+      ? `${u.name} さんをメール担当者にしますか？\n\nお客様のメールを読み、返信文を作れるようになります` +
+        "（送信はできません）。この画面に入るには、本人のトークン（合言葉）を使います。"
+      : `${u.name} さんをメール担当者から外しますか？\n\n次の操作から、この画面を使えなくなります。`)) return;
+  b.disabled = true;
+  try {
+    await apiJson(`/api/mail/staff/${u.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ staff: on }),
+    });
+  } catch { b.disabled = false; return; }
+  staffMsg(on ? `${u.name} さんをメール担当者にしました ✓` : `${u.name} さんをメール担当者から外しました`);
+  loadStaff();
+};
+
 /* ---------- 定型文 (設定) ---------- */
 // 追加・変更・削除・並べ替えは、ボタンを押した時点でサーバに保存する (下の「保存」とは別)
 let tplList = [];
@@ -2950,6 +3282,8 @@ window.addEventListener("pageshow", e => { if (e.persisted) pollNow(); });
 
 /* ---------- ナビ・ログイン ---------- */
 $("nav-inbox").onclick = () => showInbox();
+// 受信箱のボタンの「確認待ち N」を押したら、確認待ちのメールだけを出す
+$("pending-badge").onclick = e => { e.stopPropagation(); showPending(); };
 $("nav-settings").onclick = () => openSettings();
 $("login-btn").onclick = () => {
   localStorage.setItem(KEY, $("token-input").value.trim());
@@ -2996,6 +3330,7 @@ function showDeviceVerify() {
   $("dv-code").value = "";
   dvError("");
   const p = dvPending();
+  $("dv-staff").hidden = !(p && p.staff);
   if (p) $("dv-sent").innerHTML = `<b>${esc(p.sent_to)}</b> に送った確認コードを入力してください`;
   else sendDeviceCode();
   $("dv-code").focus();
@@ -3017,9 +3352,12 @@ async function sendDeviceCode() {
       dvError(r.status === 404 ? DV_NOT_FOUND : e.detail || "確認コードを送れませんでした");
       return;
     }
-    dvSetPending({ request_id: e.request_id, sent_to: e.sent_to, at: Date.now() });
-    $("dv-sent").innerHTML =
-      `<b>${esc(e.sent_to)}</b> に確認コードを送りました（10分以内に入力してください）`;
+    // メール担当者のコードは管理者のメールに届く (管理者に聞いて入れてもらう)
+    dvSetPending({ request_id: e.request_id, sent_to: e.sent_to, staff: !!e.staff, at: Date.now() });
+    $("dv-staff").hidden = !e.staff;
+    $("dv-sent").innerHTML = e.staff
+      ? `管理者のメール <b>${esc(e.sent_to)}</b> に確認コードを送りました（管理者に聞いて、10分以内に入力してください）`
+      : `<b>${esc(e.sent_to)}</b> に確認コードを送りました（10分以内に入力してください）`;
     $("dv-code").value = "";
   } catch {
     dvError("通信に失敗しました。もう一度お試しください");
@@ -3063,7 +3401,7 @@ $("dv-code").addEventListener("keydown", e => {
 });
 $("dv-resend").onclick = () => sendDeviceCode();
 $("dv-back").onclick = () => {
-  localStorage.removeItem(KEY);   // 別の管理者トークンで入り直す (端末トークンは残す)
+  localStorage.removeItem(KEY);   // 別のトークンで入り直す (端末トークンは残す)
   dvSetPending(null);
   $("token-input").value = "";
   showLogin(false);
