@@ -413,7 +413,7 @@ def template_reply(settings: dict, mail: dict) -> str:
     )
 
 
-def _append_signature(settings: dict, body: str) -> str:
+def append_signature(settings: dict, body: str) -> str:
     sig = str(settings.get("mail_signature", "")).strip()
     return f"{body.rstrip()}\n\n{sig}" if sig else body.rstrip()
 
@@ -447,12 +447,43 @@ def generate_reply(settings: dict, mail: dict,
                                 timeout=AI_DRAFT_TIMEOUT,
                                 max_retries=AI_DRAFT_RETRIES)
             _clear_ai_error("draft")
-            return _append_signature(settings, body), "ai"
+            return append_signature(settings, body), "ai"
         except Exception as e:  # noqa: BLE001  API失敗は定型文で代替
             # 理由は last_ai_error("draft") で画面に出せるよう記録しておく
             _record_ai_error("draft", model, str(e))
             print(f"AI返信文生成に失敗 (定型文に切替): {e}")
-    return _append_signature(settings, template_reply(settings, mail)), "template"
+    return append_signature(settings, template_reply(settings, mail)), "template"
+
+
+# ---------- 定型文 (よく使う返信文) ----------
+
+TEMPLATE_NAME_MAX_CHARS = 40
+TEMPLATE_BODY_MAX_CHARS = 5000
+TEMPLATE_MAX_COUNT = 100
+# 定型文に書ける差し込み。これ以外の { } は書いたまま残す。
+# 日本語入力のまま打った全角の ｛ ｝ でも同じように置き換える
+_PLACEHOLDER_RE = re.compile(r"[{｛](相手の名前|件名|日付)[}｝]")
+
+
+def _one_line(value) -> str:
+    """差出人名・件名に紛れた改行や連続した空白を、空白1つにまとめる."""
+    return " ".join(str(value or "").split())
+
+
+def render_template(text: str, mail: dict, now: datetime | None = None) -> str:
+    """定型文の {相手の名前} {件名} {日付} を、このメールの内容に置き換える.
+
+    1回でまとめて置き換えるので、件名に「{日付}」などと書かれていても二重には置き換えない。
+    {日付} は今日 (集計と同じタイムゾーン。既定は日本時間)。
+    """
+    n = (now or datetime.now(timezone.utc)).astimezone(tz.TZ)
+    values = {
+        "相手の名前": (_one_line(mail.get("from_name"))
+                    or _one_line(mail.get("from_addr")) or "ご担当者"),
+        "件名": _one_line(mail.get("subject")) or "ご連絡",
+        "日付": f"{n.year}年{n.month}月{n.day}日",
+    }
+    return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], text)
 
 
 def reply_subject(subject: str) -> str:

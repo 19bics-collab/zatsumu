@@ -150,6 +150,9 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   既定: 低価格）で別々に選べ、設定画面の「AI接続テスト」で使えるか確かめられます。
   AI を使えないとき（キーの間違い・残高不足など）は理由を画面に表示します
   （キーの作り方は [DEPLOY.md](DEPLOY.md) の「メールの AI（Claude）を使えるようにする」）。
+  よく使う返信文は**定型文**として設定画面に登録でき、返信画面の「定型文を入れる」で
+  本文に入れられます（`{相手の名前}` `{件名}` `{日付}` はそのメールの内容に置き換わる。
+  最初に3つ入っています）。
   勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
   **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
   メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
@@ -223,6 +226,9 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
 | PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態の変更 |
 | POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人） |
+| GET/POST | `/api/mail/templates` | admin | 定型文の一覧・追加 |
+| PATCH/DELETE | `/api/mail/templates/{id}` | admin | 定型文の変更・並べ替え（`move: up/down`）・削除 |
+| GET | `/api/mail/{id}/templates` | admin | このメール用に差し込みを置き換えた定型文 |
 | POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認 |
 | POST | `/api/settings/test-email` | admin | 指定アドレスへメールのテスト送信 |
 | POST | `/api/device/start` | admin（端末確認は不要） | 新しい端末の確認コードをメールで送る（機能が有効なときだけ） |

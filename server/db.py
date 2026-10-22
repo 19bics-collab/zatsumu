@@ -3,6 +3,7 @@ import os
 import sqlite3
 import secrets
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = (
@@ -106,6 +107,16 @@ CREATE TABLE IF NOT EXISTS mails (
     replied_by TEXT NOT NULL DEFAULT '',      -- 送信した管理者名(スナップショット)
     references_hdr TEXT NOT NULL DEFAULT ''   -- スレッド返信用 References ヘッダ
 );
+-- よく使う返信文 (定型文)。返信画面で選んで本文に入れる。
+-- {相手の名前} などの差し込みは、入れるときにそのメールの内容へ置き換える (server/mail.py)
+CREATE TABLE IF NOT EXISTS mail_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,                     -- 返信画面の一覧に出す名前
+    body TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,  -- 並び順 (小さいほど上)
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 -- 新しい端末からの管理者ログインのメール確認 (server/devices.py)。
 -- 秘密 (端末トークン・確認コード) は sha256 のハッシュだけを保存する
 CREATE TABLE IF NOT EXISTS device_tokens (
@@ -133,6 +144,7 @@ CREATE TABLE IF NOT EXISTS device_challenges (
 CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_device_challenges_user ON device_challenges(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_mails_status ON mails(status);
+CREATE INDEX IF NOT EXISTS idx_mail_templates_order ON mail_templates(sort_order, id);
 CREATE INDEX IF NOT EXISTS idx_mails_received ON mails(received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_open ON sessions(user_id, clock_out);
 CREATE INDEX IF NOT EXISTS idx_sessions_clock_in ON sessions(clock_in);
@@ -210,6 +222,48 @@ STR_SETTINGS = {
 # 後方互換: 旧名を参照しているコード向け
 SETTING_DEFAULTS = INT_SETTINGS
 
+# 定型文の初期値 (名前, 本文)。最初の1回だけ入れる (_seed_mail_templates)。
+# 【 】の中は物件などに合わせて設定画面で書き換えてもらう前提
+DEFAULT_MAIL_TEMPLATES = [
+    ("チェックイン方法のご案内", """{相手の名前} 様
+
+このたびはご予約いただき、誠にありがとうございます。
+チェックインの方法について、下記のとおりご案内いたします。
+
+■チェックイン：【15:00】以降
+■チェックアウト：【10:00】まで
+■お部屋への入り方：【玄関横のキーボックスに鍵が入っています。暗証番号はご到着の前日にお送りします】
+■所在地：【物件の住所】
+
+ご到着が遅くなる場合や、ご不明な点がございましたら、
+このメールにご返信ください。
+快適にお過ごしいただけますよう、心よりお待ちしております。"""),
+    ("清掃のご依頼の受付", """{相手の名前} 様
+
+いつも大変お世話になっております。
+「{件名}」の件、{日付}付で清掃のご依頼を確かに承りました。
+
+担当スタッフの手配を進め、作業日時が決まり次第、改めてご連絡いたします。
+リネンの交換枚数や鍵の受け渡し方法などにご指定がございましたら、
+このメールにご返信いただけますと幸いです。
+
+引き続きどうぞよろしくお願いいたします。"""),
+    ("お見積もりのお礼", """{相手の名前} 様
+
+お世話になっております。
+このたびは、弊社の清掃・リネン・運営代行サービスについて
+お見積もりのご依頼をいただき、誠にありがとうございます。
+
+「{件名}」の件、内容を拝見いたしました。
+物件の所在地・間取り・ご希望の開始時期などを確認のうえ、
+担当者よりお見積もりをお送りいたします。
+
+ご不明な点やご要望がございましたら、どうぞお気軽にお申し付けください。
+何卒よろしくお願い申し上げます。"""),
+]
+# 定型文の初期値を入れ終えた印 (settings の非公開キー。画面・API には出ない)
+MAIL_TEMPLATES_SEEDED_KEY = "mail_state_templates_seeded"
+
 
 def get_settings(conn: sqlite3.Connection) -> dict:
     stored = {
@@ -278,6 +332,32 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE journals ADD COLUMN notified_at TEXT")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
+    _seed_mail_templates(conn)
+
+
+def _seed_mail_templates(conn: sqlite3.Connection) -> None:
+    """定型文の初期値を入れる (最初の1回だけ).
+
+    入れたら settings に印を残すので、利用者が全部消しても入れ直さない。
+    既に定型文がある DB (手で入れた等) には足さず、印だけ付ける。
+    """
+    if conn.execute("SELECT 1 FROM settings WHERE key = ?",
+                    (MAIL_TEMPLATES_SEEDED_KEY,)).fetchone():
+        return
+    # 印を先に書く。同時に開いた別の接続とは書き込みロックで順番になり、
+    # 後の方は印が既にあるので (rowcount=0) 入れない (二重に入らない)
+    cur = conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, '1')",
+                       (MAIL_TEMPLATES_SEEDED_KEY,))
+    if cur.rowcount and not conn.execute(
+            "SELECT 1 FROM mail_templates LIMIT 1").fetchone():
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            "INSERT INTO mail_templates (name, body, sort_order, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [(name, body, i, now, now)
+             for i, (name, body) in enumerate(DEFAULT_MAIL_TEMPLATES)])
+    # すぐ確定する (この接続でこの後に行う通信の間、書き込みロックを持ち越さない)
+    conn.commit()
 
 
 def work_categories(conn: sqlite3.Connection) -> list[str]:

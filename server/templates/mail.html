@@ -75,6 +75,20 @@
   .set-card textarea { width: 100%; box-sizing: border-box; min-height: 3.6rem;
                        padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
                        font-size: .9rem; font-family: inherit; }
+  /* 定型文 (設定) */
+  .tpl-row { display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+             justify-content: space-between; border-bottom: 1px solid #e5e7eb;
+             padding: .5rem 0; font-size: .9rem; }
+  .tpl-row > div:first-child { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+  .tpl-row small { color: #6b7280; }
+  .tpl-btns { display: flex; gap: .3rem; margin-left: auto; }
+  .tpl-btns button { padding: .4rem .65rem; }
+  #tpl-name { width: 100%; box-sizing: border-box; padding: .45rem; border: 1px solid #ccc;
+              border-radius: 6px; font-size: 1rem; }
+  #tpl-body { min-height: 10rem; }
+  .tpl-ph { display: flex; gap: .3rem; align-items: center; flex-wrap: wrap;
+            margin: .3rem 0; font-size: .85rem; color: #4b5563; }
+  .tpl-ph button { padding: .3rem .6rem; font-size: .82rem; }
   /* 返信モーダル */
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
            align-items: center; justify-content: center; z-index: 10; }
@@ -93,6 +107,8 @@
              font-family: inherit; margin-top: .3rem; }
   #m-inst { flex: 1; min-width: 180px; padding: .45rem; border: 1px solid #ccc;
             border-radius: 6px; font-size: .9rem; }
+  #m-tpl { max-width: 100%; padding: .35rem; border: 1px solid #ccc; border-radius: 6px;
+           font-size: .9rem; background: #fff; }
   @media (max-width: 720px) {
     html { font-size: 15px; }
     main { padding: .8rem; }
@@ -278,6 +294,30 @@
       </div>
       <span id="test-email-msg" style="font-size:.85rem"></span>
     </div>
+    <div class="set-card" id="tpl-card">
+      <h3>定型文（よく使う返信文）</h3>
+      <div id="tpl-list"></div>
+      <p id="tpl-form-title" style="margin:.9rem 0 .3rem;font-size:.9rem;font-weight:600">新しい定型文</p>
+      <label style="display:block;margin:.2rem 0;font-size:.9rem" for="tpl-name">名前（返信画面の一覧に出ます）</label>
+      <input type="text" id="tpl-name" maxlength="40" placeholder="例：清掃のご依頼の受付">
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="tpl-body">本文</label>
+      <div class="tpl-ph">差し込み：
+        <button type="button" class="ghost" data-ph="{相手の名前}">相手の名前</button>
+        <button type="button" class="ghost" data-ph="{件名}">件名</button>
+        <button type="button" class="ghost" data-ph="{日付}">今日の日付</button>
+      </div>
+      <textarea id="tpl-body" placeholder="{相手の名前} 様&#10;&#10;いつもお世話になっております。"></textarea>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.4rem">
+        <button id="tpl-save">定型文を追加</button>
+        <button id="tpl-cancel" class="ghost" hidden>やめる</button>
+        <span id="tpl-msg" style="font-size:.85rem"></span>
+      </div>
+      <p><small>返信画面の「定型文を入れる」から選ぶと、返信文に入ります。
+      本文に <b>{相手の名前}</b>（差出人の名前）・<b>{件名}</b>（届いたメールの件名）・
+      <b>{日付}</b>（今日の日付）と書いておくと、入れるときにそのメールの内容に置き換わります
+      （「差し込み」のボタンで入れられます）。【 】の部分は、物件などに合わせて書き換えてください。
+      定型文は、このカードのボタンを押したときに保存されます（下の「保存」は要りません）。</small></p>
+    </div>
   </div>
   <p style="margin-top:1rem">
     <button id="set-save">保存</button>
@@ -301,8 +341,11 @@
       </label>
       <span id="m-reason" style="font-size:.8rem;color:#6b7280"></span>
     </div>
-    <label style="font-size:.85rem;color:#374151;margin-top:.8rem;display:block">返信文（編集できます）
-      <span id="m-draft-src" style="color:#9ca3af;font-size:.8rem"></span></label>
+    <div style="display:flex;gap:.5rem;align-items:center;justify-content:space-between;margin-top:.8rem;flex-wrap:wrap">
+      <label for="m-draft" style="font-size:.85rem;color:#374151">返信文（編集できます）
+        <span id="m-draft-src" style="color:#9ca3af;font-size:.8rem"></span></label>
+      <select id="m-tpl" aria-label="定型文を入れる"><option value="">定型文を入れる…</option></select>
+    </div>
     <textarea id="m-draft" placeholder="「返信文を生成」を押すと下書きが入ります"></textarea>
     <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem;flex-wrap:wrap">
       <input type="text" id="m-inst" placeholder="生成の方針（任意。例：金曜までに対応すると伝える）">
@@ -325,7 +368,8 @@ const KEY = "zatsumu_token";
 const $ = id => document.getElementById(id);
 const PR = { 1: "高", 2: "中", 3: "低" };
 const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応不要" };
-let modal = { id: null, savedDraft: "" };
+// cursorSet: 返信文の欄を一度でもタップしたか (定型文をカーソル位置に入れてよいかの判断用)
+let modal = { id: null, savedDraft: "", cursorSet: false };
 let viewName = "inbox";
 
 // 新しい端末の確認 (サーバで ZATSUMU_LOGIN_VERIFY_EMAIL が有効なときだけ使われる)。
@@ -458,7 +502,7 @@ $("fetch-now").onclick = async () => {
 /* ---------- 返信モーダル ---------- */
 async function openMail(id) {
   const m = await apiJson(`/api/mail/${id}`);
-  modal = { id, savedDraft: m.draft_reply || "" };
+  modal = { id, savedDraft: m.draft_reply || "", cursorSet: false };
   $("m-subject").textContent = m.subject || "（件名なし）";
   $("m-meta").textContent =
     `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}> ・ ` +
@@ -482,6 +526,7 @@ async function openMail(id) {
   $("m-gen").disabled = m.status === "replied";
   $("m-archive").disabled = m.status !== "unhandled";
   $("mail-modal").hidden = false;
+  loadModalTemplates(id);   // 一覧は後から入る (開くのを待たせない)
 }
 
 $("m-priority").onchange = async () => {
@@ -506,6 +551,7 @@ $("m-gen").onclick = async () => {
     });
     $("m-draft").value = r.draft_reply;
     modal.savedDraft = r.draft_reply;
+    modal.cursorSet = false;   // 入れ替えた文のどこに定型文を入れるかは、もう一度選んでもらう
     $("m-draft-src").textContent =
       r.draft_source === "ai" ? "（AI生成の下書き）"
       : r.ai_error ? "（定型文の下書き・AIで作れませんでした）"
@@ -539,6 +585,7 @@ $("m-send").onclick = async () => {
     // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)
     $("m-draft").readOnly = true;
     $("m-gen").disabled = true;
+    $("m-tpl").disabled = true;
     $("m-archive").disabled = true;
     showInbox();
   } catch {
@@ -568,11 +615,66 @@ async function closeModal() {
       });
     } catch {}
   }
-  modal = { id: null, savedDraft: "" };
+  modal = { id: null, savedDraft: "", cursorSet: false };
   $("mail-modal").hidden = true;
 }
 $("m-close").onclick = () => closeModal();
 $("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
+
+/* 定型文を入れる。差し込み ({相手の名前} など) はサーバがこのメール用に置き換え済み */
+let modalTemplates = [];
+async function loadModalTemplates(id) {
+  const sel = $("m-tpl");
+  sel.disabled = true;
+  sel.length = 1;                      // 先頭の「定型文を入れる…」だけ残す
+  modalTemplates = [];
+  let list;
+  try {
+    const r = await api(`/api/mail/${id}/templates`);
+    if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
+    list = await r.json();
+  } catch { return; }
+  if (modal.id !== id) return;         // 待っている間に別のメールを開いた
+  modalTemplates = list;
+  for (const t of list) {
+    const o = document.createElement("option");
+    o.value = t.id;
+    o.textContent = t.name;            // 名前は innerHTML に入れない
+    sel.appendChild(o);
+  }
+  sel.options[0].textContent = list.length ? "定型文を入れる…" : "定型文なし（設定で登録できます）";
+  sel.disabled = !list.length || $("m-draft").readOnly;
+}
+
+// テキスト欄のカーソルの位置に文字を入れる (選んでいる文字があれば置き換える)
+function insertAtCursor(ta, text) {
+  const s = ta.selectionStart, e = ta.selectionEnd, v = ta.value;
+  ta.value = v.slice(0, s) + text + v.slice(e);
+  ta.focus();
+  ta.setSelectionRange(s + text.length, s + text.length);
+}
+
+$("m-draft").addEventListener("focus", () => { modal.cursorSet = true; });
+$("m-tpl").onchange = () => {
+  const sel = $("m-tpl"), ta = $("m-draft");
+  const t = modalTemplates.find(x => String(x.id) === sel.value);
+  sel.value = "";                      // 同じ定型文をもう一度選べるよう表示を戻す
+  if (!t || ta.readOnly) return;
+  if (ta.value.trim() && modal.cursorSet) {
+    insertAtCursor(ta, t.body);        // 書きかけの返信文の、カーソルの位置に入れる
+    return;
+  }
+  // 空なら署名付きで丸ごと入れる。下書きがあってカーソルの位置が分からないときは
+  // 黙って末尾 (署名の後) に足さず、置き換えてよいか聞く
+  if (ta.value.trim() && !confirm(
+      `今の返信文を、定型文「${t.name}」に置き換えますか？\n\n` +
+      "文の途中に入れたいときは「キャンセル」を押し、返信文の入れたい場所を" +
+      "タップしてから、もう一度選んでください。")) return;
+  ta.value = t.body_with_signature;
+  $("m-draft-src").textContent = "（定型文から作成）";
+  ta.focus();
+  ta.setSelectionRange(0, 0);
+};
 
 /* ---------- 設定 ---------- */
 // 直近にサーバから読み込んだ設定。共有項目(SMTP)を古い表示値で
@@ -585,6 +687,7 @@ async function openSettings() {
   try { appSettings = await apiJson("/api/settings"); } catch { return; }
   fillSettings(appSettings);
   loadDevices();
+  loadTemplates();
 }
 
 function fillSettings(s) {
@@ -781,6 +884,94 @@ $("set-test-email").onclick = async () => {
     $("test-email-msg").textContent = "送信できませんでした（SMTP設定を保存後にお試しください）";
   }
 };
+
+/* ---------- 定型文 (設定) ---------- */
+// 追加・変更・削除・並べ替えは、ボタンを押した時点でサーバに保存する (下の「保存」とは別)
+let tplList = [];
+let tplEditing = null;   // 編集中の定型文の id (null = 新しく追加)
+
+async function loadTemplates() {
+  try { tplList = await apiJson("/api/mail/templates"); } catch { return; }
+  const last = tplList.length - 1;
+  $("tpl-list").innerHTML = tplList.length ? tplList.map((t, i) => {
+    const preview = t.body.replace(/\s+/g, " ");
+    return `
+    <div class="tpl-row"><div>
+      <b>${esc(t.name)}</b><br>
+      <small>${esc(preview.slice(0, 60))}${preview.length > 60 ? "…" : ""}</small>
+    </div><div class="tpl-btns">
+      <button class="ghost" data-tpl="${Number(t.id)}" data-act="up" aria-label="上へ"${i === 0 ? " disabled" : ""}>↑</button>
+      <button class="ghost" data-tpl="${Number(t.id)}" data-act="down" aria-label="下へ"${i === last ? " disabled" : ""}>↓</button>
+      <button class="ghost" data-tpl="${Number(t.id)}" data-act="edit">編集</button>
+      <button class="ghost" data-tpl="${Number(t.id)}" data-act="del">削除</button>
+    </div></div>`;
+  }).join("") : "<small>定型文はまだありません。下の欄から追加してください</small>";
+}
+
+function tplMsg(text, isError) {
+  $("tpl-msg").style.color = isError ? "#c62828" : "#0a7d32";
+  $("tpl-msg").textContent = text;
+  if (!isError) setTimeout(() => $("tpl-msg").textContent = "", 2500);
+}
+
+function resetTplForm() {
+  tplEditing = null;
+  $("tpl-name").value = "";
+  $("tpl-body").value = "";
+  $("tpl-form-title").textContent = "新しい定型文";
+  $("tpl-save").textContent = "定型文を追加";
+  $("tpl-cancel").hidden = true;
+}
+
+$("tpl-list").onclick = async e => {
+  const b = e.target.closest("button[data-tpl]");
+  if (!b) return;
+  const t = tplList.find(x => x.id === +b.dataset.tpl);
+  if (!t) return;
+  const act = b.dataset.act;
+  if (act === "edit") {
+    tplEditing = t.id;
+    $("tpl-name").value = t.name;
+    $("tpl-body").value = t.body;
+    $("tpl-form-title").textContent = `「${t.name}」を編集中`;
+    $("tpl-save").textContent = "変更を保存";
+    $("tpl-cancel").hidden = false;
+    $("tpl-msg").textContent = "";
+    $("tpl-name").focus();
+    return;
+  }
+  if (act === "del" && !confirm(`定型文「${t.name}」を削除しますか？`)) return;
+  try {
+    await apiJson(`/api/mail/templates/${t.id}`, act === "del" ? { method: "DELETE" } : {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ move: act }),
+    });
+  } catch { return; }
+  if (act === "del" && tplEditing === t.id) resetTplForm();
+  loadTemplates();
+};
+
+$("tpl-save").onclick = async () => {
+  const name = $("tpl-name").value.trim(), body = $("tpl-body").value;
+  if (!name || !body.trim()) { tplMsg("名前と本文を入力してください", true); return; }
+  const editing = tplEditing;
+  const b = $("tpl-save");
+  b.disabled = true;
+  try {
+    await apiJson(editing ? `/api/mail/templates/${editing}` : "/api/mail/templates", {
+      method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, body }),
+    });
+    resetTplForm();
+    tplMsg(editing ? "変更を保存しました ✓" : "追加しました ✓");
+    loadTemplates();
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  b.disabled = false;
+};
+$("tpl-cancel").onclick = () => { resetTplForm(); $("tpl-msg").textContent = ""; };
+// 「差し込み」ボタン: 本文のカーソルの位置に {相手の名前} などを入れる
+document.querySelectorAll(".tpl-ph button").forEach(b =>
+  b.onclick = () => insertAtCursor($("tpl-body"), b.dataset.ph));
 
 /* ---------- ナビ・ログイン ---------- */
 $("nav-inbox").onclick = () => showInbox();

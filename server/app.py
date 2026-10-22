@@ -366,6 +366,17 @@ class MailSendBody(BaseModel):
     subject: str | None = None  # 省略時は「Re: 元の件名」
 
 
+class MailTemplateBody(BaseModel):
+    name: str
+    body: str
+
+
+class MailTemplatePatch(BaseModel):
+    name: str | None = None
+    body: str | None = None
+    move: str | None = None     # "up" / "down" (並び順を1つ上/下へ)
+
+
 class SessionBody(BaseModel):
     clock_in: str
     clock_out: str
@@ -2107,6 +2118,142 @@ def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
         raise HTTPException(502, f"受信に失敗しました: {notify.safe_error(e, s)}")
     return {"fetched": len(added)}
+
+
+# ----- 定型文 (よく使う返信文) -----
+# /api/mail/templates... は /api/mail/{mail_id} より先に宣言する
+# (後にすると "templates" が mail_id として読まれ、422 になる)
+
+def _template_or_404(conn, tid: int):
+    row = conn.execute("SELECT * FROM mail_templates WHERE id = ?", (tid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "定型文が見つかりません")
+    return row
+
+
+def _template_dict(r) -> dict:
+    return {"id": r["id"], "name": r["name"], "body": r["body"],
+            "sort_order": r["sort_order"], "updated_at": r["updated_at"]}
+
+
+def _clean_template(conn, name: str | None, body: str | None,
+                    tid: int | None = None) -> dict:
+    """定型文の名前・本文を整えて確かめる (渡された項目だけ)."""
+    out = {}
+    if name is not None:
+        name = " ".join(name.split())   # 名前は1行 (改行・連続した空白は空白1つに)
+        if not name:
+            raise HTTPException(400, "定型文の名前を入力してください")
+        if len(name) > mail.TEMPLATE_NAME_MAX_CHARS:
+            raise HTTPException(
+                400, f"定型文の名前は{mail.TEMPLATE_NAME_MAX_CHARS}文字以内にしてください")
+        if conn.execute("SELECT 1 FROM mail_templates WHERE name = ? AND id != ?",
+                        (name, tid or 0)).fetchone():
+            raise HTTPException(409, "同じ名前の定型文が既にあります")
+        out["name"] = name
+    if body is not None:
+        body = body.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not body:
+            raise HTTPException(400, "定型文の本文を入力してください")
+        if len(body) > mail.TEMPLATE_BODY_MAX_CHARS:
+            raise HTTPException(
+                400, f"定型文の本文は{mail.TEMPLATE_BODY_MAX_CHARS}文字以内にしてください")
+        out["body"] = body
+    return out
+
+
+def _templates_in_order(conn):
+    return conn.execute("SELECT * FROM mail_templates ORDER BY sort_order, id").fetchall()
+
+
+@app.get("/api/mail/templates")
+def list_mail_templates(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """定型文の一覧 (並び順。差し込みは置き換えない)."""
+    return [_template_dict(r) for r in _templates_in_order(conn)]
+
+
+@app.post("/api/mail/templates")
+def create_mail_template(
+    body: MailTemplateBody, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """定型文を追加する (一覧の一番下に入る)."""
+    fields = _clean_template(conn, body.name, body.body)
+    count = conn.execute("SELECT COUNT(*) FROM mail_templates").fetchone()[0]
+    if count >= mail.TEMPLATE_MAX_COUNT:
+        raise HTTPException(400, f"定型文は{mail.TEMPLATE_MAX_COUNT}件までです。"
+                                 "使わないものを消してから追加してください")
+    now = now_iso()
+    cur = conn.execute(
+        "INSERT INTO mail_templates (name, body, sort_order, created_at, updated_at)"
+        " VALUES (?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM mail_templates),"
+        " ?, ?)",
+        (fields["name"], fields["body"], now, now),
+    )
+    _audit(conn, admin, "mail_template_create", detail=fields["name"])
+    return _template_dict(_template_or_404(conn, cur.lastrowid))
+
+
+@app.patch("/api/mail/templates/{tid}")
+def patch_mail_template(
+    tid: int, body: MailTemplatePatch, admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """定型文の名前・本文の変更と、並び順の入れ替え (move: up / down)."""
+    row = _template_or_404(conn, tid)
+    if body.name is None and body.body is None and body.move is None:
+        raise HTTPException(400, "変更内容がありません")
+    if body.move is not None and body.move not in ("up", "down"):
+        raise HTTPException(400, "move は up か down で指定してください")
+    fields = _clean_template(conn, body.name, body.body, tid)
+    if fields:
+        conn.execute(
+            "UPDATE mail_templates SET name = ?, body = ?, updated_at = ? WHERE id = ?",
+            (fields.get("name", row["name"]), fields.get("body", row["body"]),
+             now_iso(), tid),
+        )
+        _audit(conn, admin, "mail_template_update",
+               detail=f"template={tid} {fields.get('name', row['name'])}")
+    if body.move:
+        # 隣と入れ替えて、全体を 0,1,2… と振り直す (同じ番号が混ざっていても崩れない)。
+        # 一番上の「上へ」・一番下の「下へ」は何もしない
+        ids = [r["id"] for r in _templates_in_order(conn)]
+        i = ids.index(tid)
+        j = i - 1 if body.move == "up" else i + 1
+        if 0 <= j < len(ids):
+            ids[i], ids[j] = ids[j], ids[i]
+        conn.executemany("UPDATE mail_templates SET sort_order = ? WHERE id = ?",
+                         [(n, x) for n, x in enumerate(ids)])
+    return _template_dict(_template_or_404(conn, tid))
+
+
+@app.delete("/api/mail/templates/{tid}")
+def delete_mail_template(
+    tid: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    row = _template_or_404(conn, tid)
+    conn.execute("DELETE FROM mail_templates WHERE id = ?", (tid,))
+    _audit(conn, admin, "mail_template_delete", detail=f"template={tid} {row['name']}")
+    return {"deleted": tid}
+
+
+@app.get("/api/mail/{mail_id}/templates")
+def mail_templates_for_mail(
+    mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """このメール用に差し込み ({相手の名前} など) を置き換えた定型文 (返信画面用).
+
+    body は返信文の途中に入れる用、body_with_signature は返信文が空のときに
+    丸ごと入れる用 (「返信文を生成」と同じく末尾に署名が付く)。
+    """
+    r = dict(_mail_or_404(conn, mail_id))
+    s = db.get_settings(conn)
+    now = datetime.now(timezone.utc)
+    out = []
+    for t in _templates_in_order(conn):
+        text = mail.render_template(t["body"], r, now)
+        out.append({"id": t["id"], "name": t["name"], "body": text,
+                    "body_with_signature": mail.append_signature(s, text)})
+    return out
 
 
 @app.get("/api/mail/{mail_id}")
