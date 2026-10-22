@@ -1,6 +1,7 @@
 """zatsumu server — テレワーク勤怠・稼働可視化 MVP (F-Chair+ 風)."""
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,8 +22,19 @@ DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
 # 受信メールの添付ファイル (<メールの番号>/<添付の番号> に保存する)
 MAIL_ATTACHMENT_DIR = DATA_DIR / "mail_attachments"
-# バックグラウンド処理(キャプチャ自動削除・長時間在席チェック)の実行間隔(分)
+# バックグラウンド処理(キャプチャ自動削除・長時間在席チェック)の実行間隔(分)。
+# メールの定期受信の間隔は、これとは別にメール画面の設定 (mail_fetch_interval_min) で決める
 ALERT_CHECK_INTERVAL_MIN = float(os.environ.get("ZATSUMU_CHECK_INTERVAL_MIN", "10"))
+# 起動してから最初にメールを受信するまでの秒数 (更新・再起動のたびに、受信の間隔いっぱい
+# 新着が止まらないように。起動直後の混み合いを避けて少しだけ待つ)
+MAIL_FIRST_FETCH_DELAY_SEC = 30
+# 次の受信を待つ間に、受信の間隔 (設定) を読み直す間隔 (秒)。
+# 画面で間隔を変えたら、再起動しなくても (長い間隔で待っている途中でも) すぐ使われる
+MAIL_LOOP_RECHECK_SEC = 15
+# 「今すぐ受信」を押したときに、ほかの受信 (定期受信など) が終わるのを待つ秒数
+FETCH_WAIT_SEC = 15
+# メールの自動受信の間隔 (分) に選べる範囲 (設定 mail_fetch_interval_min)
+MAIL_FETCH_INTERVAL_RANGE = (1, 60)
 
 
 def check_long_seated(conn) -> int:
@@ -114,16 +126,38 @@ async def _background_loop() -> None:
             print(f"バックグラウンド処理でエラー: {e}")
 
 
+def _mail_interval_sec() -> float:
+    """メールの定期受信の間隔 (秒)。設定 (メール画面) の値で、読めなければ既定の値."""
+    lo, hi = MAIL_FETCH_INTERVAL_RANGE
+    try:
+        conn = db.connect(DATA_DIR / "zatsumu.db")
+        try:
+            minutes = db.get_settings(conn)["mail_fetch_interval_min"]
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"メールの受信間隔を読めませんでした: {e}")
+        minutes = db.INT_SETTINGS["mail_fetch_interval_min"]
+    return min(max(minutes, lo), hi) * 60
+
+
 async def _mail_loop() -> None:
     # メール受信は IMAP/Claude API で数分かかることがあるため、パージや
-    # アラートを遅らせないよう独立ループにする。ブロッキングI/Oは
+    # アラートを遅らせないよう独立ループにする。ブロッキングI/O (DB を開くのも含む) は
     # to_thread でイベントループの外に逃がす。
+    await asyncio.sleep(MAIL_FIRST_FETCH_DELAY_SEC)
     while True:
-        await asyncio.sleep(ALERT_CHECK_INTERVAL_MIN * 60)
+        started = time.monotonic()
         try:
             await asyncio.to_thread(_mail_tick)
         except Exception as e:  # noqa: BLE001
             print(f"メール受信処理でエラー: {e}")
+        # 前の受信を始めてから、間隔 (設定) が経つまで待つ。間隔は少しずつ読み直す
+        while True:
+            left = await asyncio.to_thread(_mail_interval_sec) - (time.monotonic() - started)
+            if left <= 0:
+                break
+            await asyncio.sleep(min(left, MAIL_LOOP_RECHECK_SEC))
 
 
 @asynccontextmanager
@@ -345,6 +379,7 @@ class SettingsPatch(BaseModel):
     imap_use_ssl: bool | None = None
     mail_save_sent: bool | None = None
     mail_fetch_enabled: bool | None = None
+    mail_fetch_interval_min: int | None = None
     mail_auto_draft: bool | None = None
     mail_retention_days: int | None = None
     mail_fetch_days: int | None = None
@@ -799,6 +834,24 @@ def get_settings_api(_admin=Depends(require_admin), conn=Depends(get_conn)):
     return _mask_settings(db.get_settings(conn))
 
 
+# 範囲外のときに画面に出す名前 (メール画面の数値の欄。無いものは設定の名前のまま出す)
+SETTING_LABELS = {
+    "mail_fetch_interval_min": "自動受信の間隔（分）",
+    "mail_fetch_days": "初回に遡る日数",
+    "mail_retention_days": "メール保存日数",
+}
+# 変えたら、記録してある受信の失敗を消す設定 (前の設定での失敗は当てにならないので)
+IMAP_SETTING_KEYS = ("imap_host", "imap_port", "imap_user", "imap_pass",
+                     "imap_folder", "imap_use_ssl", "mail_fetch_enabled")
+
+
+def _same_setting(key: str, a, b) -> bool:
+    """設定の値が同じか (数値の設定は True と 1 のような書き方の違いを気にしない)."""
+    if key in db.INT_SETTINGS:
+        return int(a) == int(b)
+    return str(a) == str(b)
+
+
 @app.patch("/api/settings")
 def patch_settings(
     body: SettingsPatch, admin=Depends(require_admin), conn=Depends(get_conn)
@@ -823,6 +876,7 @@ def patch_settings(
         "idle_threshold": (10, 86400),
         "imap_use_ssl": (0, 1),
         "mail_fetch_enabled": (0, 1),
+        "mail_fetch_interval_min": MAIL_FETCH_INTERVAL_RANGE,
         "mail_auto_draft": (0, 1),
         "mail_retention_days": (0, 3650),
         "mail_fetch_days": (1, 365),
@@ -837,7 +891,8 @@ def patch_settings(
     for key, val in int_changes.items():
         lo, hi = limits[key]
         if not lo <= val <= hi:
-            raise HTTPException(400, f"{key} は {lo}〜{hi} の範囲で指定してください")
+            raise HTTPException(
+                400, f"{SETTING_LABELS.get(key, key)} は {lo}〜{hi} の範囲で指定してください")
     if merged["capture_min_interval"] > merged["capture_max_interval"]:
         raise HTTPException(400, "最短間隔は最長間隔以下にしてください")
     # 文字列設定のバリデーション
@@ -898,6 +953,11 @@ def patch_settings(
            for k in ("anthropic_api_key", "anthropic_model", "anthropic_classify_model")):
         # キーやモデルを変えたら、前の設定での AI の失敗の記録は当てにならないので消す
         mail.clear_ai_errors()
+    if any(k in changes and not _same_setting(k, changes[k], current.get(k, ""))
+           for k in IMAP_SETTING_KEYS):
+        # 受信サーバの設定を変えたら、前の設定での受信の失敗の記録も消す
+        # (次の受信で、うまくいかなければまた記録される)
+        mail.clear_fetch_error(conn)
     for key, val in changes.items():
         db.set_setting(conn, key, val)
     secret = {"slack_webhook_url", "smtp_pass", "smtp_user",
@@ -2186,16 +2246,50 @@ def list_mail(
 
 @app.post("/api/mail/fetch")
 def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
-    """今すぐ IMAP から新着を取り込む (メール画面の「今すぐ受信」用)."""
+    """今すぐ IMAP から新着を取り込む (メール画面の「今すぐ受信」用).
+
+    ほかの受信 (定期受信・別の画面の「今すぐ受信」) の途中なら、終わるのを少し待ってから
+    受信する。それでも終わらなければ 409 (少し待ってから押してもらう)。
+    """
     s = db.get_settings(conn)
     if not str(s.get("imap_host", "")).strip():
         raise HTTPException(400, "IMAPが未設定です。設定画面で受信サーバを保存してください")
     conn.commit()   # 受信 (時間がかかる) の間、DB の書き込みロックを持たない
     try:
-        added = mail.fetch_new_mail(conn, s, attachment_dir=MAIL_ATTACHMENT_DIR)
+        added = mail.fetch_mail_locked(conn, s, attachment_dir=MAIL_ATTACHMENT_DIR,
+                                       wait=FETCH_WAIT_SEC)
+    except mail.FetchBusy as e:
+        raise HTTPException(409, str(e))
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
-        raise HTTPException(502, f"受信に失敗しました: {notify.safe_error(e, s)}")
+        reason = notify.safe_error(RuntimeError(mail.fetch_error_text(e)), s)
+        raise HTTPException(502, f"受信に失敗しました: {reason}")
     return {"fetched": len(added)}
+
+
+# ----- 受信の様子 (メール画面が1分ごとに聞く) -----
+# /api/mail/{mail_id} より先に宣言する (後にすると "status" が mail_id として読まれ、422 になる)
+
+@app.get("/api/mail/status")
+def mail_status(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """受信の様子 (開いたままのメール画面が新着に気付くための、軽い問い合わせ).
+
+    未対応の数と一番新しいメールの番号 (どちらかが変わったら画面が受信箱を取り直す)、
+    最後に受信できた時刻、直近の受信が失敗していればその理由 (分かりやすい言葉) を返す。
+    1分ごと・タブごとに呼ばれるので、DB は読むだけにする (書き込みのロックを取らない)。
+    """
+    s = db.get_settings(conn)
+    unhandled, newest = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM mails WHERE status = 'unhandled'),"
+        " (SELECT MAX(id) FROM mails)").fetchone()
+    imap_set = bool(str(s.get("imap_host") or "").strip())
+    return {
+        "unhandled": unhandled,
+        "newest_id": newest,
+        **mail.fetch_state(conn),
+        "imap_set": imap_set,
+        "auto_fetch": imap_set and bool(s["mail_fetch_enabled"]),
+        "interval_min": s["mail_fetch_interval_min"],
+    }
 
 
 # ----- 定型文 (よく使う返信文) -----

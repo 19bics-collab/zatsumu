@@ -168,6 +168,12 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   種類ごとの**担当**も自動で入ります（AI を使うときは優先度と同じ1回の依頼で種類も選び、
   使わないときは設定の言葉で決める。受信箱の「種類」「担当」で絞り込め、返信画面で変えられる。
   種類の一覧・言葉・担当は設定画面の「種類と担当」で変えられる）。
+  新しいメールは**自動で受信**し（既定 5 分ごと。設定画面の「自動受信の間隔」で 1〜60 分。
+  サーバを起動・更新したときは 30 秒ほどで1回目を受信）、**開いたままの受信箱も 1 分ごとに
+  新しくなります**（ページの再読み込みは不要。タブの名前に未対応の数、前に見た後に届いて
+  まだ開いていないメールに「新着」、「今すぐ受信」の横に最終受信の時刻、受信に失敗していれば
+  その理由を出す。返信画面・設定を開いている間は描き直さず、戻ったときに新しくする。
+  自動の受信と「今すぐ受信」は重ならないよう1つずつ行う）。
   勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
   **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
   メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
@@ -238,7 +244,8 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority/category/assignee で絞り込み。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
 | GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧） |
 | GET | `/api/mail/{id}/attachments/{添付id}` | admin | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
-| POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み |
+| POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み（ほかの受信の途中で、少し待っても終わらなければ 409） |
+| GET | `/api/mail/status` | admin | 受信の様子（未対応の数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗）。メール画面が 1 分ごとに呼ぶ |
 | POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
 | PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更 |
 | GET | `/api/mail/assignees` | admin | 担当に選べる人（有効な人の番号と名前） |

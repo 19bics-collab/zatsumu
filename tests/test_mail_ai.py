@@ -595,7 +595,7 @@ def test_mail_page_ai_warning_fresh_and_per_use(client):
         return page[i:page.index(end, i)]
 
     # 受信箱を出すたび・「今すぐ受信」のあと (受信箱以外を見ていても) に取り直す
-    assert "refreshAiStatus();" in block("async function showInbox()", "\n}\n")
+    assert "refreshAiStatus();" in block("async function showInbox(", "\n}\n")
     fetch_now = block('$("fetch-now").onclick', "\n};\n")
     assert "showInbox();" in fetch_now and "refreshAiStatus();" in fetch_now
     # 用途ごとの文言。用途の名前はサーバ (mail.AI_PURPOSES) とそろえる

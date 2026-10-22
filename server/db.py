@@ -199,6 +199,8 @@ INT_SETTINGS = {
     "idle_threshold": 120,         # 無操作がこの秒数以上なら「離席/非稼働」とみなす(稼働率計算用)
     "imap_use_ssl": 1,             # IMAP接続にSSLを使う (993番ポートなど)
     "mail_fetch_enabled": 1,       # メールの自動受信ON/OFF (imap_host設定時のみ動作)
+    # メールの自動受信の間隔(分) 1〜60。画面で変えたら、再起動しなくても次の受信から使う
+    "mail_fetch_interval_min": 5,
     "mail_auto_draft": 1,          # 受信時にAIで返信下書きを自動生成するか
     "mail_retention_days": 180,    # 受信メールの保存日数 (0=自動削除なし)
     "mail_fetch_days": 7,          # 初回取り込み時に遡る日数

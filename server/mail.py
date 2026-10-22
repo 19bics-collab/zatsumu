@@ -18,6 +18,8 @@ IMAP・SMTP ともサーバ証明書を検証し、暗号化できない接続�
 問い合わせの種類 (清掃のご依頼・予約など) も受信時に決める。AI を使うときは優先度と
 同じ1回の依頼で選ばせ、使わないときは設定のキーワードで決める。種類ごとの担当
 (設定) があれば、その人を担当にする。
+受信 (定期受信・「今すぐ受信」) はサーバの中で同時に1つだけ行い、最後に受信できた時刻と
+直近の失敗の理由を記録する (メール画面が1分ごとに聞いて、開いたままでも新着を出す)。
 """
 import base64
 import email
@@ -29,6 +31,7 @@ import json
 import mimetypes
 import re
 import shutil
+import socket
 import ssl
 import tempfile
 import threading
@@ -1754,10 +1757,131 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
                       "assignee_user_id": assignee})
 
 
-def check_mail(conn, notifier=None, attachment_dir=None) -> int:
-    """バックグラウンド/手動の受信処理。取り込んだ新着件数を返す.
+# ---------- 受信の重なり防止と、受信の様子 (最終受信・失敗) ----------
 
-    IMAP 未設定・自動受信OFFなら何もしない。優先度[高]の新着は通知する
+# 定期受信・「今すぐ受信」・別のタブの「今すぐ受信」が同時に走ると、同じメールを
+# 二重に AI で判定したり (料金も二重)、添付を二重に書いたりするので、このサーバの中では
+# 同時に1つだけ受信する
+_fetch_lock = threading.Lock()
+# 受信の様子 (settings テーブルの非公開キー。設定画面・API の設定には出ない)。
+# 再起動しても「最終受信」が分かるよう DB に残す
+FETCH_OK_AT_KEY = "mail_state_fetch_ok_at"          # 最後に受信できた時刻 (UTC ISO)
+FETCH_ERROR_KEY = "mail_state_fetch_error"          # 直近の受信の失敗の理由 (成功したら空)
+FETCH_ERROR_AT_KEY = "mail_state_fetch_error_at"    # その失敗の時刻
+FETCH_BUSY_MESSAGE = "受信中です。少し待ってからもう一度押してください"
+
+
+class FetchBusy(RuntimeError):
+    """ほかの受信 (定期受信・別の画面の「今すぐ受信」) がまだ終わっていない."""
+
+    def __init__(self):
+        super().__init__(FETCH_BUSY_MESSAGE)
+
+
+def fetching() -> bool:
+    """今、受信している最中か."""
+    return _fetch_lock.locked()
+
+
+def fetch_error_text(e: BaseException) -> str:
+    """受信の失敗を、管理者が次に何をすればよいか分かる言葉にする (画面の注意書き用).
+
+    秘密 (パスワード) の伏せ字は呼び出し側で notify.safe_error を通す。
+    """
+    if isinstance(e, imaplib.IMAP4.abort):   # IMAP4.error の一種なので先に見る
+        return "受信の途中で受信サーバとの接続が切れました。次の受信で自動でやり直します"
+    if isinstance(e, imaplib.IMAP4.error):
+        msg = str(e)
+        if re.search(r"AUTHENTICATIONFAILED|LOGIN|credential|password|authenticat",
+                     msg, re.I):
+            return ("受信サーバにログインできませんでした。"
+                    "設定の「IMAPユーザー」「IMAPパスワード」を確かめてください")
+        return f"受信サーバとのやりとりでエラーになりました（{msg}）"
+    # 細かい種類から順に見る (どれも OSError の一種)
+    if isinstance(e, socket.gaierror):
+        return "受信サーバが見つかりませんでした。設定の「IMAPサーバ」の名前を確かめてください"
+    if isinstance(e, ssl.SSLCertVerificationError):
+        return ("受信サーバの証明書を確かめられませんでした。"
+                "メール業者が案内しているサーバ名をそのまま入れてください")
+    if isinstance(e, ssl.SSLError):
+        return ("受信サーバと暗号化した接続ができませんでした。設定の「IMAPポート」と"
+                "「SSLで接続」の組み合わせを確かめてください（SSLで接続するならふつうは993）")
+    if isinstance(e, TimeoutError):
+        return "受信サーバから時間内に返事がありませんでした。次の受信で自動でやり直します"
+    if isinstance(e, ConnectionRefusedError):
+        return ("受信サーバにつながりませんでした。"
+                "設定の「IMAPポート」と「SSLで接続」を確かめてください")
+    if isinstance(e, OSError):
+        return ("受信サーバにつながりませんでした"
+                "（このサーバのインターネット接続か、受信サーバの様子を確かめてください）")
+    return str(e) or e.__class__.__name__
+
+
+def _record_fetch(conn, error: str = "") -> None:
+    """受信の結果を記録してすぐ確定する (error が空なら成功).
+
+    記録に失敗しても (DB が混んでいる等)、受信そのものの結果は変えない。
+    """
+    now = tz.utc_iso(datetime.now(timezone.utc))
+    try:
+        if error:
+            _set_state(conn, FETCH_ERROR_KEY, error)
+            _set_state(conn, FETCH_ERROR_AT_KEY, now)
+        else:
+            _set_state(conn, FETCH_OK_AT_KEY, now)
+            if _get_state(conn, FETCH_ERROR_KEY):
+                _set_state(conn, FETCH_ERROR_KEY, "")
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"受信の結果を記録できませんでした: {e}")
+
+
+def clear_fetch_error(conn) -> None:
+    """記録した受信の失敗を消す (受信サーバの設定を変えたとき。コミットは呼び出し側)."""
+    _set_state(conn, FETCH_ERROR_KEY, "")
+
+
+def fetch_state(conn) -> dict:
+    """受信の様子 (最後に受信できた時刻・直近の受信の失敗・今受信中か)."""
+    error = _get_state(conn, FETCH_ERROR_KEY)
+    return {
+        "last_fetch_at": _get_state(conn, FETCH_OK_AT_KEY) or None,
+        "last_error": error,
+        "last_error_at": (_get_state(conn, FETCH_ERROR_AT_KEY) or None) if error else None,
+        "fetching": fetching(),
+    }
+
+
+def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
+                      wait: float = 0) -> list[dict]:
+    """ほかの受信と重ならないように受信し、結果 (最終受信・失敗の理由) を記録する.
+
+    ほかの受信が終わるのを wait 秒まで待ち、それでも終わらなければ FetchBusy。
+    受信に失敗したら理由を記録してから、その例外をそのまま送出する。
+    """
+    from . import notify  # 循環を避けるため遅延インポート
+
+    if not _fetch_lock.acquire(timeout=max(wait, 0)):
+        raise FetchBusy()
+    try:
+        try:
+            added = fetch_new_mail(conn, settings, attachment_dir=attachment_dir)
+        except Exception as e:
+            _record_fetch(conn, error=notify.safe_error(
+                RuntimeError(fetch_error_text(e)), settings) or "受信できませんでした")
+            raise
+        _record_fetch(conn)
+        return added
+    finally:
+        _fetch_lock.release()
+
+
+def check_mail(conn, notifier=None, attachment_dir=None) -> int:
+    """バックグラウンドの受信処理。取り込んだ新着件数を返す.
+
+    IMAP 未設定・自動受信OFFなら何もしない。「今すぐ受信」などで受信中なら、
+    この回は受信しない (次の回に受信する)。優先度[高]の新着は通知する
     (notifier を差し替え可能にしてテストしやすくする)。
     attachment_dir は添付ファイルの保存先 (fetch_new_mail に渡す)。
     """
@@ -1766,7 +1890,10 @@ def check_mail(conn, notifier=None, attachment_dir=None) -> int:
     s = db.get_settings(conn)
     if not str(s.get("imap_host", "")).strip() or not s.get("mail_fetch_enabled"):
         return 0
-    added = fetch_new_mail(conn, s, attachment_dir=attachment_dir)
+    try:
+        added = fetch_mail_locked(conn, s, attachment_dir=attachment_dir)
+    except FetchBusy:
+        return 0
     send = notifier or notify.deliver_async
     if s.get("notify_mail_high"):
         for row in added:

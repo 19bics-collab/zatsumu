@@ -35,7 +35,9 @@ MAX_ATTEMPTS = 5                        # 1つのコードで試せる回数
 RESEND_INTERVAL = timedelta(seconds=60)  # 同じユーザーの送信間隔
 HOURLY_LIMIT = 5                        # 同じユーザーの1時間あたりの送信回数
 IDLE_EXPIRY = timedelta(days=90)        # 最後に使ってからこの期間で端末トークン失効
-TOUCH_INTERVAL = timedelta(minutes=10)  # last_used_at の更新間隔 (毎回書き込まない)
+# last_used_at の更新間隔。毎回は書き込まない (メール画面は開いている間ずっと1分ごとに
+# 新着を確かめるので、毎回書くとタブの数だけ DB への書き込みが続く)
+TOUCH_INTERVAL = timedelta(minutes=10)
 LABEL_MAX = 120                         # 端末名 (User-Agent) の保存文字数
 
 

@@ -54,6 +54,15 @@
   .mail-row { cursor: pointer; }
   .mail-row.done td { color: #9ca3af; }
   .mail-row:hover { background: #f0fdf4; }
+  /* 前に見た後に届いて、まだ開いていないメール (新着) */
+  .mail-row.new { background: #fefce8; }
+  .mail-row.new:hover { background: #fef9c3; }
+  .new-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+               border-radius: 99px; background: #b45309; color: #fff; font-weight: 700;
+               margin-right: .35rem; vertical-align: 1px; white-space: nowrap; }
+  /* 最終受信の時刻など (今すぐ受信の横) */
+  #fetch-info { margin-left: .6rem; font-size: .8rem; font-weight: normal; color: #6b7280;
+                overflow-wrap: anywhere; }
   /* 絞り込み (状態・種類・担当) */
   .flt { padding: .4rem; border: 1px solid #ccc; border-radius: 6px; font-size: .9rem;
          background: #fff; max-width: 14rem; margin: .2rem 0 .2rem .4rem; }
@@ -232,9 +241,14 @@
     <select id="filter-cat" class="flt" aria-label="種類"><option value="">種類：すべて</option></select>
     <select id="filter-asg" class="flt" aria-label="担当"><option value="">担当：すべて</option></select>
     <button id="fetch-now" class="ghost" style="margin-left:.6rem">今すぐ受信</button>
+    <span id="fetch-info"></span>
     <span id="fetch-msg" style="margin-left:.6rem;font-size:.85rem"></span>
   </h2>
+  <p id="fetch-error" class="error" hidden><small>⚠ <span id="fetch-error-text"></span>
+  設定は「設定」の「メール受信（IMAP）」で確かめられます。</small></p>
   <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
+  新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
+  （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
   問い合わせの種類（清掃のご依頼など）と担当は自動で入り、返信画面で変えられます。
   受信サーバ（IMAP）とAIの設定は「設定」画面で行ってください。</small></p>
@@ -260,6 +274,12 @@
       <h3>メール受信（IMAP）</h3>
       <label class="set-row"><span>自動受信する</span>
         <input type="checkbox" id="set-mail-fetch-enabled"></label>
+      <label class="set-row"><span>自動受信の間隔（分）</span>
+        <input type="number" id="set-mail-fetch-interval" min="1" max="60"></label>
+      <p class="set-help"><small>新しいメールが届いていないか、何分ごとに受信サーバへ確かめに行くかです
+      （1〜60分。おすすめは5分）。短くすると早く届きますが、受信サーバへの接続が増えます。
+      開いている受信箱の画面は、押さなくても1分ごとに自動で新しくなります
+      （ブラウザのタブの名前に、未対応の数が出ます）。</small></p>
       <label class="set-row"><span>IMAPサーバ</span>
         <input type="text" id="set-imap-host" placeholder="imap.example.com"></label>
       <label class="set-row"><span>IMAPポート</span>
@@ -530,6 +550,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function showLogin(withError) {
+  stopPolling();
   $("app").hidden = true;
   $("device-verify").hidden = true;
   $("login").hidden = false;
@@ -537,6 +558,7 @@ function showLogin(withError) {
 }
 
 let appSettings = {};
+let baseTitle = "メール対応";   // タブの名前 (前に未対応の数を付ける)
 async function showApp() {
   // 管理者専用APIで認証確認をかねて設定を取得する(非管理者は403で弾かれる)
   const r = await fetch("/api/settings", { headers: headers() });
@@ -545,12 +567,14 @@ async function showApp() {
   appSettings = await r.json();
   const name = appSettings.company_name || "";
   $("brand").textContent = name ? name + " メール" : "メール対応";
-  document.title = (name ? name + " " : "") + "メール対応";
+  baseTitle = (name ? name + " " : "") + "メール対応";
+  document.title = baseTitle;
   $("login").hidden = true;
   $("app").hidden = false;
   fillSettings(appSettings);
   loadAssignees();   // 担当の選択肢は後から入る (受信箱を開くのを待たせない)
   showInbox();
+  schedulePoll();    // 開いたままでも、新しいメールが届いたら受信箱を新しくする
 }
 
 function switchView(name) {
@@ -561,47 +585,173 @@ function switchView(name) {
   $("nav-settings").classList.toggle("active", name === "settings");
 }
 
-async function refreshBadge() {
-  try {
-    const r = await api("/api/mail?status=unhandled");
-    if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
-    const n = (await r.json()).length;
-    const b = $("inbox-badge");
-    b.hidden = n === 0;
-    b.textContent = n;
-  } catch {}
+/* ---------- 受信の様子 (未対応の数・最終受信・受信の失敗) ---------- */
+let mailStatus = null;   // 前にサーバに聞いた受信の様子 (変わったかを比べる用)
+let connLost = false;    // サーバに聞けなかった (通信が切れた・サーバの更新中など)
+
+// サーバに受信の様子を聞いて画面に出す。前に聞いたときから受信箱の中身
+// (一番新しいメール・未対応の数) が変わっていたら true を返す。
+// ログインが切れていたら api() がログイン画面に切り替えて "auth" で投げる
+async function checkStatus() {
+  const r = await api("/api/mail/status");
+  if (!r.ok) throw new Error("status " + r.status);
+  const s = await r.json();
+  const changed = !!mailStatus &&
+    (s.newest_id !== mailStatus.newest_id || s.unhandled !== mailStatus.unhandled);
+  mailStatus = s;
+  connLost = false;
+  renderStatus();
+  return changed;
+}
+async function refreshStatus() {
+  try { await checkStatus(); } catch {}   // 失敗時は静かに諦める(アラートは出さない)
+}
+
+// 時刻を会社のタイムゾーン (設定。既定は日本時間) の「10:03」にする。今日でなければ日付も付ける
+function fmtTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const fmt = (date, o) => {
+    try { return date.toLocaleString("ja-JP", { ...o, timeZone: appSettings.timezone || "Asia/Tokyo" }); }
+    catch { return date.toLocaleString("ja-JP", o); }   // ブラウザが知らないタイムゾーン
+  };
+  const day = { month: "numeric", day: "numeric" };
+  const time = fmt(d, { hour: "2-digit", minute: "2-digit" });
+  return fmt(d, day) === fmt(new Date(), day) ? time : `${fmt(d, day)} ${time}`;
+}
+
+// 未対応の数 (受信箱のボタン・タブの名前)、最終受信の時刻、直近の受信の失敗を出す。
+// 失敗の理由はサーバが分かりやすい言葉にしたもの。文字は textContent で入れる
+function renderStatus() {
+  const s = mailStatus || {};
+  const n = s.unhandled || 0;
+  $("inbox-badge").hidden = n === 0;
+  $("inbox-badge").textContent = n;
+  document.title = (n ? `(${n}) ` : "") + baseTitle;
+  const info = [];
+  if (mailStatus && !s.imap_set) info.push("受信サーバ（IMAP）が未設定です");
+  else if (mailStatus) {
+    info.push("最終受信: " + (s.last_fetch_at ? fmtTime(s.last_fetch_at) : "まだありません"));
+    if (s.fetching) info.push("受信中…");
+    else if (!s.auto_fetch) info.push("自動受信はオフです");
+  }
+  if (connLost) info.push("サーバとつながっていません（つながると自動で新しくなります）");
+  $("fetch-info").textContent = info.join("・");
+  const err = s.imap_set && s.last_error;
+  $("fetch-error-text").textContent = err
+    ? `${s.last_error_at ? fmtTime(s.last_error_at) + " の" : ""}受信に失敗しました: ` +
+      s.last_error.replace(/[。.]?$/, "。") : "";
+  $("fetch-error").hidden = !err;
 }
 
 /* ---------- 受信箱 ---------- */
 // 種類のバッジ。種類が空 (この機能より前に届いたメール) は「未分類」。種類の名前は esc() を通す
 const catBadge = c => c ? `<span class="cat">${esc(c)}</span>` : '<span class="cat none">未分類</span>';
 
-async function showInbox() {
+let inboxSeq = 0;        // 受信箱を取り直した回数 (前の取り直しの結果で上書きしない用)
+let inboxStale = false;  // 返信画面・設定を開いている間に受信箱が変わった (戻ったときに取り直す)
+
+// 受信箱を出す。auto: 新着に気付いて自動で取り直すとき (失敗してもアラートを出さず、
+// 見ていた場所も動かさない)。絞り込みはそのまま使う
+async function showInbox(opts = {}) {
   switchView("inbox");
+  inboxStale = false;
+  const seq = ++inboxSeq;
+  // 先に受信の様子を聞いてから一覧を取る (間に届いたメールは、次の確認で
+  // 「変わった」と分かって取り直せる)
+  try { await checkStatus(); }
+  catch (e) {
+    if (e.message === "auth") return;  // ログイン画面に切り替わった
+    connLost = true;
+    renderStatus();
+  }
   // 絞り込み (状態・種類・担当)。値は URLSearchParams で URL に入れる
   const q = new URLSearchParams();
   for (const [key, id] of [["status", "filter"], ["category", "filter-cat"], ["assignee", "filter-asg"]]) {
     if ($(id).value) q.set(key, $(id).value);
   }
-  const list = await apiJson("/api/mail" + (q.toString() ? "?" + q : ""));
+  const path = "/api/mail" + (q.toString() ? "?" + q : "");
+  let list;
+  if (opts.auto) {
+    try {
+      const r = await api(path);
+      if (!r.ok) throw new Error("list " + r.status);
+      list = await r.json();
+    } catch (e) {
+      // 次の確認のときにもう一度取り直す (アラートは出さない)
+      if (e.message !== "auth" && seq === inboxSeq) { inboxStale = true; connLost = true; renderStatus(); }
+      return;
+    }
+  } else {
+    list = await apiJson(path);
+  }
+  if (seq !== inboxSeq) return;        // 待っている間に、もう一度取り直し始めた
+  renderInbox(list, opts.auto);
+  refreshAiStatus();   // 自動受信の判定などで AI が失敗した・直ったかを、開くたびに出し直す
+}
+
+/* 「新着」の印: 前にこの受信箱を見た後に届いて、まだ開いていないメールに付ける。
+   どこまで見たか (メールの番号) はこのブラウザに覚えておく (覚えておけないブラウザでも動く。
+   そのときは、この画面を開いた後に届いたメールにだけ付く) */
+const SEEN_KEY = "zatsumu_mail_seen";
+function loadSeen() {
+  try {
+    const v = Number(localStorage.getItem(SEEN_KEY));
+    return v > 0 ? v : null;
+  } catch { return null; }
+}
+let seenId = loadSeen();     // これより大きい番号のメールに印を付ける (この画面を開いている間は変えない)
+let shownMax = 0;            // 受信箱に出した一番新しいメールの番号
+const openedIds = new Set(); // この画面で開いたメール (印を外す)
+function rememberShown(list) {
+  if (document.hidden) return;         // 隠れているタブで描き直しても、見たことにはしない
+  shownMax = Math.max(shownMax, ...list.map(m => Number(m.id)));
+  try {
+    if (shownMax > (Number(localStorage.getItem(SEEN_KEY)) || 0)) {
+      localStorage.setItem(SEEN_KEY, String(shownMax));
+    }
+  } catch {}
+}
+
+function renderInbox(list, keepPlace) {
+  const tbody = document.querySelector("#mail-table tbody");
+  const wrap = document.querySelector("#inbox .table-wrap");
+  const left = wrap.scrollLeft;
+  // 自動で取り直したときは、見ていた場所を動かさない (一番上に見えていた行が、
+  // 描き直した後も同じ位置に見えるようにする)。一番上にいるときは、上に増えた新着を見せる
+  const anchor = keepPlace && window.scrollY > 0
+    ? [...tbody.querySelectorAll(".mail-row")].find(tr => tr.getBoundingClientRect().bottom > 0)
+    : null;
+  const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+  const newest = mailStatus && mailStatus.newest_id || 0;
+  // 初めて開いた (覚えていない) ときは、今あるメールには印を付けない。
+  // DB を作り直した (覚えている番号の方が大きい) ときも、今あるメールまでを見たことにする
+  if (seenId === null || (mailStatus && seenId > newest)) {
+    seenId = newest || Math.max(0, ...list.map(m => Number(m.id)));
+  }
   const filtered = $("filter-cat").value || $("filter-asg").value;
-  document.querySelector("#mail-table tbody").innerHTML = list.map(m => `
-    <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}" data-id="${Number(m.id)}">
+  tbody.innerHTML = list.map(m => {
+    const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
+    return `
+    <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
       <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong></td>
-      <td data-label="件名">${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
+      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
       <td data-label="状態" class="st-${m.status}">${ST[m.status] || m.status}</td>
       <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
       <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
-    </tr>`).join("") ||
+    </tr>`;
+  }).join("") ||
     (filtered
       ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の「種類」「担当」を「すべて」に戻すと全部見られます）</small></td></tr>`
       : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」または設定画面のIMAP設定を確認してください）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
     tr.onclick = () => openMail(+tr.dataset.id));
-  refreshBadge();
-  refreshAiStatus();   // 自動受信の判定などで AI が失敗した・直ったかを、開くたびに出し直す
+  wrap.scrollLeft = left;
+  const again = anchor && tbody.querySelector(`.mail-row[data-id="${Number(anchor.dataset.id)}"]`);
+  if (again) window.scrollBy(0, again.getBoundingClientRect().top - anchorTop);
+  rememberShown(list);
 }
 $("filter").onchange = () => showInbox();
 $("filter-cat").onchange = () => showInbox();
@@ -662,25 +812,48 @@ function fillAssigneeSelect(id, name) {
 }
 
 $("fetch-now").onclick = async () => {
-  const b = $("fetch-now");
+  const b = $("fetch-now"), msg = $("fetch-msg");
   b.disabled = true; b.textContent = "受信中…";
-  $("fetch-msg").textContent = "";
+  msg.textContent = "";
   try {
-    const r = await apiJson("/api/mail/fetch", { method: "POST" });
-    $("fetch-msg").style.color = "#0a7d32";
-    $("fetch-msg").textContent = `新着 ${r.fetched} 件`;
-    setTimeout(() => $("fetch-msg").textContent = "", 4000);
+    const r = await api("/api/mail/fetch", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      msg.style.color = "#0a7d32";
+      msg.textContent = `新着 ${e.fetched} 件`;
+      setTimeout(() => msg.textContent = "", 4000);
+    } else if (r.status === 409) {
+      // ほかの受信 (自動の受信・別の画面) の途中。終わると受信箱は自動で新しくなる
+      msg.style.color = "#b45309";
+      msg.textContent = e.detail || "受信中です。少し待ってからもう一度押してください";
+      setTimeout(() => msg.textContent = "", 8000);
+    } else {
+      alert(e.detail || "エラーが発生しました");
+    }
     // 受信が遅くても他画面を奪わない。受信したメールの判定で AI が失敗した・直ったかも
-    // 注意書きに出し直す (受信箱なら showInbox が取り直す)
-    if (viewName === "inbox") showInbox();
-    else { refreshBadge(); refreshAiStatus(); }
-  } catch { /* apiJson が原因をアラート表示済み */ }
+    // 注意書きに出し直す (受信箱なら showInbox が取り直す)。返信画面・設定を開いていたら
+    // 戻ったときに取り直す
+    if (viewName === "inbox" && $("mail-modal").hidden) showInbox();
+    else { inboxStale = true; refreshStatus(); refreshAiStatus(); }
+  } catch (e) {
+    if (e.message !== "auth") {
+      msg.style.color = "#c62828";
+      msg.textContent = "通信に失敗しました。もう一度お試しください";
+    }
+  }
   b.disabled = false; b.textContent = "今すぐ受信";
 };
 
 /* ---------- 返信モーダル ---------- */
 async function openMail(id) {
   const m = await apiJson(`/api/mail/${id}`);
+  // 開いたメールは「新着」の印を外す
+  openedIds.add(Number(id));
+  const row = document.querySelector(`.mail-row[data-id="${Number(id)}"]`);
+  if (row) {
+    row.classList.remove("new");
+    row.querySelector(".new-badge")?.remove();
+  }
   const replied = m.status === "replied";
   modal = { ...EMPTY_MODAL, id, savedDraft: m.draft_reply || "",
             ccCandidates: (m.reply_cc_candidates || []).join(", ") };
@@ -886,8 +1059,8 @@ $("m-archive").onclick = async () => {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: "archived" }),
     });
+    inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
     await closeModal();
-    showInbox();
   } catch {}
 };
 
@@ -905,6 +1078,8 @@ async function closeModal() {
   modal = { ...EMPTY_MODAL };
   clearAttachments();
   $("mail-modal").hidden = true;
+  // 開いている間に新着などで受信箱が変わっていたら、ここで取り直す
+  if (inboxStale && viewName === "inbox") showInbox({ auto: true });
 }
 $("m-close").onclick = () => closeModal();
 $("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
@@ -1120,6 +1295,7 @@ async function openSettings() {
 function fillSettings(s) {
   loaded = s;
   $("set-mail-fetch-enabled").checked = !!s.mail_fetch_enabled;
+  $("set-mail-fetch-interval").value = s.mail_fetch_interval_min;
   $("set-imap-host").value = s.imap_host;
   $("set-imap-port").value = s.imap_port;
   $("set-imap-ssl").checked = !!s.imap_use_ssl;
@@ -1224,6 +1400,7 @@ $("set-save").onclick = async () => {
   // メール関連のキーだけ送る。PATCH は部分更新なので勤怠側の設定は変わらない
   const body = {
     mail_fetch_enabled: $("set-mail-fetch-enabled").checked,
+    mail_fetch_interval_min: +$("set-mail-fetch-interval").value,
     imap_host: $("set-imap-host").value,
     imap_port: $("set-imap-port").value,
     imap_use_ssl: $("set-imap-ssl").checked,
@@ -1441,6 +1618,62 @@ $("tpl-cancel").onclick = () => { resetTplForm(); $("tpl-msg").textContent = "";
 document.querySelectorAll(".tpl-ph button").forEach(b =>
   b.onclick = () => insertAtCursor($("tpl-body"), b.dataset.ph));
 
+/* ---------- 新着の自動確認 (画面を開いたままでも新しいメールが出る) ---------- */
+// 1分ごとに、受信の様子 (未対応の数・一番新しいメールの番号など) だけをサーバに聞き、
+// 変わっていたら受信箱を取り直す。サーバが受信サーバへ新しいメールを確かめに行く間隔は
+// 設定の「自動受信の間隔」。タブが隠れている間は聞かず、戻ったらすぐ聞く
+const POLL_MS = 60 * 1000;
+let pollTimer = null;
+let polling = false;
+
+function stopPolling() {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+function schedulePoll() {
+  stopPolling();
+  // ログイン画面・確認コードの画面や、隠れているタブでは聞かない
+  if (!$("app").hidden && !document.hidden) pollTimer = setTimeout(pollNow, POLL_MS);
+}
+async function pollNow() {
+  stopPolling();
+  if ($("app").hidden || document.hidden || polling) return;
+  polling = true;
+  let changed;
+  try {
+    changed = await checkStatus();
+  } catch (e) {
+    polling = false;
+    if (e.message === "auth") return;  // ログインし直す画面に切り替わった (聞くのをやめる)
+    // 通信の失敗・サーバの更新中など。アラートは出さず、次の回にもう一度聞く
+    connLost = true;
+    renderStatus();
+    schedulePoll();
+    return;
+  }
+  polling = false;
+  if (changed || inboxStale) refreshInbox();
+  schedulePoll();
+}
+// 受信箱を取り直す。返信画面を開いている間・設定を見ている間は取り直さない
+// (書きかけの返信や見ている画面を動かさない)。受信箱に戻ったときに取り直す
+function refreshInbox() {
+  if (viewName === "inbox" && $("mail-modal").hidden) showInbox({ auto: true });
+  else inboxStale = true;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPolling();
+  else pollNow();                      // 戻ってきたら、すぐ新着を確かめる
+});
+window.addEventListener("online", () => pollNow());   // 通信が戻ったら、すぐ確かめる
+window.addEventListener("offline", () => {
+  if ($("app").hidden) return;
+  connLost = true;
+  renderStatus();
+});
+// iPhone の Safari などで、前のページから戻ってきたとき (ページが作り直されない)
+window.addEventListener("pageshow", e => { if (e.persisted) pollNow(); });
+
 /* ---------- ナビ・ログイン ---------- */
 $("nav-inbox").onclick = () => showInbox();
 $("nav-settings").onclick = () => openSettings();
@@ -1481,6 +1714,7 @@ function dvError(msg) {
   $("dv-error").hidden = !msg;
 }
 function showDeviceVerify() {
+  stopPolling();
   $("app").hidden = true;
   $("login").hidden = true;
   if (!$("device-verify").hidden) return;   // 表示中 (同時に複数の API が 401 になった)
