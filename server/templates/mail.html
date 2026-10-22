@@ -823,14 +823,18 @@ function loadSeen() {
 let seenId = loadSeen();     // これより大きい番号のメールに印を付ける (この画面を開いている間は変えない)
 let shownMax = 0;            // 受信箱に出した一番新しいメールの番号
 const openedIds = new Set(); // この画面で開いたメール (印を外す)
+// 覚えている番号より大きければ覚え直す (reset なら小さくても覚え直す)
+function saveSeen(n, reset) {
+  try {
+    if (reset || n > (Number(localStorage.getItem(SEEN_KEY)) || 0)) {
+      localStorage.setItem(SEEN_KEY, String(n));
+    }
+  } catch {}
+}
 function rememberShown(list) {
   if (document.hidden) return;         // 隠れているタブで描き直しても、見たことにはしない
   shownMax = Math.max(shownMax, ...list.map(m => Number(m.id)));
-  try {
-    if (shownMax > (Number(localStorage.getItem(SEEN_KEY)) || 0)) {
-      localStorage.setItem(SEEN_KEY, String(shownMax));
-    }
-  } catch {}
+  saveSeen(shownMax);
 }
 
 function renderInbox(list, keepPlace) {
@@ -846,8 +850,12 @@ function renderInbox(list, keepPlace) {
   const newest = mailStatus && mailStatus.newest_id || 0;
   // 初めて開いた (覚えていない) ときは、今あるメールには印を付けない。
   // DB を作り直した (覚えている番号の方が大きい) ときも、今あるメールまでを見たことにする
+  // (この番号はすぐ覚えておく。受信箱に出した番号だけを覚えると、絞り込みで出ていなかった
+  // 返信済みなどのメールに、次に開いたとき「新着」が付いてしまうため)
   if (seenId === null || (mailStatus && seenId > newest)) {
+    const reset = seenId !== null;
     seenId = newest || Math.max(0, ...list.map(m => Number(m.id)));
+    saveSeen(seenId, reset);
   }
   const filtered = $("filter-cat").value || $("filter-asg").value;
   tbody.innerHTML = list.map(m => {
@@ -1019,6 +1027,7 @@ async function openMail(id) {
   $("m-send").disabled = m.status === "replied";
   $("m-send").textContent = m.status === "replied" ? "返信済み" : "返信を送信";
   $("m-gen").disabled = m.status === "replied";
+  $("m-gen").textContent = "返信文を生成";   // 前のメールで生成中のまま開いたときも戻す
   $("m-archive").disabled = m.status !== "unhandled";
   $("m-back").hidden = !modalHistory.length;
   $("mail-modal").hidden = false;
@@ -1066,12 +1075,17 @@ $("m-assignee").onchange = async () => {
 
 $("m-gen").onclick = async () => {
   const b = $("m-gen");
+  // 作っている間に、やり取りの別のメールを開いたり閉じたりしたら、作った文はこの画面に
+  // 入れない (別の人あての返信画面に入って、そのまま送ってしまわないように)。
+  // 作った文はサーバが元のメールの下書きに残すので、元のメールを開き直せば出る
+  const id = modal.id;
   b.disabled = true; b.textContent = "生成中…";
   try {
-    const r = await apiJson(`/api/mail/${modal.id}/draft`, {
+    const r = await apiJson(`/api/mail/${id}/draft`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instructions: $("m-inst").value }),
     });
+    if (modal.id !== id) return;
     $("m-draft").value = r.draft_reply;
     modal.savedDraft = r.draft_reply;
     cursorByProgram($("m-draft"));   // 入れ替えた文のどこに定型文を入れるかは、もう一度選んでもらう
@@ -1084,6 +1098,7 @@ $("m-gen").onclick = async () => {
     $("m-ai-error").hidden = !r.ai_error;
     refreshAiStatus();
   } catch { /* apiJson が原因をアラート表示済み */ }
+  if (modal.id !== id) return;         // ボタンは開き直したメールに合わせてある
   b.disabled = false; b.textContent = "返信文を生成";
 };
 
@@ -1138,12 +1153,15 @@ $("m-send").onclick = async () => {
       (cc.length || bcc.length
         ? "\n\n※CC・BCC の人にも同じ文が届きます。知らないアドレスが無いか確かめてください" : ""))) return;
   const b = $("m-send");
+  // 送っている間に別のメールを開いたら、そのメールを「返信済み」の表示にしない
+  const id = modal.id;
   b.disabled = true; b.textContent = "送信中…";
   try {
-    const r = await apiJson(`/api/mail/${modal.id}/send`, {
+    const r = await apiJson(`/api/mail/${id}/send`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ body: text, cc, bcc }),
     });
+    if (modal.id !== id) { showInbox(); return; }
     modal.savedDraft = text;
     const sentCc = r.cc || [], sentBcc = r.bcc || [];
     // 0件の方は書かない (CC だけ送ったのに「BCC 0件」と出ると、文が長く分かりにくい)
@@ -1172,7 +1190,7 @@ $("m-send").onclick = async () => {
     $("m-cc-all").disabled = true;
     showInbox();
   } catch {
-    b.disabled = false; b.textContent = "返信を送信";
+    if (modal.id === id) { b.disabled = false; b.textContent = "返信を送信"; }
   }
 };
 
@@ -1615,10 +1633,15 @@ function fillRemindSettings(s) {
   renderRemindDest(s);
 }
 // いまの送り先 (保存済みの設定で。お知らせを送るのはこの送り先)
-function renderRemindDest(s) {
+// 保存済みの送り先 (Slack・通知先メール) の名前
+function destNames(s) {
   const names = [];
   if (s.slack_webhook_url) names.push("Slack");
   if (s.smtp_host && s.mail_to) names.push("通知先メール");
+  return names;
+}
+function renderRemindDest(s) {
+  const names = destNames(s);
   const dest = $("remind-dest");
   dest.className = names.length ? "" : "error";
   dest.textContent = names.length
@@ -1704,7 +1727,7 @@ function renderReportNext(s) {
   let text = "", warn = false;
   if (!s.mail_report_enabled) {
     text = "いまは送っていません（「週ごとのまとめを送る」にチェックを入れて「保存」すると、毎週送ります）。";
-  } else if (!(s.slack_webhook_url || (s.smtp_host && s.mail_to))) {
+  } else if (!destNames(s).length) {
     text = "⚠ 送り先（通知先メールか Slack）が入っていないため、まとめは送られません。";
     warn = true;
   } else if (s.mail_report_next_at) {
@@ -1746,7 +1769,14 @@ $("set-report-send").onclick = async () => {
     msg.textContent = "送り先の変更がまだ保存されていません。先に下の「保存」を押してから送ってください";
     return;
   }
-  if (!confirm("前の7日間（昨日まで）のまとめを、いまの送り先（Slack・通知先メール）に送りますか？\n\n" +
+  const names = destNames(appSettings);
+  if (!names.length) {
+    msg.style.color = "#c62828";
+    msg.textContent = "送り先が未設定です。Slack の URL か、通知先メール" +
+      "（「返信の送信（SMTP）」の設定も必要）を入れて「保存」してからお試しください";
+    return;
+  }
+  if (!confirm(`前の7日間（昨日まで）のまとめを、いまの送り先（${names.join("・")}）に送りますか？\n\n` +
       "毎週決まった曜日に送る分とは別です（いつもの分も、そのまま送ります）。")) return;
   b.disabled = true;
   msg.style.color = "#475569";

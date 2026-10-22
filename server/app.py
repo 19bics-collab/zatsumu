@@ -2244,8 +2244,16 @@ def purge_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
 
 # 一覧・詳細で使う SELECT (担当の人の名前と、添付ファイルの数も一緒に取る。
 # 添付は保存しなかったものも数える。一覧で 📎 を出す用)。
-# thread_count は同じ相手 (差出人のアドレス。大文字・小文字は区別しない) から届いた
-# ほかのメールの数 (一覧の「やり取り N件」用。索引 idx_mails_from_lower で数える)
+# 一覧用 (_MAIL_LIST_SELECT) は「やり取り N件」を1行ずつ数えない。同じ相手から何千通も
+# 届いていると、絞り込みに合う全部の行で数えることになり、一覧がとても遅くなるため
+# (並べ替えより先に数える)。一覧は出す行の相手ごとにまとめて数える (_thread_counts)
+_MAIL_LIST_SELECT = (
+    "SELECT m.*, u.name AS assignee_name, lower(m.from_addr) AS from_key,"
+    " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count"
+    " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
+)
+# 1通だけ取るとき用。thread_count は同じ相手 (差出人のアドレス。大文字・小文字は区別しない)
+# から届いたほかのメールの数 (「やり取り N件」用。索引 idx_mails_from_lower で数える)
 _MAIL_SELECT = (
     "SELECT m.*, u.name AS assignee_name,"
     " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count,"
@@ -2255,8 +2263,26 @@ _MAIL_SELECT = (
 )
 
 
-def _mail_summary(r) -> dict:
-    """一覧に出す項目 (r は _MAIL_SELECT で取った行)."""
+def _thread_counts(conn, rows) -> dict:
+    """一覧に出す行の相手ごとに、届いたメールの数を1回でまとめて数える.
+
+    {lower(差出人のアドレス): 通数} を返す (このメール自身も入る。使う側で1を引く)。
+    相手ごとに索引 idx_mails_from_lower の範囲を1回読むだけなので、同じ相手から
+    たくさん届いていても、数える量はメールの数を超えない。
+    """
+    keys = sorted({r["from_key"] for r in rows if r["from_key"]})
+    counts = {}
+    for i in range(0, len(keys), 400):   # SQLite の ? の数の上限より少なく区切る
+        part = keys[i:i + 400]
+        counts.update(conn.execute(
+            "SELECT lower(from_addr), COUNT(*) FROM mails WHERE lower(from_addr) IN ("
+            + ",".join("?" * len(part)) + ") GROUP BY lower(from_addr)", part).fetchall())
+    return counts
+
+
+def _mail_summary(r, thread_count: int | None = None) -> dict:
+    """一覧に出す項目 (r は _MAIL_SELECT で取った行。一覧では _MAIL_LIST_SELECT で取った行と、
+    _thread_counts で数えた thread_count)."""
     return {
         "id": r["id"],
         "from_addr": r["from_addr"],
@@ -2271,7 +2297,7 @@ def _mail_summary(r) -> dict:
         "replied_at": r["replied_at"],
         "attachment_count": r["attachment_count"],
         # 同じ相手から届いたほかのメールの数 (0 なら一覧に「やり取り」を出さない)
-        "thread_count": r["thread_count"],
+        "thread_count": r["thread_count"] if thread_count is None else thread_count,
         # 種類 (空=未分類。この機能より前に取り込んだメール) と担当
         "category": r["category"],
         "assignee_user_id": r["assignee_user_id"],
@@ -2327,11 +2353,14 @@ def list_mail(
                 raise HTTPException(400, "assignee は担当の人の番号か none / me で指定してください")
             where.append("m.assignee_user_id = ?")
             params.append(uid)
-    sql = _MAIL_SELECT
+    sql = _MAIL_LIST_SELECT
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY m.priority, m.received_at DESC LIMIT 500"
-    return [_mail_summary(r) for r in conn.execute(sql, params)]
+    rows = conn.execute(sql, params).fetchall()
+    counts = _thread_counts(conn, rows)
+    return [_mail_summary(r, max(0, counts.get(r["from_key"], 1) - 1) if r["from_key"] else 0)
+            for r in rows]
 
 
 @app.post("/api/mail/fetch")

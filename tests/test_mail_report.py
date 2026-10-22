@@ -665,3 +665,7 @@ def test_mail_page_has_report_settings(client):
     # サーバから来た文 (見本・エラー) は textContent で出す
     assert "box.textContent = `件名: ${e.subject}" in page
     assert "el.textContent = text;" in page
+    # 送り先が無いときは「送りますか？」と聞く前に知らせる
+    i = page.index('$("set-report-send").onclick')
+    send = page[i:page.index("};", i)]
+    assert send.index("if (!names.length)") < send.index("confirm(")

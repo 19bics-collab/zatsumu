@@ -456,6 +456,9 @@ def test_mail_page_polls_status_and_handles_visibility(client):
     # どこまで見たかの記憶は、使えないブラウザでも動くよう try で囲む
     assert 'localStorage.getItem(SEEN_KEY)' in page
     assert "try {\n    const v = Number(localStorage.getItem(SEEN_KEY));" in page
+    # 初めて開いたときに「見たことにした」番号もすぐ覚える (絞り込みで出ていなかった
+    # 返信済みのメールに、次に開いたとき「新着」が付かないように)
+    assert "saveSeen(seenId, reset);" in page
     # 自動受信の間隔の設定欄
     assert 'id="set-mail-fetch-interval"' in page
     assert "mail_fetch_interval_min: +$(\"set-mail-fetch-interval\").value" in page

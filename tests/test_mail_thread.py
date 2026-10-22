@@ -496,6 +496,54 @@ def test_thread_queries_use_indexes(tmp_path):
     conn.close()
 
 
+def test_list_counts_thread_without_reading_every_sender_mail_per_row(
+        client, users, tmp_path):
+    """同じ相手から何千通も届いていても、一覧の「やり取り N件」で遅くならない.
+
+    前は絞り込みに合う行ごとに同じ相手のメールを数え直していた (並べ替えより先に
+    数えるので、出さない行の分も。同じ相手が k 通なら k×k 回読む)。
+    いまは出す行の相手ごとに1回だけ数える。読む量を SQLite の命令の数で確かめる。
+    """
+    from server import app as app_module
+    from server import db
+    _, admin = users
+    n_same = 4000
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.executemany(
+            "INSERT INTO mails (message_id, from_addr, subject, received_at, fetched_at,"
+            " status) VALUES (?, ?, '自動のお知らせ', ?, ?, ?)",
+            [(f"<auto{i}@airbnb.example>",
+              "Automated@Airbnb.example" if i % 2 else "automated@airbnb.example",
+              f"2026-08-01T00:00:{i % 60:02d}+00:00", "2026-08-01T00:00:00+00:00",
+              "replied" if i % 3 else "unhandled") for i in range(n_same)])
+    once = _mail(tmp_path, 1, from_addr="once@example.com")
+    noaddr = _mail(tmp_path, 2, from_addr="")
+    conn = db.connect(tmp_path / "zatsumu.db")
+    try:
+        steps = [0]
+
+        def count():
+            steps[0] += 1
+            return 0
+        conn.set_progress_handler(count, 1000)   # 1000 命令ごとに1回呼ばれる
+        rows = app_module.list_mail(status=None, priority=None, category=None,
+                                    assignee=None, admin=dict(admin), conn=conn)
+        conn.set_progress_handler(None, 0)
+    finally:
+        conn.close()
+    assert len(rows) == 500
+    by_id = {m["id"]: m for m in rows}
+    assert by_id[once]["thread_count"] == 0 and by_id[noaddr]["thread_count"] == 0
+    # 大文字・小文字の違うアドレスも同じ相手として数える (このメール自身は入れない)
+    assert {m["thread_count"] for m in rows if m["id"] not in (once, noaddr)} == {n_same - 1}
+    # 1行ずつ数え直すと 4000×4000 回 (数千万命令) 読む。まとめて数えれば数十万命令で済む
+    assert steps[0] * 1000 < 3_000_000, steps[0]
+    # API からも同じ数が出る (絞り込みあり)
+    api_rows = client.get("/api/mail?status=unhandled", headers=auth(admin)).json()
+    assert api_rows and all(m["thread_count"] == n_same - 1
+                            for m in api_rows if m["id"] not in (once, noaddr))
+
+
 # ---------- 画面 ----------
 
 def test_mail_page_has_thread_ui(client):
@@ -505,6 +553,13 @@ def test_mail_page_has_thread_ui(client):
                    "やり取り ${Number(m.thread_count)}件", "?thread=false",
                    "data-thr-open", "← 前のメールに戻る"):
         assert marker in page, marker
+    # 返信文の生成・送信を待っている間に、やり取りの別のメールを開いたら、
+    # 前のメールの結果をいま開いている返信画面に入れない
+    for handler in ('$("m-gen").onclick', '$("m-send").onclick'):
+        i = page.index(handler)
+        body = page[i:page.index("\n};", i)]
+        assert "const id = modal.id;" in body and "modal.id !== id" in body, handler
+        assert "${modal.id}" not in body, handler
     # 外から来た文字 (件名・本文・差出人・返信) は esc() か textContent で出す
     for safe in ("${esc(t.subject)", "${esc(t.snippet)", "${esc(who)}",
                  "${esc(t.reply_body)", "${esc(snip(t.reply_body))}",
