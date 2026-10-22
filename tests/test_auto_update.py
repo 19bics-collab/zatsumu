@@ -92,20 +92,23 @@ rule() { grep -qxE "$1 (any|${ZATSUMU_VERSION:-none})" "$FAKE_RULES" 2>/dev/null
 """
 
 FAKE_DOCKER = "#!/usr/bin/env bash" + FAKE_COMMON + """
+# 途中で止められた (再起動・時間切れ) ことにする: 自動更新係 (新旧どちらでも) を強制終了する
+kill_updater() {
+  p=$PPID
+  while [ "${p:-1}" -gt 1 ]; do
+    if tr '\0' ' ' < "/proc/$p/cmdline" | grep -q zatsumu-auto-update; then kill -9 "$p"; exit 1; fi
+    p=$(awk '{print $4}' "/proc/$p/stat")
+  done
+}
 echo "$*" >> "$FAKE_LOG"
 case "$1 $2" in
   "compose ps") echo cid123 ;;
   "compose build")
-    if rule kill-build; then
-      # 作り直しの途中で止められた (再起動・時間切れ) ことにする: 自動更新係を強制終了する
-      p=$PPID
-      while [ "${p:-1}" -gt 1 ]; do
-        if tr '\0' ' ' < "/proc/$p/cmdline" | grep -q zatsumu-auto-update.sh; then kill -9 "$p"; exit 1; fi
-        p=$(awk '{print $4}' "/proc/$p/stat")
-      done
-    fi
+    if rule kill-build; then kill_updater; fi
     ! rule buildfail ;;
-  "compose up") ! rule upfail ;;
+  "compose up")
+    if rule kill-up; then kill_updater; fi
+    ! rule upfail ;;
   "compose run") ! rule validatefail ;;
   "inspect -f")
     case "$3" in
@@ -113,10 +116,15 @@ case "$1 $2" in
         if rule crash; then
           n=$(( $(cat "$FAKE_RULES.restarts" 2>/dev/null || echo 0) + 1 ))
           echo "$n" > "$FAKE_RULES.restarts"
-          echo "true $n"
+          echo "running $n"
+        elif rule restarting; then
+          echo "restarting 1"   # 再起動を待っている間 (回数は増えない)
         else
-          echo "true 0"
+          echo "running 0"
         fi ;;
+      # Caddy が使っている設定ファイルと、compose が Caddy に渡した値
+      *Mounts*) cat "$FAKE_CADDY_MOUNT" 2>/dev/null ;;
+      *Config.Env*) cat "$FAKE_CADDY_ENV" 2>/dev/null ;;
       *) if rule unhealthy; then echo unhealthy; else echo healthy; fi ;;
     esac ;;
 esac
@@ -169,7 +177,8 @@ def world(tmp_path, monkeypatch):
         "log": tmp_path / "docker.log", "curl_log": tmp_path / "curl.log",
         "systemctl_log": tmp_path / "systemctl.log", "rules": tmp_path / "rules",
         "ci": tmp_path / "ci.json", "bin": tmp_path / "sbin" / "zatsumu-auto-update",
-        "units": tmp_path / "units",
+        "units": tmp_path / "units", "caddy_mount": tmp_path / "caddy_mount",
+        "caddy_env": tmp_path / "caddy_env",
     }
     w["rules"].write_text("")
     w["ci"].write_text(json.dumps({"check_runs": [_run()]}))
@@ -183,7 +192,8 @@ def world(tmp_path, monkeypatch):
         "HEALTH_TIMEOUT": "1", "HEALTH_INTERVAL": "0.1", "CADDY_SETTLE": "0",
         "FAKE_LOG": str(w["log"]), "FAKE_CURL_LOG": str(w["curl_log"]),
         "FAKE_SYSTEMCTL_LOG": str(w["systemctl_log"]), "FAKE_RULES": str(w["rules"]),
-        "FAKE_CI": str(w["ci"]),
+        "FAKE_CI": str(w["ci"]), "FAKE_CADDY_MOUNT": str(w["caddy_mount"]),
+        "FAKE_CADDY_ENV": str(w["caddy_env"]),
     }
     return w
 
@@ -201,9 +211,15 @@ def _rules(world, *lines):
     world["rules"].write_text("".join(f"{line}\n" for line in lines))
 
 
-def _update(world):
-    return subprocess.run(["bash", str(SCRIPT)], env=world["env"], capture_output=True,
+def _update(world, script=SCRIPT):
+    return subprocess.run(["bash", str(script)], env=world["env"], capture_output=True,
                           text=True)
+
+
+def _caddy_container(world, caddyfile, **env):
+    """動いている Caddy の様子 (使っている設定ファイルと、compose が渡した値) を決める."""
+    world["caddy_mount"].write_text(f"/opt/desk/{caddyfile}\n")
+    world["caddy_env"].write_text("".join(f"{k}={v}\n" for k, v in env.items()))
 
 
 def _docker_calls(world):
@@ -272,13 +288,28 @@ def test_caddy_related_change_validates_and_recreates_caddy(world, changed):
 
 @needs_bash
 def test_caddy_checked_through_https_when_domain_is_set(world):
+    # .env は docker compose が読む (行末のコメントや Windows の改行があっても)。
+    # 自動更新係は .env を自分では読まず、compose が Caddy に渡した値を使う
     (world["server"] / ".env").write_text(
-        "ZATSUMU_CADDYFILE=Caddyfile.mail\nZATSUMU_MAIL_DOMAIN=desk.example.com\n")
+        "ZATSUMU_CADDYFILE=Caddyfile.mail\r\n"
+        "ZATSUMU_MAIL_DOMAIN=desk.example.com  # メール\r\n")
+    _caddy_container(world, "Caddyfile.mail", ZATSUMU_DOMAIN="localhost",
+                     ZATSUMU_MAIL_DOMAIN="desk.example.com")
     _push(world, "site {}\n", files=("Caddyfile.mail",))
     r = _update(world)
     assert r.returncode == 0, r.stdout + r.stderr
     curl = world["curl_log"].read_text()
     assert "--resolve desk.example.com:443:127.0.0.1 https://desk.example.com/healthz" in curl
+
+
+@needs_bash
+def test_caddy_https_check_skipped_for_localhost(world):
+    _caddy_container(world, "Caddyfile", ZATSUMU_DOMAIN="localhost",
+                     ZATSUMU_MAIL_DOMAIN="mail.localhost")
+    _push(world, "site {}\n", files=("Caddyfile",))
+    r = _update(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not world["curl_log"].exists()
 
 
 @needs_bash
@@ -297,9 +328,9 @@ def test_caddy_validate_failure_does_not_deploy(world):
 
 
 @needs_bash
-@pytest.mark.parametrize("rule", ["crash", "httpsfail"])
+@pytest.mark.parametrize("rule", ["crash", "restarting", "httpsfail"])
 def test_caddy_not_running_rolls_back(world, rule):
-    (world["server"] / ".env").write_text("ZATSUMU_DOMAIN=desk.example.com\n")
+    _caddy_container(world, "Caddyfile", ZATSUMU_DOMAIN="desk.example.com")
     old = _head(world)
     new = _push(world, "site {}\n", files=("Caddyfile",))
     _rules(world, f"{rule} {new[:7]}")
@@ -394,15 +425,73 @@ def test_rollback_continues_when_state_cannot_be_written(world):
 
 @needs_bash
 def test_failed_rollback_is_not_repeated_forever(world):
-    """元の版に戻しても動かないときは、そう記録して終わる (同じ戻しを毎回くり返さない)."""
+    """元の版に戻しても動かないときは、MAX_TRIES 回まで戻し直して、あとはやめる."""
     old = _head(world)
     new = _push(world, "v2\n")
     _rules(world, "unhealthy any")
     r = _update(world)
     assert r.returncode == 1
-    assert "戻しても起動しません" in r.stdout
+    assert "戻しても起動しません (1/3 回目)" in r.stdout
     assert _head(world) == old
+    assert _state(world, "bad") == new
+    assert _state(world, "deploying") == f"{old} {new} 1"
+    r = _update(world)
+    assert r.returncode == 1
+    assert "もう一度戻します" in r.stdout
+    assert _state(world, "deploying") == f"{old} {new} 2"
+    r = _update(world)
+    assert r.returncode == 1
+    assert "3 回試したのでやめます" in r.stdout
     assert _state(world, "deploying") is None
+    assert _state(world, "bad") == new
+    assert _state(world, "failures") is None  # 戻しのやり直しは、新しい版の失敗に数えない
+    _clear_calls(world)
+    assert _update(world).returncode == 0
+    assert _docker_calls(world) == []
+
+
+@needs_bash
+def test_failed_rollback_is_retried_next_time(world):
+    """戻しに失敗した (壊れた新しい版のコンテナが動いたまま) ら、次の回にもう一度戻す."""
+    old = _head(world)
+    new = _push(world, "v2\n")
+    _rules(world, f"unhealthy {new[:7]}", f"buildfail {old[:7]}")
+    r = _update(world)
+    assert r.returncode == 1
+    assert "次の回にもう一度戻してみます" in r.stdout
+    assert _state(world, "bad") == new
+    _rules(world, f"unhealthy {new[:7]}")  # 一時的な原因が消えた
+    _clear_calls(world)
+    r = _update(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "戻しました" in r.stdout
+    assert _head(world) == old
+    assert "compose up -d --remove-orphans" in _docker_calls(world)
+    assert _state(world, "deploying") is None
+    assert _state(world, "deployed").split()[0] == old
+    assert _state(world, "bad") == new
+    _clear_calls(world)
+    assert _update(world).returncode == 0
+    assert _docker_calls(world) == []
+
+
+@needs_bash
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="/proc のある Linux 向け")
+def test_interrupted_rollback_keeps_bad_version(world):
+    """だめな版から戻している途中で止まっても、その版をもう一度作り直さない."""
+    old = _head(world)
+    new = _push(world, "v2\n")
+    _rules(world, f"unhealthy {new[:7]}", f"kill-build {old[:7]}")
+    r = _update(world)
+    assert r.returncode != 0
+    assert _state(world, "bad") == new
+    assert _state(world, "deploying") == f"{old} {new}"
+    _rules(world, f"unhealthy {new[:7]}")
+    r = _update(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "途中で止まっていた" in r.stdout
+    assert _head(world) == old
+    assert _state(world, "failures") is None
     assert _state(world, "bad") == new
     _clear_calls(world)
     assert _update(world).returncode == 0
@@ -505,9 +594,8 @@ def test_transition_from_old_script_state(world):
     assert not world["systemctl_log"].exists()
 
 
-@needs_bash
-def test_transition_from_installed_old_script(world):
-    """本番に入っている古い自動更新係が新しい版を反映し、次の回から新しい係が引き継ぐ."""
+def _install_old_script(world):
+    """本番に入っている古い自動更新係を、GitHub 役・サーバ役・入れ先に置く."""
     old_script = (ROOT / "tests" / "fixtures" / "zatsumu-auto-update.installed.sh").read_text(
         encoding="utf-8")
     # 本番の場所 (/etc/default, /usr/local/sbin) には触らせない
@@ -523,13 +611,19 @@ def test_transition_from_installed_old_script(world):
     world["bin"].write_text(old_script)
     world["units"].mkdir()
     (world["units"] / "zatsumu-auto-update.service").write_text("old unit\n")
-
-    # 新しい係を含む版が届き、古い係がそれを反映して自分を入れ替える
+    # 新しい係を含む版を用意する (まだ push しない)
     shutil.copy(SCRIPT, auto / "zatsumu-auto-update.sh")
     shutil.copy(HERE / "zatsumu-auto-update.service", auto)
+    return old_script, auto
+
+
+@needs_bash
+def test_transition_from_installed_old_script(world):
+    """本番に入っている古い自動更新係が新しい版を反映し、次の回から新しい係が引き継ぐ."""
+    _install_old_script(world)
+    # 新しい係を含む版が届き、古い係がそれを反映して自分を入れ替える
     new = _push(world, "v2\n")
-    r = subprocess.run(["bash", str(world["bin"])], env=world["env"], capture_output=True,
-                       text=True)
+    r = _update(world, world["bin"])
     assert r.returncode == 0, r.stdout + r.stderr
     assert _head(world) == new
     assert world["bin"].read_bytes() == SCRIPT.read_bytes()
@@ -539,8 +633,7 @@ def test_transition_from_installed_old_script(world):
 
     # 次の回 (新しい係): 作り直しはせず、systemd の設定を入れ替えて daemon-reload する
     _clear_calls(world)
-    r = subprocess.run(["bash", str(world["bin"])], env=world["env"], capture_output=True,
-                       text=True)
+    r = _update(world, world["bin"])
     assert r.returncode == 0, r.stdout + r.stderr
     assert _docker_calls(world) == []
     assert (world["units"] / "zatsumu-auto-update.service").read_bytes() == \
@@ -549,15 +642,47 @@ def test_transition_from_installed_old_script(world):
     assert _state(world, "deployed").split()[0] == new
     # その次の版も、新しい係がふつうに反映する
     newer = _push(world, "v3\n")
-    r = subprocess.run(["bash", str(world["bin"])], env=world["env"], capture_output=True,
-                       text=True)
+    r = _update(world, world["bin"])
     assert r.returncode == 0, r.stdout + r.stderr
     assert _head(world) == newer
 
 
 @needs_bash
-def test_old_script_interrupted_mid_deploy_is_recovered(world):
-    """古い自動更新係が途中で止まった (印は無いが、ファイルだけ新しい版) ときも戻す."""
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="/proc のある Linux 向け")
+def test_interrupted_handover_completes_when_script_changes_again(world):
+    """古い係が入れ替えの版を反映する途中で止まると、古い係は自分では気づけない。
+    次の版で zatsumu-auto-update.sh を少しでも変えれば、古い係がそれを見て入れ替える
+    (DEPLOY.md の「古い自動更新係から入れ替わったかの確認」)."""
+    old_script, auto = _install_old_script(world)
+    new = _push(world, "v2\n")
+    _rules(world, f"kill-up {new[:7]}")
+    r = _update(world, world["bin"])
+    assert r.returncode != 0
+    assert _head(world) == new
+    assert world["bin"].read_text() == old_script  # 入れ替わっていない
+    _rules(world)
+    _clear_calls(world)
+    r = _update(world, world["bin"])
+    assert r.returncode == 0
+    assert _docker_calls(world) == []  # 古い係は「もう反映済み」と思っている
+    # 自動更新係のファイルを変えた版を出すと、古い係が反映して入れ替える
+    (auto / "zatsumu-auto-update.sh").write_text(SCRIPT.read_text(encoding="utf-8") + "\n")
+    newer = _push(world, "v3\n")
+    r = _update(world, world["bin"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _head(world) == newer
+    assert world["bin"].read_text() == SCRIPT.read_text(encoding="utf-8") + "\n"
+    # 次の回から新しい係: systemd の設定も入れ替わる
+    r = _update(world, world["bin"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (world["units"] / "zatsumu-auto-update.service").read_bytes() == \
+        (HERE / "zatsumu-auto-update.service").read_bytes()
+    assert world["systemctl_log"].read_text().splitlines() == ["daemon-reload"]
+
+
+@needs_bash
+def test_manual_git_pull_is_rolled_back_then_redeployed(world):
+    """手で git pull した (印は無いが、ファイルだけ新しい版) ときは、いったん戻してから反映し直す."""
     old = _head(world)
     world["state"].mkdir()
     (world["state"] / "deployed").write_text(f"{old[:7]} 2026-10-01T00:00:00+09:00\n")
@@ -585,6 +710,66 @@ def test_env_file_collision_blocks_update(world):
     assert _head(world) == old
     assert env_file.read_text() == "SECRET=prod\n"
     assert _docker_calls(world) == []
+
+
+@needs_bash
+def test_env_file_renamed_in_is_blocked(world):
+    """ほかのファイルを .env に名前を変えて持ち込む版も止める."""
+    _push(world, "SECRET=dummy\n", files=("env.tmpl",))
+    _git(world["server"], "pull", "-q", "--ff-only")
+    assert _update(world).returncode == 0
+    old = _head(world)
+    env_file = world["server"] / ".env"
+    env_file.write_text("SECRET=prod\n")
+    _git(world["origin"], "rm", "-q", "env.tmpl")
+    (world["origin"] / ".env").write_text("SECRET=dummy\n")
+    _git(world["origin"], "add", "-f", ".env")
+    _git(world["origin"], "commit", "-q", "-m", "rename")
+    r = _update(world)
+    assert r.returncode == 1
+    assert ".env" in r.stdout and "上書き" in r.stdout
+    assert _head(world) == old
+    assert env_file.read_text() == "SECRET=prod\n"
+
+
+@needs_bash
+def test_files_left_by_interrupted_merge_are_cleaned_up(world):
+    """git merge がファイルを書いた直後に止められて残った新しいファイルは、戻すときに消す."""
+    old = _head(world)
+    new = _push(world, "added\n", files=("app.txt", "newfile.txt"))
+    world["state"].mkdir()
+    (world["state"] / "deployed").write_text(f"{old} 2026-10-01T00:00:00+09:00\n")
+    (world["state"] / "deploying").write_text(f"{old} {new}\n")
+    _git(world["server"], "fetch", "-q")
+    # 止められた git が書き出しただけのファイルと、サーバにだけある .env
+    (world["server"] / "newfile.txt").write_text("added\n")
+    (world["server"] / "other.txt").write_text("server only\n")
+    (world["server"] / ".env").write_text("SECRET=prod\n")
+    r = _update(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "途中で止まっていた" in r.stdout
+    assert not (world["server"] / "newfile.txt").exists()
+    assert (world["server"] / "other.txt").read_text() == "server only\n"
+    assert (world["server"] / ".env").read_text() == "SECRET=prod\n"
+    # 次の回は「サーバにだけあるファイル」に引っかからずに反映する
+    r = _update(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _head(world) == new
+
+
+@needs_bash
+def test_files_with_other_content_are_not_removed_on_recovery(world):
+    """中身が新しい版と違うファイルは、戻すときにも消さない."""
+    old = _head(world)
+    new = _push(world, "added\n", files=("newfile.txt",))
+    world["state"].mkdir()
+    (world["state"] / "deployed").write_text(f"{old} 2026-10-01T00:00:00+09:00\n")
+    (world["state"] / "deploying").write_text(f"{old} {new}\n")
+    _git(world["server"], "fetch", "-q")
+    (world["server"] / "newfile.txt").write_text("someone else's\n")
+    r = _update(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (world["server"] / "newfile.txt").read_text() == "someone else's\n"
 
 
 @needs_bash

@@ -8,6 +8,7 @@
 #       先に新しい設定を検査してから Caddy も作り直す)
 #   4. アプリや Caddy が動かなければ、元の版に戻して作り直す
 #      - 動かしたのに healthy にならなかった版は「だめな版」として覚え、次の版が来るまで再挑戦しない
+#      - 元の版に戻すのに失敗したら、次の回にもう一度戻す (MAX_TRIES 回まで)
 #      - 作り直しの失敗 (通信・ディスク不足など一時的なことが多い) は次の回にもう一度試し、
 #        同じ版で MAX_TRIES 回続けて失敗したら「だめな版」とする
 #   5. 自動更新係そのもの (このスクリプトと systemd の設定) が新しくなっていたら入れ替える
@@ -20,7 +21,8 @@
 # STATE_DIR に置くもの:
 #   deployed   最後に反映に成功した版 (コミット番号と日時)。「いま動いている版」はこれで判断する
 #   deploying  反映の途中の印 ("元の版 新しい版")。残っていたら前回が途中で止まった
-#              (再起動・時間切れ・ディスク不足など) ということ
+#              (再起動・時間切れ・ディスク不足など) ということ。元の版に戻すのに失敗したときは
+#              3つ目に失敗した回数を書いて残す ("元の版 新しい版 回数")。次の回にもう一度戻す
 #   bad        だめな版 (次の版が来るまで再挑戦しない)
 #   failures   同じ版が続けて一時的に失敗した回数   env.backup  .env の控え
 set -euo pipefail
@@ -37,7 +39,7 @@ STATE_DIR="${STATE_DIR:-/var/lib/zatsumu-auto-update}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"   # 新しい版が healthy になるまで待つ秒数
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 CADDY_SETTLE="${CADDY_SETTLE:-15}"        # Caddy を作り直した後、動き続けるか見守る秒数
-MAX_TRIES="${MAX_TRIES:-3}"               # 同じ版の一時的な失敗を、続けて何回まで許すか
+MAX_TRIES="${MAX_TRIES:-3}"               # 同じ版の一時的な失敗 (と、元に戻す失敗) を、続けて何回まで許すか
 NO_CI_TIMEOUT="${NO_CI_TIMEOUT:-1800}"    # コミットからこの秒数たってもテストが無ければ異常とする
 INSTALL_BIN="${INSTALL_BIN:-/usr/local/sbin/zatsumu-auto-update}"
 UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
@@ -68,7 +70,7 @@ upstream="$remote/${merge#refs/heads/}"   # 例: origin/main
 
 # $1 と $2 の間で、Caddy に関わるファイル (Caddyfile* と docker-compose*.yml) が変わったら yes
 caddy_changes() {
-  if [ -n "$(git diff --name-only "$1" "$2" -- 'Caddyfile*' 'docker-compose*.yml' 'docker-compose*.yaml')" ]; then
+  if [ -n "$(git diff --name-only --no-renames "$1" "$2" -- 'Caddyfile*' 'docker-compose*.yml' 'docker-compose*.yaml')" ]; then
     echo yes
   else
     echo no
@@ -97,19 +99,18 @@ wait_healthy() {
   return 1
 }
 
-# .env の値を1つ読む (無ければ空)
-env_value() {
-  [ -f .env ] || return 0
-  sed -n "s/^$1=//p" .env | tail -n 1 | tr -d "\"'"
-}
-
-# 外から見えるドメイン (localhost のままなら空)
+# 外から見えるドメイン (localhost のままなら空)。$1 = Caddy のコンテナ。
+# .env を自分で読むと docker compose と読み方 (行末のコメントなど) がずれるので、
+# compose が Caddy に渡した値と、Caddy が使っている設定ファイルの名前を Caddy から読む
 public_domain() {
-  local d
-  case "$(env_value ZATSUMU_CADDYFILE)" in
-    *mail*) d=$(env_value ZATSUMU_MAIL_DOMAIN) ;;
-    *) d=$(env_value ZATSUMU_DOMAIN) ;;
+  local file envs key d
+  file=$(timeout 30 docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{end}}' "$1") || return 0
+  envs=$(timeout 30 docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1") || return 0
+  case "${file##*/}" in
+    *mail*) key=ZATSUMU_MAIL_DOMAIN ;;
+    *) key=ZATSUMU_DOMAIN ;;
   esac
+  d=$(sed -n "s/^$key=//p" <<<"$envs" | tail -n 1)
   case "$d" in ""|localhost|*.localhost) ;; *) echo "$d" ;; esac
 }
 
@@ -117,11 +118,12 @@ public_domain() {
 caddy_ok() {
   local cid before after domain i
   cid=$(dc 30 ps -q caddy) && [ -n "$cid" ] || return 1
-  before=$(timeout 30 docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$cid") || return 1
+  # 再起動を待っている間も .State.Running は true なので、.State.Status (running / restarting など) で見る
+  before=$(timeout 30 docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$cid") || return 1
   sleep "$CADDY_SETTLE"
-  after=$(timeout 30 docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$cid") || return 1
-  [ "${after%% *}" = true ] && [ "$after" = "$before" ] || return 1
-  domain=$(public_domain)
+  after=$(timeout 30 docker inspect -f '{{.State.Status}} {{.RestartCount}}' "$cid") || return 1
+  [ "${after%% *}" = running ] && [ "$after" = "$before" ] || return 1
+  domain=$(public_domain "$cid")
   [ -n "$domain" ] || return 0
   # 証明書の中身までは問わず (-k)、Caddy を通ってアプリまで届くかだけを見る
   for i in 1 2 3 4 5 6; do
@@ -169,6 +171,35 @@ note_failure() {
   fi
 }
 
+# 元の版 ($1) に戻すのに失敗した。$3 = これまでに戻すのに失敗した回数。
+# 新しい版 ($2) のコンテナが動いたままかもしれないので、MAX_TRIES 回までは次の回にもう一度戻す
+rollback_failed() {
+  local n=$(($3 + 1))
+  if [ "$n" -lt "$MAX_TRIES" ]; then
+    echo "$1 $2 $n" > "$STATE_DIR/deploying" || true
+    log "元の版に戻しても起動しません (${n}/${MAX_TRIES} 回目)。次の回にもう一度戻してみます。サーバも確認してください (docker compose ps / docker compose logs)"
+  else
+    rm -f "$STATE_DIR/deploying" || true
+    log "元の版に戻しても起動しません (${n} 回試したのでやめます)。サーバを確認してください (docker compose ps / docker compose logs)"
+  fi
+}
+
+# $1 から $2 で増えたファイルのうち、git が書き出しただけで管理から外れて残ったものを消す。
+# git merge がファイルを書いた後、記録する前に止められると残る (残ると、次からの
+# 「サーバにだけあるファイル」の検査に引っかかって更新できなくなる)。
+# 反映の前の検査で、これらの名前のファイルが無かったことは確かめてある。中身が同じものだけ消す
+remove_leftovers() {
+  local f
+  while IFS= read -r -d '' f; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    git ls-files --error-unmatch -- "$f" >/dev/null 2>&1 && continue
+    if [ "$(git hash-object -- "$f")" = "$(git rev-parse -q --verify "$2:$f" || true)" ]; then
+      rm -f -- "$f"
+    fi
+  done < <(git diff -z --name-only --no-renames --diff-filter=A "$1" "$2")
+  return 0
+}
+
 # 自動更新係そのもの (このスクリプトと systemd の設定) が新しくなっていたら入れ替える。
 # いまの作業フォルダが「反映に成功した版」のときだけ呼ぶ
 refresh_self() {
@@ -202,8 +233,8 @@ running=""
 # 古い自動更新係は短い番号 (7文字) を書いていたので、完全な番号に直して使う
 [ -n "$record" ] && running=$(git rev-parse -q --verify "$record^{commit}" || true)
 marker=$(cat "$STATE_DIR/deploying" 2>/dev/null || true)
-m_old="" m_new=""
-read -r m_old m_new <<<"$marker" || true
+m_old="" m_new="" m_tries=""
+read -r m_old m_new m_tries <<<"$marker" || true
 head=$(git rev-parse HEAD)
 running=${running:-${m_old:-$head}}   # 記録が無ければ、いまのファイルの版が動いているとみなす
 
@@ -217,20 +248,27 @@ if [ -n "$marker" ] || [ "$head" != "$running" ]; then
     log "サーバ上で書き換えたファイルがあるので更新しない (git status で確認)"
     exit 1
   fi
-  log "前回の更新 (${running:0:7} -> ${target:0:7}) が途中で止まっていたので、動いていた版 ${running:0:7} に戻します"
+  if [ -n "$m_tries" ]; then
+    log "前回、元の版 ${running:0:7} に戻せなかったので、もう一度戻します"
+  else
+    log "前回の更新 (${running:0:7} -> ${target:0:7}) が途中で止まっていたので、動いていた版 ${running:0:7} に戻します"
+  fi
   [ -z "$marker" ] || rm -f "$(git rev-parse --git-dir)/index.lock"   # 止められた git が残した鍵
   caddy=$(caddy_changes "$running" "$target")
   git reset -q --hard "$running"
+  [ -z "$marker" ] || remove_leftovers "$running" "$target"
   ok=yes
   deploy_tree "$caddy" || ok=no
-  # 戻し終えたら印を消す (戻しても動かないときも、同じ戻しを毎回くり返さないように)
   echo "$running $(date -Is)" > "$STATE_DIR/deployed" || true
-  rm -f "$STATE_DIR/deploying" || true
-  [ -z "$marker" ] || note_failure "$target"
+  # 途中で止まった反映は、一時的な失敗として数える (戻しのやり直しと、だめな版と決まっている版は数えない)
+  if [ -n "$marker" ] && [ -z "$m_tries" ] && [ "$(cat "$STATE_DIR/bad" 2>/dev/null)" != "$target" ]; then
+    note_failure "$target"
+  fi
   if [ "$ok" = no ]; then
-    log "元の版に戻しても起動しません。サーバを確認してください (docker compose ps / docker compose logs)"
+    rollback_failed "$running" "$target" "${m_tries:-0}"
     exit 1
   fi
+  rm -f "$STATE_DIR/deploying" || true
   log "元の版 ${running:0:7} に戻しました。次の回に、もう一度新しい版を確かめます"
   exit 0
 fi
@@ -293,7 +331,7 @@ esac
 collisions=""
 while IFS= read -r -d '' f; do
   if [ -e "$f" ] || [ -L "$f" ]; then collisions+=" $f"; fi
-done < <(git diff -z --name-only --diff-filter=A "$old" "$new")
+done < <(git diff -z --name-only --no-renames --diff-filter=A "$old" "$new")   # 名前の変更も「追加」として数える
 if [ -n "$collisions" ]; then
   log "新しい版 ${new:0:7} が、サーバにだけある (git で管理していない) ファイルを上書きしてしまうので更新しない:$collisions"
   exit 1
@@ -330,16 +368,16 @@ case $rc in
     note_failure "$new" ;;
   *)
     log "新しい版 ${new:0:7} が動かなかったので元の版 ${old:0:7} に戻します"
-    # 先に戻してから記録する (記録が書けなくても戻すことを優先する)
+    # だめな版の記録は、戻す前に書く (戻している途中で止まっても、同じ版を作り直さないように)
+    [ "$rc" != 3 ] || mark_bad "$new"
     git reset -q --hard "$old"
     if deploy_tree "$caddy"; then
+      rm -f "$STATE_DIR/deploying" || true
       log "元の版 ${old:0:7} に戻しました"
     else
-      log "元の版に戻しても起動しません。サーバを確認してください (docker compose ps / docker compose logs)"
+      rollback_failed "$old" "$new" 0
     fi
-    rm -f "$STATE_DIR/deploying" || true
     if [ "$rc" = 3 ]; then
-      mark_bad "$new"
       log "新しい版 ${new:0:7} には、次の版が来るまで再挑戦しません"
     else
       note_failure "$new"
