@@ -109,6 +109,18 @@
             border-radius: 6px; font-size: .9rem; }
   #m-tpl { max-width: 100%; padding: .35rem; border: 1px solid #ccc; border-radius: 6px;
            font-size: .9rem; background: #fff; }
+  /* 返信の宛先 (宛先・全員に返信・CC・BCC) */
+  .rcpt { margin-top: .8rem; display: flex; flex-direction: column; gap: .35rem;
+          font-size: .88rem; color: #374151; }
+  .rcpt-row { display: flex; align-items: center; gap: .5rem; }
+  .rcpt-row > span:first-child { flex: 0 0 2.6rem; color: #6b7280; }
+  #m-to { min-width: 0; overflow-wrap: anywhere; }
+  .rcpt-row input { flex: 1; min-width: 0; padding: .4rem; border: 1px solid #ccc;
+                    border-radius: 6px; font-size: .9rem; }
+  .rcpt-row input[readonly] { background: #f9fafb; color: #6b7280; }
+  .rcpt-all { display: flex; align-items: center; gap: .4rem; }
+  .rcpt-all[hidden] { display: none; }
+  .rcpt-all input { width: 1.2rem; height: 1.2rem; margin: 0; }
   @media (max-width: 720px) {
     html { font-size: 15px; }
     main { padding: .8rem; }
@@ -341,6 +353,17 @@
       </label>
       <span id="m-reason" style="font-size:.8rem;color:#6b7280"></span>
     </div>
+    <div class="rcpt">
+      <div class="rcpt-row"><span>宛先</span><span id="m-to"></span></div>
+      <label class="rcpt-all" id="m-cc-all-row" hidden>
+        <input type="checkbox" id="m-cc-all">CCの人にも送る（全員に返信）</label>
+      <label class="rcpt-row"><span>CC</span>
+        <input type="text" id="m-cc" inputmode="email" autocomplete="off" autocapitalize="off"
+          spellcheck="false" placeholder="なし（追加するときは「,」で区切って入力）"></label>
+      <label class="rcpt-row"><span>BCC</span>
+        <input type="text" id="m-bcc" inputmode="email" autocomplete="off" autocapitalize="off"
+          spellcheck="false" placeholder="任意（ここに入れた人は、ほかの人には見えません）"></label>
+    </div>
     <div style="display:flex;gap:.5rem;align-items:center;justify-content:space-between;margin-top:.8rem;flex-wrap:wrap">
       <label for="m-draft" style="font-size:.85rem;color:#374151">返信文（編集できます）
         <span id="m-draft-src" style="color:#9ca3af;font-size:.8rem"></span></label>
@@ -369,7 +392,9 @@ const $ = id => document.getElementById(id);
 const PR = { 1: "高", 2: "中", 3: "低" };
 const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応不要" };
 // cursorSet: 返信文の欄を一度でもタップしたか (定型文をカーソル位置に入れてよいかの判断用)
-let modal = { id: null, savedDraft: "", cursorSet: false };
+// ccCandidates: 全員に返信の CC 候補 / ccSaved: 「CCの人にも送る」を外す前の CC の欄
+const EMPTY_MODAL = { id: null, savedDraft: "", cursorSet: false, ccCandidates: "", ccSaved: "" };
+let modal = { ...EMPTY_MODAL };
 let viewName = "inbox";
 
 // 新しい端末の確認 (サーバで ZATSUMU_LOGIN_VERIFY_EMAIL が有効なときだけ使われる)。
@@ -502,7 +527,18 @@ $("fetch-now").onclick = async () => {
 /* ---------- 返信モーダル ---------- */
 async function openMail(id) {
   const m = await apiJson(`/api/mail/${id}`);
-  modal = { id, savedDraft: m.draft_reply || "", cursorSet: false };
+  const replied = m.status === "replied";
+  modal = { ...EMPTY_MODAL, id, savedDraft: m.draft_reply || "",
+            ccCandidates: (m.reply_cc_candidates || []).join(", ") };
+  // 宛先は元メールの差出人。CC は全員に返信の候補を最初から入れておく
+  // (送信済みなら、実際に送った CC・BCC を出す)。値は textContent / value で入れる
+  $("m-to").textContent = `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}>`;
+  $("m-cc").value = replied ? (m.reply_cc || []).join(", ") : modal.ccCandidates;
+  $("m-bcc").value = replied ? (m.reply_bcc || []).join(", ") : "";
+  $("m-cc-all").checked = !!$("m-cc").value;
+  $("m-cc-all").disabled = replied;
+  $("m-cc-all-row").hidden = replied || !modal.ccCandidates;
+  $("m-cc").readOnly = $("m-bcc").readOnly = replied;
   $("m-subject").textContent = m.subject || "（件名なし）";
   $("m-meta").textContent =
     `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}> ・ ` +
@@ -564,29 +600,53 @@ $("m-gen").onclick = async () => {
   b.disabled = false; b.textContent = "返信文を生成";
 };
 
+/* 全員に返信: チェックを外すと CC の欄を空にし、もう一度付けると元に戻す */
+$("m-cc-all").onchange = () => {
+  const cc = $("m-cc");
+  if ($("m-cc-all").checked) cc.value = modal.ccSaved || modal.ccCandidates;
+  else { modal.ccSaved = cc.value; cc.value = ""; }
+};
+// CC の欄を手で空にしたら / 書き足したら、チェックもそれに合わせる
+$("m-cc").addEventListener("input", () => { $("m-cc-all").checked = !!$("m-cc").value.trim(); });
+
+// CC・BCC の欄をアドレスの一覧にする。「,」「、」・空白・改行のどれで区切ってもよい
+// (日本語入力の全角の英数字・記号は半角に直す)。正しい形かはサーバが確かめる
+const splitAddrs = v => v.normalize("NFKC").split(/[\s,、;]+/).filter(Boolean);
+
 $("m-send").onclick = async () => {
   const text = $("m-draft").value.trim();
   if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
-  if (!confirm("この内容で返信を送信しますか？")) return;
+  const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
+  // 誰に届くかを送る前に見せる (全員に返信のつもりが無かった、などに気付けるように)
+  if (!confirm("この内容で返信を送信しますか？\n\n宛先: " + $("m-to").textContent +
+      (cc.length ? "\nCC: " + cc.join(", ") : "") +
+      (bcc.length ? "\nBCC: " + bcc.join(", ") : ""))) return;
   const b = $("m-send");
   b.disabled = true; b.textContent = "送信中…";
   try {
     const r = await apiJson(`/api/mail/${modal.id}/send`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body: text }),
+      body: JSON.stringify({ body: text, cc, bcc }),
     });
     modal.savedDraft = text;
-    $("m-status").textContent = `${r.sent} へ送信しました ✓`;
+    const sentCc = r.cc || [], sentBcc = r.bcc || [];
+    $("m-status").textContent = `${r.sent} へ送信しました ✓` +
+      (sentCc.length || sentBcc.length ? `（CC ${sentCc.length}件・BCC ${sentBcc.length}件）` : "");
     if (r.sent_save_error) {
       // 相手には届いている。控えが残らなかったことだけ知らせる
       $("m-status").textContent += `（送信済みフォルダへの保存はできませんでした: ${r.sent_save_error}）`;
     }
     b.textContent = "返信済み";
-    // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)
+    // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)。
+    // CC・BCC の欄は実際に送ったもの (重複を除いた後) にする
     $("m-draft").readOnly = true;
     $("m-gen").disabled = true;
     $("m-tpl").disabled = true;
     $("m-archive").disabled = true;
+    $("m-cc").value = sentCc.join(", ");
+    $("m-bcc").value = sentBcc.join(", ");
+    $("m-cc").readOnly = $("m-bcc").readOnly = true;
+    $("m-cc-all").disabled = true;
     showInbox();
   } catch {
     b.disabled = false; b.textContent = "返信を送信";
@@ -615,7 +675,7 @@ async function closeModal() {
       });
     } catch {}
   }
-  modal = { id: null, savedDraft: "", cursorSet: false };
+  modal = { ...EMPTY_MODAL };
   $("mail-modal").hidden = true;
 }
 $("m-close").onclick = () => closeModal();

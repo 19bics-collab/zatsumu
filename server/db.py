@@ -105,7 +105,10 @@ CREATE TABLE IF NOT EXISTS mails (
     reply_body TEXT NOT NULL DEFAULT '',      -- 実際に送信した本文
     replied_at TEXT,
     replied_by TEXT NOT NULL DEFAULT '',      -- 送信した管理者名(スナップショット)
-    references_hdr TEXT NOT NULL DEFAULT ''   -- スレッド返信用 References ヘッダ
+    references_hdr TEXT NOT NULL DEFAULT '',  -- スレッド返信用 References ヘッダ
+    cc_addr TEXT NOT NULL DEFAULT '',         -- 受信メールの Cc ヘッダ (全員に返信の候補)
+    reply_cc TEXT NOT NULL DEFAULT '',        -- 実際に CC で送ったアドレス (", " 区切り)
+    reply_bcc TEXT NOT NULL DEFAULT ''        -- 実際に BCC で送ったアドレス (", " 区切り)
 );
 -- よく使う返信文 (定型文)。返信画面で選んで本文に入れる。
 -- {相手の名前} などの差し込みは、入れるときにそのメールの内容へ置き換える (server/mail.py)
@@ -330,6 +333,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     jcols = [r["name"] for r in conn.execute("PRAGMA table_info(journals)")]
     if "notified_at" not in jcols:  # 日報通知済み時刻(重複通知防止・NULLなら未通知)
         conn.execute("ALTER TABLE journals ADD COLUMN notified_at TEXT")
+    # 全員に返信 (CC)。以前に取り込んだメールは Cc が分からないので空のまま
+    # (その場合の CC 候補は To の人だけになる)
+    mcols = [r["name"] for r in conn.execute("PRAGMA table_info(mails)")]
+    for col in ("cc_addr", "reply_cc", "reply_bcc"):
+        if col not in mcols:
+            conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
     _seed_mail_templates(conn)

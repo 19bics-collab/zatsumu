@@ -11,7 +11,7 @@ import sqlite3
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
-from . import tz
+from . import db, tz
 
 DEMO_USERS = [
     ("管理者", "demo-admin", 1),
@@ -143,18 +143,21 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
          now_utc.isoformat(), ids["管理者"]),
     )
 
-    # デモ用の受信メール (優先度分類・返信下書き画面の確認用)
+    # デモ用の受信メール (優先度分類・返信下書き画面の確認用)。
+    # 宛先の info@ は自分たちの受信箱なので、全員に返信の CC 候補から外れるよう差出人に入れる
+    db.set_setting(conn, "mail_from", "info@example.com")
+
     def add_mail(mins_ago, from_name, from_addr, subject, body, prio, reason,
-                 draft="", status="unhandled"):
+                 draft="", status="unhandled", cc=""):
         received = (now_utc - timedelta(minutes=mins_ago)).isoformat()
         conn.execute(
             "INSERT INTO mails (message_id, from_addr, from_name, to_addr,"
-            " subject, body, received_at, fetched_at, priority,"
+            " cc_addr, subject, body, received_at, fetched_at, priority,"
             " priority_reason, priority_source, status, draft_reply,"
             " draft_source, draft_generated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (f"<demo-{mins_ago}@example.com>", from_addr, from_name,
-             "info@example.com", subject, body, received,
+             "info@example.com", cc, subject, body, received,
              now_utc.isoformat(), prio, reason, "rule", status, draft,
              "template" if draft else "",
              now_utc.isoformat() if draft else None),
@@ -175,7 +178,9 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
              2, "通常",
              "佐々木 様\n\nお世話になっております。\n"
              "お見積もりのご相談ありがとうございます。\n"
-             "候補日程を確認のうえ、改めてご連絡差し上げます。")
+             "候補日程を確認のうえ、改めてご連絡差し上げます。",
+             # 全員に返信 (CC) の確認用
+             cc="佐々木 部長 <sasaki-bucho@example.com>, keiri@example.com")
     add_mail(240, "業界ニュース配信", "no-reply@newsletter.example.com",
              "【メルマガ】今週の業界トピックス",
              "今週の業界ニュースをお届けします。配信停止はこちら。",

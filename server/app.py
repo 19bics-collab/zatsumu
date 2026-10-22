@@ -364,6 +364,8 @@ class MailDraftBody(BaseModel):
 class MailSendBody(BaseModel):
     body: str
     subject: str | None = None  # 省略時は「Re: 元の件名」
+    cc: list[str] | None = None   # CC のアドレス (全員に返信。省略時は CC なし)
+    bcc: list[str] | None = None  # BCC のアドレス (ヘッダには出ない)
 
 
 class MailTemplateBody(BaseModel):
@@ -2262,12 +2264,17 @@ def mail_detail(mail_id: int, _admin=Depends(require_admin), conn=Depends(get_co
     return {
         **_mail_summary(r),
         "to_addr": r["to_addr"],
+        "cc_addr": r["cc_addr"],
         "body": r["body"],
         "draft_reply": r["draft_reply"],
         "draft_source": r["draft_source"],
         "draft_generated_at": r["draft_generated_at"],
+        # 「全員に返信」で CC に入れる候補 (元の To・Cc の人。自分たちと差出人は除く)
+        "reply_cc_candidates": mail.reply_all_cc(db.get_settings(conn), dict(r)),
         "reply_subject": r["reply_subject"],
         "reply_body": r["reply_body"],
+        "reply_cc": mail.split_addresses(r["reply_cc"]),
+        "reply_bcc": mail.split_addresses(r["reply_bcc"]),
         "replied_by": r["replied_by"],
     }
 
@@ -2340,7 +2347,11 @@ def mail_send(
     mail_id: int, body: MailSendBody, admin=Depends(require_admin),
     conn=Depends(get_conn),
 ):
-    """返信を送信する。宛先は元メールの差出人・スレッドが繋がるヘッダ付き."""
+    """返信を送信する。宛先は元メールの差出人・スレッドが繋がるヘッダ付き.
+
+    cc / bcc を渡すと CC・BCC にも送る (全員に返信)。アドレスはここで確かめ、
+    おかしなものがあれば何も送らずに 400 を返す。
+    """
     r = _mail_or_404(conn, mail_id)
     if r["status"] == "replied":
         raise HTTPException(409, "このメールには返信済みです")
@@ -2349,16 +2360,23 @@ def mail_send(
         raise HTTPException(400, "返信本文を入力してください")
     if "@" not in (r["from_addr"] or ""):
         raise HTTPException(400, "差出人アドレスが不明なため返信できません")
+    try:
+        cc, bcc = mail.check_reply_recipients(r["from_addr"], body.cc, body.bcc)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     s = db.get_settings(conn)
     if not s.get("smtp_host"):
         raise HTTPException(400, "SMTPが未設定です。設定画面で送信サーバを保存してください")
     subject = (body.subject or "").strip() or mail.reply_subject(r["subject"])
     # 先に「返信済み」へ原子的に更新・コミットしてから送信する (二重送信防止:
-    # 同じメールへ同時に送信した場合、後の方は rowcount=0 になり 409 で止まる)
+    # 同じメールへ同時に送信した場合、後の方は rowcount=0 になり 409 で止まる)。
+    # CC・BCC も実際に送ったものとして一緒に残す
     cur = conn.execute(
         "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
-        " replied_at = ?, replied_by = ? WHERE id = ? AND status != 'replied'",
-        (subject, text, now_iso(), admin["name"], mail_id),
+        " reply_cc = ?, reply_bcc = ?, replied_at = ?, replied_by = ?"
+        " WHERE id = ? AND status != 'replied'",
+        (subject, text, ", ".join(cc), ", ".join(bcc), now_iso(), admin["name"],
+         mail_id),
     )
     if not cur.rowcount:
         raise HTTPException(409, "このメールには返信済みです")
@@ -2367,12 +2385,14 @@ def mail_send(
         raw = mail.send_reply(
             s, r["from_addr"], subject, text,
             in_reply_to=r["message_id"], references=r["references_hdr"],
+            cc=cc, bcc=bcc,
         )
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
         # 送信できなかったら未対応に戻し、画面から再試行できるようにする
         conn.execute(
             "UPDATE mails SET status = 'unhandled', reply_subject = '',"
-            " reply_body = '', replied_at = NULL, replied_by = '' WHERE id = ?",
+            " reply_body = '', reply_cc = '', reply_bcc = '', replied_at = NULL,"
+            " replied_by = '' WHERE id = ?",
             (mail_id,),
         )
         conn.commit()
@@ -2386,12 +2406,18 @@ def mail_send(
             sent_folder = mail.save_to_sent(s, raw)
         except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
             save_error = notify.safe_error(e, s)
-    detail = f"to={r['from_addr']} subject={subject}"
+    # 誰に送ったかを後から確かめられるよう、CC・BCC のアドレスと合計の件数も残す
+    detail = f"to={r['from_addr']}"
+    if cc:
+        detail += f" cc={','.join(cc)}"
+    if bcc:
+        detail += f" bcc={','.join(bcc)}"
+    detail += f" recipients={1 + len(cc) + len(bcc)} subject={subject}"
     if sent_folder:
         detail += f" saved={sent_folder}"
     elif save_error:
         detail += " saved=failed"
     _audit(conn, admin, "mail_send", detail=detail)
-    return {"sent": r["from_addr"], "subject": subject,
+    return {"sent": r["from_addr"], "cc": cc, "bcc": bcc, "subject": subject,
             "saved_to_sent": bool(sent_folder), "sent_folder": sent_folder,
             "sent_save_error": save_error}

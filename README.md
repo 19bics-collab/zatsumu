@@ -153,6 +153,9 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   よく使う返信文は**定型文**として設定画面に登録でき、返信画面の「定型文を入れる」で
   本文に入れられます（`{相手の名前}` `{件名}` `{日付}` はそのメールの内容に置き換わる。
   最初に3つ入っています）。
+  返信画面では**全員に返信**もできます（元メールの To・CC の人が CC 欄に最初から入り、
+  「CCの人にも送る」のチェックで外せる。自分たちのアドレスは入らない。BCC も追加可。
+  宛先・CC・BCC は合わせて20件まで）。
   勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
   **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
   メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
@@ -221,11 +224,11 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
 | GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority で絞り込み） |
-| GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き） |
+| GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き・全員に返信の CC 候補） |
 | POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み |
 | POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
 | PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態の変更 |
-| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人） |
+| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る） |
 | GET/POST | `/api/mail/templates` | admin | 定型文の一覧・追加 |
 | PATCH/DELETE | `/api/mail/templates/{id}` | admin | 定型文の変更・並べ替え（`move: up/down`）・削除 |
 | GET | `/api/mail/{id}/templates` | admin | このメール用に差し込みを置き換えた定型文 |

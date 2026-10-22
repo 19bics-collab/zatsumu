@@ -9,6 +9,8 @@ AI が失敗した理由は用途ごとに記録し、設定画面・受信箱�
 繋がるよう In-Reply-To / References ヘッダを付ける。SMTP で送っただけでは
 メールサーバの「送信済み」フォルダに残らないため、送信後に同じメールを
 IMAP の送信済みフォルダへ保存する (Webメール等からも送った返信が見える)。
+「全員に返信」では元メールの To・Cc の人 (自分たちを除く) を CC の候補にし、
+画面で直した CC・BCC を確かめてから送る (BCC はヘッダに出さず、送り先にだけ入れる)。
 IMAP・SMTP ともサーバ証明書を検証し、暗号化できない接続ではパスワードを送らない。
 """
 import base64
@@ -24,7 +26,13 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
-from email.utils import format_datetime, make_msgid, parseaddr, parsedate_to_datetime
+from email.utils import (
+    format_datetime,
+    getaddresses,
+    make_msgid,
+    parseaddr,
+    parsedate_to_datetime,
+)
 
 from . import db, tz
 
@@ -117,6 +125,8 @@ def parse_message(raw: bytes) -> dict:
         "from_addr": from_addr,
         "from_name": from_name,
         "to_addr": str(msg.get("To", "")),
+        # 「全員に返信」の CC 候補に使う。Cc ヘッダが複数あってもまとめて1つにする
+        "cc_addr": _header_text(", ".join(str(h) for h in msg.get_all("Cc", []))),
         "subject": str(msg.get("Subject", "")).strip(),
         "body": _extract_body(msg)[:BODY_MAX_CHARS],
         "received_at": tz.utc_iso(received),
@@ -491,6 +501,119 @@ def reply_subject(subject: str) -> str:
     return subject if subject.lower().startswith("re:") else f"Re: {subject}"
 
 
+# ---------- 返信の宛先 (全員に返信・CC・BCC) ----------
+
+# 1通の返信に入れられる宛先の上限 (宛先 + CC + BCC の合計)。
+# 打ち間違いや貼り付けの事故で大勢に送ってしまうのを防ぐ
+MAX_RECIPIENTS = 20
+# 画面から受け取る1件あたりの最大文字数 (「名前 <アドレス>」の形も含む)
+RECIPIENT_MAX_CHARS = 320
+
+# 送り先として受け付けるアドレスの形 (英数字と記号の「…@ドメイン」だけ)。
+# 携帯のアドレスに多い「taro..yamada@docomo.ne.jp」のような点の続きは通す
+_ADDRESS_RE = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}"
+    r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
+)
+
+
+def valid_address(addr: str) -> bool:
+    """送り先に使えるアドレスか (「名前 <…>」ではなくアドレスだけを渡す)."""
+    return len(addr) <= 254 and bool(_ADDRESS_RE.fullmatch(addr))
+
+
+def own_addresses(settings: dict) -> set[str]:
+    """自分たち (差出人・送信と受信のアカウント) のアドレス (小文字).
+
+    「全員に返信」で自分たちにまで CC を送らないよう、候補から除くのに使う。
+    """
+    out = set()
+    for key in ("mail_from", "smtp_user", "imap_user"):
+        addr = parseaddr(str(settings.get(key) or ""))[1].strip().lower()
+        if "@" in addr:
+            out.add(addr)
+    return out
+
+
+def reply_all_cc(settings: dict, mail: dict) -> list[str]:
+    """「全員に返信」で CC に入れる候補のアドレス.
+
+    元メールの To と Cc に入っていた人。返信の宛先 (元メールの差出人) と
+    自分たちのアドレスは除き、大文字・小文字の違いだけの重複も1つにする。
+    アドレスとして読めないもの (「undisclosed-recipients:;」等) は入れない。
+    """
+    skip = own_addresses(settings) | {str(mail.get("from_addr") or "").strip().lower()}
+    out = []
+    # ヘッダごとに読む (片方が壊れていても、もう片方の候補は出せるように)
+    for header in (mail.get("to_addr"), mail.get("cc_addr")):
+        for _name, addr in getaddresses([str(header or "")]):
+            addr = addr.strip()
+            if valid_address(addr) and addr.lower() not in skip:
+                skip.add(addr.lower())
+                out.append(addr)
+    return out
+
+
+def _clean_address_list(values, label: str) -> list[str]:
+    """画面から届いた CC・BCC の一覧を確かめて、アドレスだけの一覧にする.
+
+    1件に1つのアドレス。「名前 <アドレス>」の形も受け付けるが、使うのはアドレスだけ。
+    おかしなものがあれば、画面にそのまま出せる日本語の ValueError にする。
+    """
+    values = list(values or [])
+    if len(values) > MAX_RECIPIENTS:
+        raise ValueError(f"{label}に入れられるのは{MAX_RECIPIENTS}件までです")
+    out = []
+    for item in values:
+        item = str(item)
+        if re.search(r"[\r\n\x00]", item):
+            raise ValueError(f"{label}のアドレスに改行は入れられません")
+        item = item.strip()
+        if not item:
+            continue
+        addr = item
+        if "<" in item or ">" in item:
+            mt = re.fullmatch(r"[^<>]*<([^<>]*)>", item)
+            addr = mt.group(1).strip() if mt else ""
+        if len(item) > RECIPIENT_MAX_CHARS or not valid_address(addr):
+            shown = item if len(item) <= 60 else item[:60] + "…"
+            raise ValueError(
+                f"{label}のアドレス「{shown}」が正しくありません。"
+                "「name@example.com」の形で、1つずつ「,」で区切って入力してください")
+        out.append(addr)
+    return out
+
+
+def check_reply_recipients(to_addr: str, cc=None, bcc=None) -> tuple[list[str], list[str]]:
+    """返信の CC・BCC を確かめて (CC, BCC) を返す (おかしければ日本語の ValueError).
+
+    同じ人に2通届かないよう、CC からは宛先と同じアドレスを、BCC からは宛先・CC と
+    同じアドレスを除く (大文字・小文字は区別しない)。合計が上限を超えたら断る。
+    """
+    seen = {str(to_addr or "").strip().lower()}
+    lists = []
+    for values, label in ((cc, "CC"), (bcc, "BCC")):
+        kept = []
+        for addr in _clean_address_list(values, label):
+            if addr.lower() not in seen:
+                seen.add(addr.lower())
+                kept.append(addr)
+        lists.append(kept)
+    cc_list, bcc_list = lists
+    if 1 + len(cc_list) + len(bcc_list) > MAX_RECIPIENTS:
+        raise ValueError(
+            f"宛先・CC・BCC は合わせて{MAX_RECIPIENTS}件までです"
+            f"（今は{1 + len(cc_list) + len(bcc_list)}件）。"
+            "CCを減らすか、「CCの人にも送る」のチェックを外してください")
+    return cc_list, bcc_list
+
+
+def split_addresses(value) -> list[str]:
+    """DB に「, 」区切りで保存した送り先を一覧に戻す."""
+    return [a.strip() for a in str(value or "").split(",") if a.strip()]
+
+
 # ---------- 返信送信 (SMTP) ----------
 
 def _header_text(value) -> str:
@@ -504,18 +627,27 @@ def _header_text(value) -> str:
 
 
 def send_reply(settings: dict, to_addr: str, subject: str, body: str,
-               in_reply_to: str = "", references: str = "") -> bytes:
+               in_reply_to: str = "", references: str = "",
+               cc=None, bcc=None) -> bytes:
     """返信メールを1通送信し、送ったメールそのもの (bytes) を返す (失敗時は例外).
 
-    戻り値は送信済みフォルダへの保存 (save_to_sent) に使う。
+    cc は Cc ヘッダに出す。bcc はヘッダに出さず、SMTP の送り先にだけ入れる
+    (BCC の人が誰かは、宛先・CC の人には見えない)。cc・bcc は呼び出し側で
+    check_reply_recipients を通したアドレスの一覧を渡す。
+    戻り値は送信済みフォルダへの保存 (save_to_sent) に使う
+    (相手に届いたものと同じなので、控えにも Cc は出て、Bcc は出ない)。
     """
     to_addr = _header_text(to_addr)
+    cc = [_header_text(a) for a in (cc or []) if _header_text(a)]
+    bcc = [_header_text(a) for a in (bcc or []) if _header_text(a)]
     in_reply_to = _header_text(in_reply_to)
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = _header_text(subject)
     sender = settings.get("mail_from") or settings.get("smtp_user")
     msg["From"] = sender
     msg["To"] = to_addr
+    if cc:
+        msg["Cc"] = ", ".join(cc)
     # 送信済みフォルダに保存する控えと相手に届くメールを同じ内容にするため、
     # 日時と Message-ID はサーバ任せにせずここで付ける
     msg["Date"] = format_datetime(datetime.now(tz.TZ))
@@ -529,7 +661,7 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
 
     raw = msg.as_string()
     # 接続・暗号化・ログインは通知メールと同じ1か所の処理を使う
-    notify.smtp_send(settings, sender, [to_addr], raw)
+    notify.smtp_send(settings, sender, [to_addr, *cc, *bcc], raw)
     return raw.encode("utf-8")
 
 
@@ -922,13 +1054,13 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
     for uid, p, prio, reason, source, draft, draft_source, drafted_at in rows:
         cur = conn.execute(
             "INSERT OR IGNORE INTO mails (message_id, imap_uid, from_addr,"
-            " from_name, to_addr, subject, body, received_at, fetched_at,"
+            " from_name, to_addr, cc_addr, subject, body, received_at, fetched_at,"
             " priority, priority_reason, priority_source, draft_reply,"
             " draft_source, draft_generated_at, references_hdr)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
-             p["subject"], p["body"], p["received_at"], now, prio, reason,
-             source, draft, draft_source, drafted_at, p["references_hdr"]),
+             p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
+             reason, source, draft, draft_source, drafted_at, p["references_hdr"]),
         )
         if cur.rowcount:
             added.append({**p, "priority": prio})
