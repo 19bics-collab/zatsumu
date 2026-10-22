@@ -1,0 +1,2 @@
+# Dockerfile のベースイメージ (mcr.microsoft.com/playwright/python:v1.63.0-noble) と版をそろえる
+playwright==1.63.0

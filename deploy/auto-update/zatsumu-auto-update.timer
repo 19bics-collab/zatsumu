@@ -1,0 +1,10 @@
+# 自動更新係を5分おきに動かす
+[Unit]
+Description=zatsumu auto update (5分おき)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

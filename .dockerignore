@@ -1,0 +1,14 @@
+# ビルド材料に入れないもの（Dockerfile が使うのは server/ と manage.py だけ）
+.git
+.env
+.env.*
+!.env*.example
+data/
+tests/
+client/
+dist/
+build/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

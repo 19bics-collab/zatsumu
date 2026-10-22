@@ -1,0 +1,3443 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>メール対応</title>
+<style>
+  :root { --hi: #c62828; --line: #e5e7eb; }
+  html { font-size: 17px; -webkit-text-size-adjust: 100%; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7;
+         overflow-x: hidden; }
+  header { background: #14532d; color: #fff; padding: .7rem 1.5rem;
+           display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  header h1 { font-size: 1.3rem; margin: 0; margin-right: 1rem; }
+  header .spacer { flex: 1; }
+  header button { background: #3f6b50; }
+  header button.active { background: #16a34a; }
+  main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+  h2 { font-size: 1.15rem; color: #374151; }
+  button { padding: .55rem 1.1rem; border: 0; border-radius: 6px;
+           background: #16a34a; color: #fff; cursor: pointer; font-size: .9rem; }
+  button.ghost { background: #e5e7eb; color: #374151; }
+  button:disabled { opacity: .55; cursor: default; }
+  table { border-collapse: collapse; background: #fff; width: 100%;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); font-size: 1rem; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch;
+                padding: 3px 3px 6px; }
+  th, td { padding: .7rem 1rem; border-bottom: 1px solid var(--line); text-align: left; }
+  th { background: #f9fafb; font-size: .85rem; color: #6b7280; }
+  /* ログイン */
+  #login { max-width: 360px; margin: 12vh auto; background: #fff; padding: 2rem;
+           border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  #login input { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
+                 border: 1px solid #ccc; border-radius: 4px; }
+  /* 新しい端末の確認 (確認コードの入力) */
+  #device-verify { max-width: 380px; margin: 12vh auto; background: #fff; padding: 2rem;
+                   border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  #dv-code { width: 100%; box-sizing: border-box; padding: .6rem; margin: .8rem 0;
+             border: 1px solid #ccc; border-radius: 4px; font-size: 1.4rem;
+             letter-spacing: .3em; text-align: center; }
+  .dev-row { display: flex; gap: .6rem; align-items: center; justify-content: space-between;
+             border-bottom: 1px solid #e5e7eb; padding: .5rem 0; font-size: .9rem; }
+  .dev-row div { min-width: 0; overflow-wrap: anywhere; }
+  .error { color: var(--hi); }
+  .ntf { background: var(--hi); color: #fff; border-radius: 99px; font-size: .7rem;
+         padding: .05rem .4rem; margin-left: .3rem; }
+  /* 優先度・一覧 */
+  .pr-1 { color: var(--hi); font-weight: 700; }
+  .pr-2 { color: #d97706; }
+  .pr-3 { color: #6b7280; }
+  .st-replied { color: #0a7d32; } .st-archived { color: #6b7280; }
+  .st-unhandled { color: #d97706; } .st-pending_approval { color: #7c3aed; font-weight: 600; }
+  /* 確認待ちの数 (受信箱の横のボタン) */
+  header button.pend { background: #7c3aed; }
+  .mail-row td > span[class^="st-"] { white-space: nowrap; }
+  .ret-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+               border-radius: 99px; background: #fee2e2; color: #991b1b; margin-left: .3rem;
+               white-space: nowrap; vertical-align: 1px; font-weight: normal; }
+  /* ログインしている人 (ヘッダ) */
+  #whoami { font-size: .85rem; opacity: .9; overflow-wrap: anywhere; }
+  /* 確認のお願いが来ている (受信箱の上。管理者だけ) */
+  .appr-banner { display: flex; flex-wrap: wrap; gap: .4rem .8rem; align-items: center;
+                 background: #f5f3ff; border: 1px solid #ddd6fe; color: #4c1d95; border-radius: 8px;
+                 padding: .6rem .9rem; margin: 0 0 .8rem; font-size: .95rem; }
+  .appr-banner[hidden] { display: none; }
+  .appr-banner span { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
+  .appr-banner button { padding: .4rem .8rem; white-space: nowrap; }
+  /* メール担当者への案内 (受信箱・返信画面) */
+  .staff-help { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; color: #14532d;
+                padding: .55rem .8rem; font-size: .88rem; line-height: 1.55; overflow-wrap: anywhere; }
+  .staff-help[hidden] { display: none; }
+  .mail-row { cursor: pointer; }
+  .mail-row.done td { color: #9ca3af; }
+  .mail-row:hover { background: #f0fdf4; }
+  /* 前に見た後に届いて、まだ開いていないメール (新着) */
+  .mail-row.new { background: #fefce8; }
+  .mail-row.new:hover { background: #fef9c3; }
+  .new-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+               border-radius: 99px; background: #b45309; color: #fff; font-weight: 700;
+               margin-right: .35rem; vertical-align: 1px; white-space: nowrap; }
+  /* 最終受信の時刻など (今すぐ受信の横) */
+  #fetch-info { margin-left: .6rem; font-size: .8rem; font-weight: normal; color: #6b7280;
+                overflow-wrap: anywhere; }
+  /* 絞り込み (状態・種類・担当) */
+  .flt { padding: .4rem; border: 1px solid #ccc; border-radius: 6px; font-size: .9rem;
+         background: #fff; max-width: 14rem; margin: .2rem 0 .2rem .4rem; }
+  /* 問い合わせの種類 (一覧のバッジ) */
+  .cat { display: inline-block; font-size: .75rem; line-height: 1.5; padding: 0 .45rem;
+         border-radius: 99px; background: #e0f2fe; color: #075985; margin-right: .35rem;
+         white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+         vertical-align: 1px; }
+  .cat.none { background: #f3f4f6; color: #6b7280; }
+  /* 届いたアドレス (一覧のバッジ。受信するアドレスが2つ以上のときだけ出す) */
+  .acct { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+          border-radius: 99px; border: 1px solid #99f6e4; background: #f0fdfa; color: #115e59;
+          margin-right: .35rem; white-space: nowrap; max-width: 100%; overflow: hidden;
+          text-overflow: ellipsis; vertical-align: 1px; }
+  .acct.gone { border-color: #e5e7eb; background: #f9fafb; color: #6b7280; }
+  /* 同じ相手から届いたほかのメールの数 (一覧の差出人の横) */
+  .thr-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+               border-radius: 99px; background: #ede9fe; color: #5b21b6; margin-left: .35rem;
+               white-space: nowrap; vertical-align: 1px; font-weight: normal; }
+  /* 設定 */
+  .settings-grid { display: grid; gap: 1rem;
+                   grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
+  .set-card { background: #fff; padding: 1.2rem 1.5rem; border-radius: 8px;
+              box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .set-card h3 { font-size: 1rem; margin: 0 0 .8rem; color: #374151; }
+  .set-row { display: flex; align-items: center; justify-content: space-between;
+             gap: 1rem; margin: .7rem 0; font-size: .95rem; }
+  .set-row input[type=number] { width: 7rem; padding: .45rem; border: 1px solid #ccc;
+                                border-radius: 6px; font-size: 1rem; }
+  .set-row input[type=text], .set-row input[type=password] { width: 9rem; padding: .45rem;
+                                border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+  .set-row input[type=checkbox] { width: 1.3rem; height: 1.3rem; }
+  .set-row select { width: 11rem; flex-shrink: 0; padding: .45rem; border: 1px solid #ccc;
+                    border-radius: 6px; font-size: 1rem; background: #fff; }
+  .set-help { margin: -.3rem 0 .7rem; color: #4b5563; line-height: 1.5; }
+  #ai-status { white-space: pre-wrap; font-size: .85rem; overflow-wrap: anywhere; }
+  #test-ai-msg { font-size: .85rem; margin-top: .4rem; overflow-wrap: anywhere; }
+  /* 返事をしていないメールのお知らせ (設定)。時間帯の2つの選択欄は、狭い画面では次の行へ */
+  .quiet-row { flex-wrap: wrap; }
+  .quiet-sel { display: flex; align-items: center; gap: .3rem; margin-left: auto; }
+  .set-row .quiet-sel select { width: 5.6rem; }
+  #remind-dest, #test-remind-msg { font-size: .85rem; overflow-wrap: anywhere; }
+  #test-remind-msg { margin-top: .4rem; }
+  /* 週ごとのまとめ (設定)。見本は送る文そのまま (改行も) を出し、長い行は折り返す */
+  .report-btns { display: flex; gap: .5rem; flex-wrap: wrap; }
+  #report-next, #report-msg { font-size: .85rem; overflow-wrap: anywhere; }
+  #report-msg { margin-top: .4rem; }
+  #report-preview { white-space: pre-wrap; overflow-wrap: anywhere; margin: .6rem 0 0;
+                    background: #f9fafb; border: 1px solid var(--line); border-radius: 6px;
+                    padding: .7rem; font-family: inherit; font-size: .85rem; line-height: 1.6;
+                    color: #374151; max-height: 26rem; overflow: auto; }
+  .set-card textarea { width: 100%; box-sizing: border-box; min-height: 3.6rem;
+                       padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
+                       font-size: .9rem; font-family: inherit; }
+  /* 定型文 (設定) */
+  .tpl-row { display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+             justify-content: space-between; border-bottom: 1px solid #e5e7eb;
+             padding: .5rem 0; font-size: .9rem; }
+  .tpl-row > div:first-child { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+  .tpl-row small { color: #6b7280; }
+  .tpl-btns { display: flex; gap: .3rem; margin-left: auto; }
+  .tpl-btns button { padding: .4rem .65rem; }
+  #tpl-name { width: 100%; box-sizing: border-box; padding: .45rem; border: 1px solid #ccc;
+              border-radius: 6px; font-size: 1rem; }
+  #tpl-body { min-height: 10rem; }
+  .tpl-ph { display: flex; gap: .3rem; align-items: center; flex-wrap: wrap;
+            margin: .3rem 0; font-size: .85rem; color: #4b5563; }
+  .tpl-ph button { padding: .3rem .6rem; font-size: .82rem; }
+  /* 受信するメールアドレス (設定)。1行=1アドレス。ボタンは狭い画面では次の行へ */
+  .acct-row { display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+              justify-content: space-between; border-bottom: 1px solid #e5e7eb;
+              padding: .55rem 0; font-size: .9rem; }
+  .acct-row > div:first-child { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+  .acct-row small { color: #6b7280; }
+  .acct-row small.acct-err { color: var(--hi); }
+  .acct-row.off b { color: #9ca3af; }
+  .acct-btns { display: flex; flex-wrap: wrap; gap: .3rem; margin-left: auto; }
+  .acct-btns button { padding: .4rem .65rem; }
+  .acct-move { display: flex; gap: .3rem; }   /* ↑↓ は離さずに折り返す */
+  .acct-test { flex-basis: 100%; font-size: .85rem; overflow-wrap: anywhere; }
+  .acct-test:empty { display: none; }
+  .acct-more { margin: .3rem 0; font-size: .95rem; }
+  .acct-more summary { cursor: pointer; color: #374151; padding: .35rem 0; }
+  #acct-msg { font-size: .85rem; overflow-wrap: anywhere; }
+  /* メール担当者 (設定)。1行=1人。ボタンは狭い画面では次の行へ */
+  .staff-row { display: flex; flex-wrap: wrap; gap: .4rem .6rem; align-items: center;
+               justify-content: space-between; border-bottom: 1px solid #e5e7eb;
+               padding: .5rem 0; font-size: .9rem; }
+  .staff-row > div { flex: 1 1 10rem; min-width: 0; overflow-wrap: anywhere; }
+  .staff-row small { color: #6b7280; }
+  .staff-row small.on { color: #0a7d32; font-weight: 600; }
+  .staff-row button { padding: .4rem .7rem; margin-left: auto; }
+  #staff-msg { font-size: .85rem; overflow-wrap: anywhere; }
+  /* 返信モーダル */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+           align-items: center; justify-content: center; z-index: 10; }
+  .modal[hidden] { display: none; }
+  .modal .box { background: #fff; padding: 1.2rem; border-radius: 8px;
+                max-width: 94vw; max-height: 94vh; display: flex; flex-direction: column;
+                min-width: 320px; width: 680px; overflow: auto; }
+  /* 中身が画面より長いとき (スマホ・添付ファイルが多いとき) は、本文の欄を
+     縮めずに、返信画面ごとスクロールさせる */
+  .modal .box > * { flex-shrink: 0; }
+  .modal .bar { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  .modal .bar span { flex: 1; color: #374151; font-size: .9rem; }
+  /* 送信結果の文はボタンの列とは別の行 (上) に出す。同じ行だと、スマホでは
+     文が長いときにボタンが「返/信/済/み」と縦に1文字ずつ折り返して崩れる */
+  .modal .bar button { white-space: nowrap; }
+  #m-status { order: -1; flex-basis: 100%; overflow-wrap: anywhere; }
+  #m-status:empty { display: none; }
+  #m-send, #m-request { margin-left: auto; }
+  /* 確認のお願い・差し戻し (返信画面) */
+  .appr { margin-top: .8rem; border: 1px solid #ddd6fe; border-radius: 6px; background: #f5f3ff;
+          padding: .6rem .7rem; display: flex; flex-direction: column; gap: .4rem;
+          font-size: .88rem; color: #3b0764; }
+  .appr[hidden], .appr-return[hidden], #m-req-row[hidden] { display: none; }
+  .appr.ret { border-color: #fecaca; background: #fef2f2; color: #7f1d1d; }
+  .appr > div { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .appr-head { font-weight: 600; }
+  .appr-help { color: #4b5563; }
+  .appr-help:empty { display: none; }
+  .appr-return { display: flex; flex-direction: column; gap: .4rem; }
+  #m-return-note { width: 100%; box-sizing: border-box; min-height: 3.6rem; padding: .5rem;
+                   border: 1px solid #ccc; border-radius: 6px; font-size: .9rem; font-family: inherit; }
+  #m-return { align-self: flex-start; padding: .45rem .9rem; }
+  #m-req-row { margin-top: .8rem; display: flex; }
+  #m-req-note { flex: 1; min-width: 0; padding: .45rem; border: 1px solid #ccc; border-radius: 6px;
+                font-size: .9rem; }
+  #m-staff-help { margin: .6rem 0 0; }
+  .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; overflow-wrap: anywhere; }
+  /* 区切りの無い長い件名 (URL など) でも、スマホで横にはみ出さないように折り返す */
+  #m-subject { overflow-wrap: anywhere; }
+  .mail-body { white-space: pre-wrap; background: #f9fafb; border: 1px solid var(--line);
+               border-radius: 6px; padding: .7rem; max-height: 12rem; overflow: auto;
+               font-size: .92rem; color: #374151; }
+  #m-draft { width: 100%; box-sizing: border-box; min-height: 11rem; padding: .6rem;
+             border: 1px solid #ccc; border-radius: 6px; font-size: .95rem;
+             font-family: inherit; margin-top: .3rem; }
+  #m-inst { flex: 1; min-width: 180px; padding: .45rem; border: 1px solid #ccc;
+            border-radius: 6px; font-size: .9rem; }
+  #m-tpl { max-width: 100%; padding: .35rem; border: 1px solid #ccc; border-radius: 6px;
+           font-size: .9rem; background: #fff; }
+  /* 返信画面の 優先度・種類・担当 */
+  .m-field { font-size: .85rem; color: #374151; max-width: 100%; }
+  .m-field select { padding: .35rem; border: 1px solid #ccc; border-radius: 6px;
+                    font-size: .9rem; background: #fff; max-width: 14rem; }
+  /* 返信の宛先 (宛先・全員に返信・CC・BCC) */
+  .rcpt { margin-top: .8rem; display: flex; flex-direction: column; gap: .35rem;
+          font-size: .88rem; color: #374151; }
+  .rcpt-row { display: flex; align-items: center; gap: .5rem; }
+  .rcpt-row > span:first-child { flex: 0 0 2.9rem; color: #6b7280; }
+  #m-to, #m-from { min-width: 0; overflow-wrap: anywhere; }
+  #m-from-row[hidden] { display: none; }
+  .rcpt-row input { flex: 1; min-width: 0; padding: .4rem; border: 1px solid #ccc;
+                    border-radius: 6px; font-size: .9rem; }
+  .rcpt-row input[readonly] { background: #f9fafb; color: #6b7280; }
+  .rcpt-all { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+  .rcpt-all[hidden] { display: none; }
+  .rcpt-all input { width: 1.2rem; height: 1.2rem; margin: 0; }
+  /* 添付ファイル (返信モーダル) */
+  .atts { margin-top: .6rem; display: flex; flex-direction: column; gap: .4rem;
+          font-size: .88rem; color: #374151; }
+  .atts[hidden] { display: none; }
+  .att { display: flex; align-items: center; gap: .6rem; border: 1px solid var(--line);
+         border-radius: 6px; padding: .4rem .6rem; background: #fff; }
+  .att.skipped { background: #f9fafb; color: #6b7280; }
+  .att-thumb { width: 56px; height: 56px; flex: 0 0 56px; object-fit: cover;
+               border-radius: 4px; background: #f3f4f6; cursor: zoom-in; }
+  .att-icon { flex: 0 0 56px; text-align: center; font-size: 1.5rem; }
+  .att-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .att-name small { color: #6b7280; }
+  .att button { padding: .4rem .7rem; flex-shrink: 0; }
+  /* この相手とのやり取り (返信モーダル)。開け閉めは details/summary (iPhone でも動く) */
+  .thread { margin-top: .7rem; border: 1px solid var(--line); border-radius: 6px;
+            background: #fff; font-size: .88rem; color: #374151; }
+  .thread[hidden] { display: none; }
+  .thread summary { cursor: pointer; list-style: none; -webkit-tap-highlight-color: rgba(0,0,0,.06); }
+  .thread summary::-webkit-details-marker { display: none; }
+  .thread > summary { padding: .55rem .7rem; font-weight: 600; }
+  .thread summary::before { content: "▸"; display: inline-block; width: 1.1em; color: #6b7280; }
+  .thread details[open] > summary::before, .thread[open] > summary::before { content: "▾"; }
+  .thr-list { padding: 0 .7rem .6rem; display: flex; flex-direction: column; gap: .4rem; }
+  .thr-item { border: 1px solid var(--line); border-radius: 6px; background: #f9fafb; }
+  /* 印 (▸) は左に置く。summary を flex にすると古い iPhone の Safari で崩れるので使わない */
+  .thr-item > summary { position: relative; padding: .45rem .6rem .45rem 1.7rem; }
+  .thr-item > summary::before { position: absolute; left: .6rem; top: .45rem; }
+  .thr-line { display: block; overflow-wrap: anywhere; }
+  .thr-head { color: #6b7280; font-size: .8rem; }
+  .thr-subj { font-weight: 600; }
+  .thr-reply { color: #166534; }
+  .thr-other { color: #b45309; font-size: .8rem; }
+  .thr-full { padding: 0 .6rem .6rem; display: flex; flex-direction: column; gap: .35rem; }
+  .thr-full small { color: #6b7280; overflow-wrap: anywhere; }
+  .thr-full .mail-body { max-height: 16rem; background: #fff; }
+  .thr-full button { align-self: flex-start; padding: .4rem .8rem; }
+  #m-back { align-self: flex-start; padding: .35rem .8rem; margin-bottom: .4rem; }
+  #m-back[hidden] { display: none; }
+  /* カレンダーに登録 (返信モーダル)。予定の候補を1つずつカードにして、その場で直せる */
+  .cal-open { margin-top: .7rem; }
+  .cal-open[hidden], .cal-panel[hidden], .cal-times[hidden], .ev-warn[hidden] { display: none; }
+  #m-cal { padding: .45rem .9rem; }
+  .cal-panel { margin-top: .7rem; border: 1px solid #bbf7d0; border-radius: 6px;
+               background: #f0fdf4; padding: .7rem; display: flex; flex-direction: column;
+               gap: .6rem; font-size: .88rem; color: #374151; }
+  .cal-panel > * { min-width: 0; overflow-wrap: anywhere; }
+  .cal-head { font-weight: 600; }
+  .cal-ev { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: .6rem;
+            display: flex; flex-direction: column; gap: .45rem; }
+  .cal-ev label { display: flex; flex-direction: column; gap: .15rem; font-size: .8rem;
+                  color: #6b7280; min-width: 0; }
+  .cal-ev input[type=text], .cal-ev input[type=date], .cal-ev input[type=time], .cal-ev textarea {
+    padding: .4rem; border: 1px solid #ccc; border-radius: 6px; font-size: .95rem;
+    font-family: inherit; color: #111827; background: #fff; box-sizing: border-box;
+    max-width: 100%; min-width: 0; min-height: 2.3rem; }
+  .cal-ev input[type=date] { width: 11rem; }
+  .cal-ev input[type=time] { width: 8rem; }
+  .cal-ev textarea { min-height: 4.6rem; resize: vertical; }
+  .cal-line { display: flex; flex-wrap: wrap; gap: .5rem .9rem; align-items: flex-end; }
+  .cal-ev label.cal-chk { flex-direction: row; align-items: center; gap: .35rem; font-size: .9rem;
+                          color: #374151; padding-bottom: .5rem; }
+  .cal-chk input { width: 1.2rem; height: 1.2rem; margin: 0; }
+  .ev-warn { color: #b45309; font-size: .82rem; overflow-wrap: anywhere; }
+  .cal-btns { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .cal-btns button { white-space: nowrap; padding: .45rem .8rem; }
+  .cal-help { color: #4b5563; line-height: 1.5; }
+  /* Notionに登録 (返信モーダル)。登録したら「Notionで開く」(リンク) と「もう一度登録」を出す */
+  .ntn-box { margin-top: .7rem; display: flex; flex-direction: column; gap: .35rem; }
+  .ntn-box[hidden], .ntn-link[hidden] { display: none; }
+  .ntn-btns { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .ntn-btns button { padding: .45rem .9rem; white-space: nowrap; }
+  .ntn-link { display: inline-block; padding: .45rem .9rem; border-radius: 6px; background: #16a34a;
+              color: #fff; text-decoration: none; font-size: .9rem; white-space: nowrap; }
+  .ntn-msg { font-size: .85rem; color: #374151; white-space: pre-wrap; overflow-wrap: anywhere;
+             line-height: 1.5; }
+  .ntn-msg:empty { display: none; }
+  .ntn-msg.ok { color: #0a7d32; }
+  .ntn-msg.warn { color: #b45309; }
+  .ntn-msg.err { color: var(--hi); }
+  /* Notion (設定)。始め方の手順・データベースの URL・接続テストで分かった列の一覧 */
+  .ntn-steps { margin: .2rem 0 .8rem; padding-left: 1.3rem; color: #4b5563; line-height: 1.55;
+               font-size: .85rem; }
+  .ntn-steps li { margin-bottom: .3rem; overflow-wrap: anywhere; }
+  #set-notion-db { width: 100%; box-sizing: border-box; padding: .45rem; border: 1px solid #ccc;
+                   border-radius: 6px; font-size: 1rem; }
+  #test-notion-msg { font-size: .85rem; margin-top: .4rem; overflow-wrap: anywhere;
+                     white-space: pre-wrap; }
+  .ntn-cols { margin-top: .5rem; font-size: .85rem; border: 1px solid var(--line); border-radius: 6px;
+              background: #f9fafb; padding: .5rem .7rem; }
+  .ntn-cols[hidden] { display: none; }
+  .ntn-col { display: flex; flex-wrap: wrap; gap: .1rem .5rem; padding: .3rem 0;
+             border-bottom: 1px solid #eef0f3; }
+  .ntn-col:last-child { border-bottom: none; }
+  .ntn-col b { overflow-wrap: anywhere; min-width: 0; }
+  .ntn-col small { color: #6b7280; }
+  .ntn-col span { margin-left: auto; color: #374151; overflow-wrap: anywhere; min-width: 0; }
+  /* 添付の画像を大きく見る */
+  #att-viewer { z-index: 20; cursor: zoom-out; flex-direction: column; gap: .6rem; }
+  #att-viewer img { max-width: 94vw; max-height: 84vh; object-fit: contain;
+                    background: #fff; border-radius: 4px; }
+  @media (max-width: 720px) {
+    html { font-size: 15px; }
+    main { padding: .8rem; }
+    header { padding: .6rem .8rem; gap: .4rem; }
+    header h1 { font-size: 1.1rem; margin-right: 0; flex-basis: 100%; }
+    header .spacer { display: none; }
+    header button { padding: .45rem .7rem; font-size: .82rem; }
+    .table-wrap table { white-space: nowrap; }
+    .table-wrap th, .table-wrap td { padding: .5rem .6rem; }
+  }
+  /* スマホは1行=1カードに縦積みして横スクロールを無くす */
+  @media (max-width: 640px) {
+    .table-wrap { overflow-x: visible; padding: 0; }
+    .table-wrap table { width: 100%; box-shadow: none; white-space: normal; }
+    .table-wrap thead { display: none; }
+    .table-wrap tbody { display: block; }
+    .table-wrap tr { display: block; background: #fff; border: 1px solid var(--line);
+                     border-radius: 8px; margin: 0 0 .6rem; padding: .3rem .8rem;
+                     box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .table-wrap td { display: block; border: none; border-bottom: 1px solid #f1f5f9;
+                     padding: .5rem 0; text-align: left; overflow-wrap: anywhere; }
+    .table-wrap tr td:last-child { border-bottom: none; }
+    .table-wrap td[data-label]::before { content: attr(data-label); display: block;
+                     font-weight: 600; color: #6b7280; font-size: .72rem; margin-bottom: .15rem; }
+  }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <h1>📨 メール対応</h1>
+  <p>トークン（合言葉）を入力してください</p>
+  <input type="password" id="token-input" placeholder="トークン" autocomplete="current-password">
+  <button id="login-btn">ログイン</button>
+  <p id="login-error" class="error" hidden>トークンが正しくないか、メール画面を使う権限がありません
+  （使えるのは管理者と、管理者が「メール担当者」にした人です）</p>
+</div>
+
+<div id="device-verify" hidden>
+  <h1>🔐 新しい端末の確認</h1>
+  <p id="dv-sent">確認コードを送っています…</p>
+  <input type="text" id="dv-code" inputmode="numeric" autocomplete="one-time-code"
+         maxlength="20" placeholder="6桁のコード">
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+    <button id="dv-ok">確認</button>
+    <button id="dv-resend" class="ghost">再送</button>
+    <button id="dv-back" class="ghost">ログイン画面に戻る</button>
+  </div>
+  <p id="dv-error" class="error" hidden></p>
+  <p><small>この端末で初めてログインするため、登録されたメールアドレスに届いた
+  確認コードの入力が必要です（一度確認した端末では、次からは不要です）。</small></p>
+  <p id="dv-staff" hidden><small>メール担当者の確認コードは、管理者のメールに届きます。
+  管理者に聞いて、ここに入力してください。</small></p>
+</div>
+
+<div id="app" hidden>
+<header>
+  <h1>📨 <span id="brand">メール対応</span></h1>
+  <button id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span></button>
+  <!-- 確認待ちの数は受信箱のボタンの中に入れない (スマホで受信箱を押したつもりが、
+       こちらに当たって確認待ちだけの一覧になってしまうので、別のボタンにする) -->
+  <button id="nav-pending" class="pend" title="確認待ち（メール担当者からの確認のお願い）" hidden></button>
+  <button id="nav-settings" hidden>設定</button>
+  <span class="spacer"></span>
+  <span id="whoami"></span>
+  <button id="logout">ログアウト</button>
+</header>
+<main>
+
+<section id="inbox" hidden>
+  <h2>受信箱
+    <select id="filter" class="flt" aria-label="状態" style="margin-left:1rem">
+      <option value="unhandled">未対応</option>
+      <option value="pending_approval">確認待ち</option>
+      <option value="replied">返信済み</option>
+      <option value="archived">対応不要</option>
+      <option value="">すべて</option>
+    </select>
+    <select id="filter-cat" class="flt" aria-label="種類"><option value="">種類：すべて</option></select>
+    <select id="filter-asg" class="flt" aria-label="担当"><option value="">担当：すべて</option></select>
+    <select id="filter-acct" class="flt" aria-label="アドレス" hidden><option value="">アドレス：すべて</option></select>
+    <button id="fetch-now" class="ghost" style="margin-left:.6rem">今すぐ受信</button>
+    <span id="fetch-info"></span>
+    <span id="fetch-msg" style="margin-left:.6rem;font-size:.85rem"></span>
+  </h2>
+  <p id="fetch-error" class="error" hidden><small>⚠ <span id="fetch-error-text"></span>
+  <span id="fetch-error-hint">設定は「設定」の「受信するメールアドレス」で確かめられます。</span></small></p>
+  <p id="approval-banner" class="appr-banner" hidden><span id="approval-banner-text"></span>
+    <button id="approval-show" class="ghost">確認待ちを見る</button></p>
+  <p id="staff-help" class="staff-help" hidden></p>
+  <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
+  新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
+  （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
+  行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
+  問い合わせの種類（清掃のご依頼など）と担当は自動で入り、返信画面で変えられます。
+  同じ相手からほかにもメールが届いているときは差出人の横に「やり取り」の件数が出て、
+  返信画面の「この相手とのやり取り」で前のメールと送った返信を見られます。
+  受信するメールアドレスが2つ以上あるときは、件名の前にどのアドレスに届いたか（宛先）が出て、
+  上の「アドレス」で絞り込めます（返信は、届いたアドレスから送ります）。
+  <span id="admin-help">受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
+  <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
+  理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
+  <div class="table-wrap"><table id="mail-table">
+    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</section>
+
+<section id="settings-view" hidden>
+  <h2>設定</h2>
+  <div class="settings-grid">
+    <div class="set-card" id="dev-card" hidden>
+      <h3>確認済みの端末（新しい端末のメール確認）</h3>
+      <div id="dev-list"></div>
+      <p><small>メールの確認コードで確認した端末の一覧です。心当たりの無い端末や、
+      なくした端末は「取り消し」を押してください（その端末では次の操作から
+      確認コードが必要になります）。</small></p>
+    </div>
+    <div class="set-card" id="acct-card">
+      <h3>受信するメールアドレス</h3>
+      <p class="set-help"><small>ここに入れたメールアドレス（例: kurosu@… と info@…）に届いたメールを、
+      まとめて1つの「受信箱」に出します。返信は、メールが届いたアドレスを差出人にして送ります。</small></p>
+      <div id="acct-list"></div>
+      <p id="acct-form-title" style="margin:.9rem 0 .3rem;font-size:.9rem;font-weight:600">アドレスを追加</p>
+      <label class="set-row"><span>メールアドレス（返信の差出人）</span>
+        <input type="text" id="acct-from" inputmode="email" autocomplete="off" autocapitalize="off"
+          spellcheck="false" placeholder="kurosu@example.com"></label>
+      <label class="set-row"><span>名前（受信箱に出す）</span>
+        <input type="text" id="acct-label" maxlength="20" autocomplete="off" placeholder="例：黒須"></label>
+      <label class="set-row"><span>IMAPサーバ</span>
+        <input type="text" id="acct-imap-host" autocomplete="off" autocapitalize="off" spellcheck="false"
+          placeholder="imap.example.com"></label>
+      <label class="set-row"><span>IMAPポート</span>
+        <input type="text" id="acct-imap-port" inputmode="numeric" placeholder="993"></label>
+      <label class="set-row"><span>SSLで接続</span>
+        <input type="checkbox" id="acct-imap-ssl"></label>
+      <label class="set-row"><span>IMAPユーザー</span>
+        <input type="text" id="acct-imap-user" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <label class="set-row"><span>IMAPパスワード</span>
+        <input type="password" id="acct-imap-pass" autocomplete="new-password" placeholder="(未設定)"></label>
+      <details class="acct-more" id="acct-more">
+        <summary>くわしい設定（ふつうはそのままで大丈夫です）</summary>
+        <label class="set-row"><span>フォルダ</span>
+          <input type="text" id="acct-imap-folder" autocomplete="off" placeholder="INBOX"></label>
+        <label class="set-row"><span>送った返信を送信済みフォルダに残す</span>
+          <input type="checkbox" id="acct-save-sent"></label>
+        <label class="set-row"><span>送信済みフォルダ（空なら自動）</span>
+          <input type="text" id="acct-sent-folder" autocomplete="off" placeholder="自動（例: Sent / INBOX.Sent）"></label>
+        <label class="set-row"><span>送信用のユーザー（空なら共通）</span>
+          <input type="text" id="acct-smtp-user" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <label class="set-row"><span>送信用のパスワード</span>
+          <input type="password" id="acct-smtp-pass" autocomplete="new-password" placeholder="(未設定)"></label>
+        <p class="set-help"><small>送信用のユーザーとパスワードは、ふだんは空のままで大丈夫です
+        （下の「返信の送信（SMTP）」の共通の設定で送ります）。返信を送ったときに
+        「差出人のアドレスを断られました」と出るアドレスだけ、そのアドレスで送信サーバに
+        ログインするユーザー（ふつうはメールアドレス）とパスワードを入れてください。</small></p>
+      </details>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.5rem">
+        <button id="acct-save">アドレスを追加</button>
+        <button id="acct-cancel" class="ghost" hidden>やめる</button>
+        <span id="acct-msg"></span>
+      </div>
+      <p><small>IMAPサーバ・ユーザー・パスワードは、メール業者（レンタルサーバ）の案内に書いてあります
+      （同じ会社のアドレスなら、サーバはふつう同じです）。名前は受信箱の「宛先」に出ます（空なら
+      アドレスの @ の前）。「株式会社◯◯ &lt;info@…&gt;」のように入れると、返信の差出人に名前も出ます。
+      受信箱のメールは変更しません（既読も付きません）。この画面から送った返信は、そのアドレスの
+      送信済みフォルダにも控えを残すので、Webメールの「送信済み」からも見られます。
+      「止める」と、そのアドレスは受信しません（届いたメールは残ります）。「削除」しても、
+      届いたメールは消えません（受信箱では「削除したアドレス」と出ます）。
+      パスワードは画面に出ません（変えるときだけ入れてください）。
+      このカードは、ボタンを押したときに保存されます（下の「保存」は要りません）。
+      追加・変更したら「接続テスト」で確かめてください。</small></p>
+    </div>
+    <div class="set-card">
+      <h3>メールの受信</h3>
+      <label class="set-row"><span>自動受信する</span>
+        <input type="checkbox" id="set-mail-fetch-enabled"></label>
+      <label class="set-row"><span>自動受信の間隔（分）</span>
+        <input type="number" id="set-mail-fetch-interval" min="1" max="60"></label>
+      <p class="set-help"><small>新しいメールが届いていないか、何分ごとに受信サーバへ確かめに行くかです
+      （1〜60分。おすすめは5分）。短くすると早く届きますが、受信サーバへの接続が増えます。
+      開いている受信箱の画面は、押さなくても1分ごとに自動で新しくなります
+      （ブラウザのタブの名前に、未対応の数が出ます）。</small></p>
+      <label class="set-row"><span>初回に遡る日数</span>
+        <input type="number" id="set-mail-fetch-days" min="1" max="365"></label>
+      <label class="set-row"><span>メール保存日数（0=削除なし）</span>
+        <input type="number" id="set-mail-retention" min="0" max="3650"></label>
+      <label class="set-row"><span>優先度[高]の受信を通知</span>
+        <input type="checkbox" id="set-notify-mail-high"></label>
+      <p><small>「受信するメールアドレス」のメールボックスを定期的に受信し、「受信箱」に優先度順で
+      表示します。初めて受信するアドレスは「初回に遡る日数」の分だけ前のメールから取り込みます。
+      添付ファイルもこのサーバに保存し、「メール保存日数」を過ぎるとメールと一緒に消えます。</small></p>
+    </div>
+    <div class="set-card" id="ai-card">
+      <h3>AI返信（Claude）</h3>
+      <label class="set-row"><span>受信時に下書きを自動生成</span>
+        <input type="checkbox" id="set-mail-auto-draft"></label>
+      <label class="set-row"><span>Claude APIキー</span>
+        <input type="password" id="set-anthropic-key" placeholder="(変更時のみ入力)"
+          autocomplete="off"></label>
+      <button class="ghost" id="set-anthropic-key-clear" hidden>キーを消す（AIを使わない）</button>
+      <p class="set-help"><small>キーは Anthropic 社の管理画面
+      <b>console.anthropic.com</b> の「API Keys」で作れます。
+      AIを使った分だけ料金がかかります（Anthropic 社からの請求です）。
+      キーはパスワードと同じです。<b>チャットやメールに貼り付けたり、人に教えたりしないでください</b>
+      （もれたときは管理画面でそのキーを削除し、作り直してください）。</small></p>
+      <label class="set-row"><span>返信文の作成に使うモデル</span>
+        <select id="set-anthropic-model"></select></label>
+      <label class="set-row"><span>優先度の判定に使うモデル</span>
+        <select id="set-anthropic-classify-model"></select></label>
+      <p class="set-help"><small>優先度の判定は届いたメール全部に使うので、安くて速い「低価格」がおすすめです
+      （問い合わせの種類も、このとき一緒に選びます）。
+      返信画面の「カレンダーに登録」でメールから日付を読み取るときも、このモデルを使います。
+      「受信時に下書きを自動生成」がONだと、メール1通ごとに返信文用のモデルも使います
+      （費用を抑えたいときはOFFにして、必要なメールだけ「返信文を生成」を押してください）。</small></p>
+      <button class="ghost" id="set-test-ai">AI接続テスト</button>
+      <div id="test-ai-msg"></div>
+      <p id="ai-status" class="error" hidden></p>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem">返信の署名（本文の末尾に付加）</label>
+      <textarea id="set-mail-signature" placeholder="――――――――&#10;株式会社◯◯ 総務部"></textarea>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem">生成時の追加指示（文体・注意事項など）</label>
+      <textarea id="set-mail-instructions" placeholder="例：文末は「よろしくお願いいたします。」で締める"></textarea>
+      <label class="set-row" style="margin-top:.5rem"><span>VIP差出人（カンマ区切り）</span>
+        <input type="text" id="set-mail-vip" placeholder="ceo@client.example.com"></label>
+      <label class="set-row"><span>優先度[高]キーワード</span>
+        <input type="text" id="set-mail-keywords"></label>
+      <p><small>APIキーを設定すると、優先度の判定と返信文の下書きをAI（Claude）が行います。
+      未設定でもキーワードによる分類と定型文の下書きで動作します。
+      キーの間違いや残高不足などでAIを使えないときも、自動でキーワード判定・定型文に切り替わり、
+      理由をこのカードと受信箱に表示します。キーやモデルを変えたら「保存」→「AI接続テスト」で
+      確かめてください。
+      <b style="color:#c62828">返信は必ず内容を確認してから送信してください。</b></small></p>
+    </div>
+    <div class="set-card">
+      <h3>返信の送信（SMTP）</h3>
+      <label class="set-row"><span>SMTPサーバ</span>
+        <input type="text" id="set-smtp-host" placeholder="smtp.example.com"></label>
+      <label class="set-row"><span>SMTPポート</span>
+        <input type="text" id="set-smtp-port" placeholder="587"></label>
+      <label class="set-row"><span>SMTPユーザー</span>
+        <input type="text" id="set-smtp-user"></label>
+      <label class="set-row"><span>SMTPパスワード</span>
+        <input type="password" id="set-smtp-pass" placeholder="(変更時のみ入力)"></label>
+      <label class="set-row"><span>差出人メール</span>
+        <input type="text" id="set-mail-from"></label>
+      <p><small>返信の送信と通知メールに使います。この設定は勤怠管理の通知メールと共通です
+      （どちらの画面で変更しても同じ設定が変わります）。返信の差出人は、メールが届いたアドレス
+      （「受信するメールアドレス」）です。ここの差出人メールは、通知メールと、一覧から削除した
+      アドレスに届いたメールへの返信に使います。</small></p>
+      <div style="margin-top:.7rem;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <input type="email" id="set-test-email-to" placeholder="送信先メール（例 you@example.com）"
+          style="flex:1;min-width:180px;padding:.4rem;border:1px solid #ccc;border-radius:6px">
+        <button class="ghost" id="set-test-email">テスト送信</button>
+      </div>
+      <span id="test-email-msg" style="font-size:.85rem"></span>
+    </div>
+    <div class="set-card" id="remind-card">
+      <h3>返事をしていないメールのお知らせ</h3>
+      <label class="set-row"><span>お知らせする</span>
+        <input type="checkbox" id="set-remind-enabled"></label>
+      <label class="set-row"><span>優先度[高]：届いてから何時間で</span>
+        <input type="number" id="set-remind-high" min="0" max="168"></label>
+      <label class="set-row"><span>優先度[中]・[低]：届いてから何時間で</span>
+        <input type="number" id="set-remind-normal" min="0" max="168"></label>
+      <p class="set-help"><small>届いてからこの時間がたっても「未対応」のままのメールを、
+      Slack やメールでまとめてお知らせします（1通につき1回だけ。返信するか「対応不要」にすれば、お知らせしません）。
+      0 にすると、その優先度のメールはお知らせしません。</small></p>
+      <div class="set-row quiet-row"><span>お知らせしない時間帯</span>
+        <span class="quiet-sel">
+          <select id="set-remind-quiet-from" aria-label="お知らせしない時間帯の始まり"></select>
+          <span>〜</span>
+          <select id="set-remind-quiet-to" aria-label="お知らせしない時間帯の終わり"></select>
+        </span></div>
+      <p class="set-help"><small>夜中などに届かないよう、この時間帯はお知らせを止めておき、
+      終わった後にまとめて送ります（<span id="quiet-tz">日本時間</span>）。「なし」にすると、いつでも送ります。</small></p>
+      <label class="set-row"><span>通知先メール（カンマ区切り）</span>
+        <input type="text" id="set-mail-to" placeholder="boss@example.com" autocomplete="off"></label>
+      <label class="set-row"><span>Slack（Webhook の URL）</span>
+        <input type="password" id="set-slack" placeholder="(未設定)" autocomplete="off"></label>
+      <button class="ghost" id="set-slack-clear" hidden>Slackに送らない（URLを消す）</button>
+      <p class="set-help"><small>お知らせは、ここに入れた送り先に届きます（両方入れれば両方）。
+      通知先メールには「返信の送信（SMTP）」の設定で送ります。どちらも空なら、お知らせはしません。
+      この2つは「優先度[高]の受信を通知」や勤怠管理の通知と共通です。
+      Slack の URL は、Slack の「Incoming Webhook」で作れます（パスワードと同じように扱ってください）。</small></p>
+      <p id="remind-dest"></p>
+      <label class="set-row"><span>メール画面のアドレス</span>
+        <input type="text" id="set-mail-page-url" inputmode="url" autocomplete="off"></label>
+      <p class="set-help"><small>お知らせに載せる、この画面のアドレスです（押すと受信箱を開けます）。<span
+      id="page-url-help"></span></small></p>
+      <button class="ghost" id="set-test-remind">テスト送信</button>
+      <div id="test-remind-msg"></div>
+    </div>
+    <div class="set-card" id="report-card">
+      <h3>週ごとのまとめ</h3>
+      <label class="set-row"><span>週ごとのまとめを送る</span>
+        <input type="checkbox" id="set-report-enabled"></label>
+      <label class="set-row"><span>送る曜日</span>
+        <select id="set-report-weekday"></select></label>
+      <label class="set-row"><span>送る時刻</span>
+        <select id="set-report-hour"></select></label>
+      <p class="set-help"><small>毎週この曜日・時刻（<span id="report-tz">日本時間</span>）に、
+      その前の7日間（月曜なら、前の週の月曜〜日曜）のメールの様子を1通にまとめて送ります。
+      届いたメールの数（優先度・種類ごと）、返信した数と返信までの時間、対応不要にした数、
+      いま未対応のメール、よく届いた差出人などです。
+      送り先は「返事をしていないメールのお知らせ」と同じ（通知先メール・Slack）です。</small></p>
+      <p id="report-next"></p>
+      <div class="report-btns">
+        <button class="ghost" id="set-report-preview">見本を見る</button>
+        <button class="ghost" id="set-report-send">今すぐ送る</button>
+      </div>
+      <div id="report-msg"></div>
+      <pre id="report-preview" hidden></pre>
+    </div>
+    <div class="set-card" id="cat-card">
+      <h3>種類と担当（問い合わせの自動仕分け）</h3>
+      <label style="display:block;margin:.2rem 0;font-size:.9rem" for="set-mail-categories">種類の一覧（1行に1つ）</label>
+      <textarea id="set-mail-categories" rows="7"></textarea>
+      <p class="set-help"><small>届いたメールを、この中のどれか1つに自動で仕分けます。
+      上から順に、受信箱と返信画面の選択欄に並びます。
+      「その他」（どれにも当てはまらないとき）は、消しても最後に自動で入ります。</small></p>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="set-mail-category-keywords">種類を決める言葉</label>
+      <textarea id="set-mail-category-keywords" rows="8"
+        placeholder="清掃のご依頼: 清掃, クリーニング, リネン"></textarea>
+      <p class="set-help"><small>1行に「種類: 言葉, 言葉」の形で書きます。
+      件名・本文・差出人にその言葉が入っていると、その種類にします。
+      上の行から順に調べ、最初に当てはまった種類になります（どれにも当てはまらなければ「その他」）。
+      AI（Claude）を使っているときは AI が種類を選び、ここに書いた言葉は選ぶときの目安として伝えます。</small></p>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="set-mail-category-assignees">種類ごとの担当</label>
+      <textarea id="set-mail-category-assignees" rows="3"
+        placeholder="運営代行のご相談: 黒須"></textarea>
+      <p class="set-help"><small>1行に「種類: 名前」の形で書くと、その種類のメールが届いたときに
+      担当が自動で入ります（1つの種類に1人まで。書いていない種類は担当なし）。
+      名前は、このサーバに登録されている人の名前と同じにしてください。
+      <span id="asg-names"></span></small></p>
+      <p><small>種類と担当は、受信箱の上の「種類」「担当」で絞り込めます。返信画面で
+      メールごとに変えることもできます（担当がいないメールの種類を変えると、その種類の担当が入ります）。
+      この機能を入れる前に届いたメールは「未分類」と出ます。
+      変えた内容は下の「保存」を押すと保存され、これから届くメールから使われます。</small></p>
+    </div>
+    <div class="set-card" id="notion-card">
+      <h3>Notion（案件DB）</h3>
+      <p class="set-help"><small>返信画面の「Notionに登録」を押すと、問い合わせのメールを Notion の
+      データベース（運営代行 案件DB など）に1件＝1行で登録します。メールの本文と添付ファイル
+      （図面・写真など）も、そのページに入ります。使い始めるときは、次の4つをしてください。</small></p>
+      <ol class="ntn-steps">
+        <li>パソコンで <b>notion.so/my-integrations</b> を開き、「新しいインテグレーション」（連携）を
+        作ります（種類は「内部」、名前は「メール画面」など。「機能」は「コンテンツを読み取る」
+        「コンテンツを更新」「コンテンツを挿入」にチェック）。</li>
+        <li>作った連携の「シークレット」を「表示」→「コピー」し、下の「Notionのシークレット」に
+        貼り付けます。<b>シークレットはパスワードと同じです。チャットやメールには貼り付けないで
+        ください</b>（もれたときは、同じ画面でシークレットを作り直してください）。</li>
+        <li>Notion で案件DBを開き、右上の「…」→「接続」から、作った連携を選んで追加します
+        （これをしないと「連携が招待されていません」と出ます）。</li>
+        <li>案件DBのURL（ブラウザのアドレス欄の文字。「…」→「リンクをコピー」でも取れます）を
+        下の「データベースのURL」に貼り付けて「保存」を押し、「Notion接続テスト」で確かめます。</li>
+      </ol>
+      <label class="set-row"><span>Notionのシークレット</span>
+        <input type="password" id="set-notion-token" placeholder="(未設定)" autocomplete="off"></label>
+      <button class="ghost" id="set-notion-token-clear" hidden>シークレットを消す（Notionに登録しない）</button>
+      <label style="display:block;margin:.6rem 0 .2rem;font-size:.9rem" for="set-notion-db">データベースのURL</label>
+      <input type="text" id="set-notion-db" inputmode="url" autocomplete="off" autocapitalize="off"
+        spellcheck="false" placeholder="https://www.notion.so/…">
+      <p class="set-help" style="margin-top:.3rem"><small>保存すると、URLの中のデータベースの番号（ID）だけが残ります。</small></p>
+      <label class="set-row"><span>AIに案件名とほかの列も入れてもらう</span>
+        <input type="checkbox" id="set-notion-ai"></label>
+      <p class="set-help"><small>「AI返信（Claude）」のキーがあるときだけ使います。AI がメールを読んで、
+      案件名と、所在地・間取りなどメールに書いてある列を入れます（選択の列は Notion にある選択肢だけ。
+      メールに書いていないことは入れず、空のままにします）。1回あたり 1 円未満が目安です。</small></p>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="set-notion-map">列に入れるもの（1行に「Notionの列の名前 = 入れるもの」）</label>
+      <textarea id="set-notion-map" rows="6" placeholder="案件名 = 件名"></textarea>
+      <p class="set-help"><small>右側に書けるもの: 件名・差出人・差出人の名前・差出人のメール・電話番号・
+      受信日・受信日時・本文・種類・担当。「」で囲むと、その文字をそのまま入れます
+      （例: ステータス = 「問い合わせ受付」。選択の列は、Notion にある選択肢と同じ文字にしてください）。
+      「」だけにすると、その列は空のままにします（AI も入れません）。
+      AI を使うときは、件名・差出人・電話番号などメールの文から読む列は、AI が読み取った値を優先します
+      （ホームページのフォームから届いたメールでも、お客様の名前と連絡先が入るように）。
+      ここに書いていない列も、メールに書いてあれば AI が入れます。</small></p>
+      <button class="ghost" id="set-test-notion">Notion接続テスト</button>
+      <div id="test-notion-msg"></div>
+      <div id="notion-cols" class="ntn-cols" hidden></div>
+      <p><small>登録した内容（メールの本文・添付ファイル）は、そのデータベースを見られる人
+      （共有している提携先なども）みんなが見られます。Notion に送るのは「Notionに登録」を押したメールだけです。
+      シークレット・URL・列に入れるものは、下の「保存」で保存されます。</small></p>
+    </div>
+    <div class="set-card" id="tpl-card">
+      <h3>定型文（よく使う返信文）</h3>
+      <div id="tpl-list"></div>
+      <p id="tpl-form-title" style="margin:.9rem 0 .3rem;font-size:.9rem;font-weight:600">新しい定型文</p>
+      <label style="display:block;margin:.2rem 0;font-size:.9rem" for="tpl-name">名前（返信画面の一覧に出ます）</label>
+      <input type="text" id="tpl-name" maxlength="40" placeholder="例：清掃のご依頼の受付">
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="tpl-body">本文</label>
+      <div class="tpl-ph">差し込み：
+        <button type="button" class="ghost" data-ph="{相手の名前}">相手の名前</button>
+        <button type="button" class="ghost" data-ph="{件名}">件名</button>
+        <button type="button" class="ghost" data-ph="{日付}">今日の日付</button>
+      </div>
+      <textarea id="tpl-body" placeholder="{相手の名前} 様&#10;&#10;いつもお世話になっております。"></textarea>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.4rem">
+        <button id="tpl-save">定型文を追加</button>
+        <button id="tpl-cancel" class="ghost" hidden>やめる</button>
+        <span id="tpl-msg" style="font-size:.85rem"></span>
+      </div>
+      <p><small>返信画面の「定型文を入れる」から選ぶと、返信文に入ります。
+      本文に <b>{相手の名前}</b>（差出人の名前）・<b>{件名}</b>（届いたメールの件名）・
+      <b>{日付}</b>（今日の日付）と書いておくと、入れるときにそのメールの内容に置き換わります
+      （「差し込み」のボタンで入れられます）。【 】の部分は、物件などに合わせて書き換えてください。
+      定型文は、このカードのボタンを押したときに保存されます（下の「保存」は要りません）。</small></p>
+    </div>
+    <div class="set-card" id="staff-card">
+      <h3>メール担当者（スタッフ）</h3>
+      <p class="set-help"><small>「メール担当者」にした人は、自分のトークン（合言葉）でこの画面に入り、
+      受信箱を見て返信文を作れます（返信文の生成・定型文・CC・BCC・種類と担当も使えます）。
+      <b>送信はできません。</b>返信文ができたら「確認をお願いする」を押すと、管理者に知らせが届き、
+      受信箱の「確認待ち」に入ります。管理者は返信画面で返信文を確かめて（直してもかまいません）
+      「承認して送信」を押すか、コメントを書いて「差し戻す」を押します。
+      設定・定型文の管理・Notionへの登録・「対応不要にする」は、管理者だけができます。</small></p>
+      <label class="set-row"><span>メール担当者の返信は、管理者が確認してから送る（「確認をお願いする」を使う）</span>
+        <input type="checkbox" id="set-require-approval"></label>
+      <p class="set-help"><small>オフにすると「確認をお願いする」のボタンが出なくなり、メール担当者は
+      返信文を下書きに残すだけになります（送信は、オンでもオフでも管理者だけです）。
+      確認のお願いの知らせは、「返事をしていないメールのお知らせ」と同じ送り先（通知先メール・Slack）に届きます。</small></p>
+      <div id="staff-list"></div>
+      <div id="staff-msg"></div>
+      <p><small>一覧は、このサーバに登録されている人です。「担当にする」「外す」は、押したときに保存されます
+      （下の「保存」は要りません。外すと、その人は次の操作からこの画面を使えなくなります）。
+      人の追加とトークン（合言葉）の発行は、勤怠の管理画面の「メンバー」で行います
+      （メール専用のサーバでは、サーバで <b>python manage.py add-user 名前 --mail-staff</b> を実行すると、
+      メール担当者として作ってトークンを表示します）。トークンは本人だけに伝えてください。
+      新しい端末の確認（確認コード）を使っているときは、メール担当者が初めて使う端末でも確認コードが要ります。
+      コードは管理者のメールに届くので、本人からのログインか確かめてから伝えてください。</small></p>
+    </div>
+  </div>
+  <p style="margin-top:1rem">
+    <button id="set-save">保存</button>
+    <span id="set-msg" style="margin-left:.8rem;color:#0a7d32"></span>
+  </p>
+</section>
+
+</main>
+</div>
+
+<div id="mail-modal" class="modal" hidden>
+  <div class="box">
+    <button id="m-back" class="ghost" hidden>← 前のメールに戻る</button>
+    <h2 id="m-subject" style="margin:.2rem 0"></h2>
+    <div class="mail-meta" id="m-meta"></div>
+    <div class="mail-body" id="m-body"></div>
+    <div class="atts" id="m-atts" hidden></div>
+    <details class="thread" id="m-thread" hidden>
+      <summary id="m-thread-title">この相手とのやり取り</summary>
+      <div class="thr-list" id="m-thread-list"></div>
+    </details>
+    <div class="cal-open" id="m-cal-open"><button id="m-cal" class="ghost">📅 カレンダーに登録</button></div>
+    <div class="cal-panel" id="m-cal-panel" hidden>
+      <div class="cal-head">📅 カレンダーに登録</div>
+      <div id="m-cal-src"></div>
+      <div id="m-cal-err" class="error" style="font-size:.8rem" hidden></div>
+      <div id="m-cal-list" style="display:flex;flex-direction:column;gap:.6rem"></div>
+      <div class="cal-btns">
+        <button id="m-cal-add" class="ghost">＋ 予定を追加</button>
+        <button id="m-cal-close" class="ghost">閉じる</button>
+      </div>
+      <small class="cal-help">「Googleカレンダーで開く」を押すと、新しいタブにこの内容が入ったGoogleカレンダーの画面が出ます。
+      そこで「保存」を押すと登録されます（Googleにログインしている必要があります）。
+      iPhone のカレンダーや Outlook に入れるときは「予定ファイル(.ics)を保存」を押し、出てきた画面（または「ファイル」アプリの「ダウンロード」）から追加してください。
+      この画面の内容は、押したときにだけ Google やファイルに渡ります。</small>
+    </div>
+    <div class="ntn-box" id="m-ntn" hidden>
+      <div class="ntn-btns">
+        <button id="m-ntn-reg" class="ghost">🗂 Notionに登録</button>
+        <a id="m-ntn-open" class="ntn-link" target="_blank" rel="noopener noreferrer" hidden>Notionで開く ↗</a>
+        <button id="m-ntn-again" class="ghost" hidden>もう一度登録</button>
+      </div>
+      <div id="m-ntn-msg" class="ntn-msg"></div>
+    </div>
+    <div style="display:flex;gap:.6rem;align-items:center;margin-top:.8rem;flex-wrap:wrap">
+      <label class="m-field">優先度
+        <select id="m-priority">
+          <option value="1">高</option><option value="2">中</option><option value="3">低</option>
+        </select>
+      </label>
+      <label class="m-field">種類 <select id="m-category"></select></label>
+      <label class="m-field">担当 <select id="m-assignee"></select></label>
+      <span id="m-reason" style="font-size:.8rem;color:#6b7280"></span>
+    </div>
+    <div class="rcpt">
+      <div class="rcpt-row" id="m-from-row"><span>差出人</span><span id="m-from"></span></div>
+      <div class="rcpt-row"><span>宛先</span><span id="m-to"></span></div>
+      <label class="rcpt-all" id="m-cc-all-row" hidden>
+        <input type="checkbox" id="m-cc-all">CCの人にも送る（全員に返信）<span id="m-cc-count" style="font-size:.8rem;color:#6b7280"></span></label>
+      <label class="rcpt-row"><span>CC</span>
+        <input type="text" id="m-cc" inputmode="email" autocomplete="off" autocapitalize="off"
+          spellcheck="false" placeholder="なし（追加するときは「,」で区切って入力）"></label>
+      <label class="rcpt-row"><span>BCC</span>
+        <input type="text" id="m-bcc" inputmode="email" autocomplete="off" autocapitalize="off"
+          spellcheck="false" placeholder="任意（ほかの人には見えません）"></label>
+    </div>
+    <div class="appr" id="m-appr" hidden>
+      <div class="appr-head" id="m-appr-head"></div>
+      <div id="m-appr-note"></div>
+      <div class="appr-help" id="m-appr-help"></div>
+      <div class="appr-return" id="m-return-box" hidden>
+        <textarea id="m-return-note" maxlength="500"
+          placeholder="差し戻すときのコメント（どこを直してほしいか。例：料金は2泊分で書いてください）"></textarea>
+        <button id="m-return" class="ghost">↩ 差し戻す</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:.5rem;align-items:center;justify-content:space-between;margin-top:.8rem;flex-wrap:wrap">
+      <label for="m-draft" style="font-size:.85rem;color:#374151">返信文（編集できます）
+        <span id="m-draft-src" style="color:#9ca3af;font-size:.8rem"></span></label>
+      <select id="m-tpl" aria-label="定型文を入れる"><option value="">定型文を入れる…</option></select>
+    </div>
+    <textarea id="m-draft" placeholder="「返信文を生成」を押すと下書きが入ります"></textarea>
+    <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem;flex-wrap:wrap">
+      <input type="text" id="m-inst" placeholder="生成の方針（任意。例：金曜までに対応すると伝える）">
+      <button id="m-gen" class="ghost">返信文を生成</button>
+    </div>
+    <div id="m-ai-error" class="error" style="font-size:.8rem;margin-top:.3rem;overflow-wrap:anywhere" hidden></div>
+    <p id="m-staff-help" class="staff-help" hidden></p>
+    <div id="m-req-row" hidden>
+      <input type="text" id="m-req-note" maxlength="500"
+        placeholder="管理者へのひとこと（任意。例：料金のところを見てください）">
+    </div>
+    <div class="bar" style="margin-top:.8rem">
+      <button id="m-archive" class="ghost">対応不要にする</button>
+      <span id="m-status"></span>
+      <button id="m-send">返信を送信</button>
+      <button id="m-request" hidden>確認をお願いする</button>
+      <button id="m-close" class="ghost">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<div id="att-viewer" class="modal" hidden>
+  <img id="att-viewer-img" alt="">
+  <button class="ghost">閉じる</button>
+</div>
+
+<script>
+// 勤怠画面と同じトークンキー。別ドメインで開いた場合は localStorage も別になるので、
+// メール画面では改めてログインが必要（意図的な分離）。
+const KEY = "zatsumu_token";
+const $ = id => document.getElementById(id);
+const PR = { 1: "高", 2: "中", 3: "低" };
+const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応不要",
+             pending_approval: "確認待ち" };
+// cursorSet: 返信文の欄を人がタップ・キー操作したか (定型文をカーソル位置に入れてよいかの判断用)
+// autoSel: 画面が返信文を入れ替えた直後のカーソルの位置 (ここから動いていれば人が動かした)
+// ccCandidates: 全員に返信の CC 候補 / ccSaved: 「CCの人にも送る」を外す前の CC の欄
+// category / assigneeId / assigneeName: 保存済みの種類と担当 (変えられなかったときに選択欄を戻す用)
+// notion: Notion に登録したページ (notion_page_url・登録した時刻・人。まだなら URL が空)
+// mail: 開いているメール (サーバから受け取った詳細。確認のお願い・差し戻しの表示を直す用)
+const EMPTY_MODAL = { id: null, savedDraft: "", cursorSet: false, autoSel: null,
+                      ccCandidates: "", ccSaved: "",
+                      category: "", assigneeId: null, assigneeName: "", notion: {}, mail: null };
+let modal = { ...EMPTY_MODAL };
+let viewName = "inbox";
+
+// 新しい端末の確認 (サーバで ZATSUMU_LOGIN_VERIFY_EMAIL が有効なときだけ使われる)。
+// 確認済みの端末トークンはログアウトしても消さない (次回また確認コードが要らないように)
+const DKEY = "zatsumu_device";
+const DEVICE_REQUIRED = "device_verification_required";
+// メール画面を使えない (管理者でもメール担当者でもない。メール担当者から外された) ときの 403
+const NO_MAIL_ACCESS = "mail_access_required";
+
+// ?token= / #token= からの移行: 保存して URL から即座に消す(#はアクセスログに残らない)
+// #device=<端末トークン> (サーバで manage.py issue-device が表示) も同じ扱い。両方同時も可
+const url = new URL(location);
+const _hash = new URLSearchParams(url.hash.slice(1));
+const _tok = _hash.get("token") || url.searchParams.get("token");
+const _dev = _hash.get("device");
+if (_tok) localStorage.setItem(KEY, _tok);
+if (_dev) localStorage.setItem(DKEY, _dev);
+if (_tok || _dev) {
+  url.searchParams.delete("token");
+  url.hash = "";
+  history.replaceState(null, "", url);
+}
+
+const headers = () => {
+  const h = { Authorization: "Bearer " + localStorage.getItem(KEY) };
+  const dev = localStorage.getItem(DKEY);
+  if (dev) h["X-Device-Token"] = dev;
+  return h;
+};
+// 401 が「この端末はまだ確認していない」なのか (管理者トークン自体は正しい)
+const needsDevice = async r =>
+  r.status === 401 && (await r.clone().json().catch(() => ({}))).detail === DEVICE_REQUIRED;
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+  if (r.status === 401) {
+    if (await needsDevice(r)) showDeviceVerify(); else showLogin(true);
+    throw new Error("auth");
+  }
+  // メール担当者から外されたなど (このトークンではもうメール画面を使えない)
+  if (r.status === 403 &&
+      (await r.clone().json().catch(() => ({}))).detail === NO_MAIL_ACCESS) {
+    showLogin(true);
+    throw new Error("auth");
+  }
+  return r;
+}
+async function apiJson(path, opts = {}) {
+  const r = await api(path, opts);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    alert(e.detail || "エラーが発生しました");
+    throw new Error(e.detail || "api error");
+  }
+  return r.json();
+}
+// innerHTML に入れる外部由来の文字列(差出人・件名など)は必ずこれを通す
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function showLogin(withError) {
+  stopPolling();
+  $("app").hidden = true;
+  $("device-verify").hidden = true;
+  $("login").hidden = false;
+  $("login-error").hidden = !withError;
+}
+
+let appSettings = {};
+let baseTitle = "メール対応";   // タブの名前 (前に未対応の数を付ける)
+// ログインしている人 { name, role: "admin" (管理者) / "staff" (メール担当者), can_send,
+// require_approval (「確認をお願いする」を使う設定か) }。画面はこれでボタンを出し分けるが、
+// できること (送信・設定など) はサーバが必ず確かめる
+let me = { role: "" };
+const isAdmin = () => me.role === "admin";
+async function showApp() {
+  // ログインの確認をかねて、自分の役割と表示に使う設定を聞く (管理者・メール担当者だけが通る)
+  const r = await fetch("/api/mail/me", { headers: headers() });
+  if (await needsDevice(r)) { showDeviceVerify(); return; }
+  if (!r.ok) { showLogin(localStorage.getItem(KEY) !== null); return; }
+  me = await r.json();
+  if (isAdmin()) {
+    // 管理者は設定画面の分も読む (メール担当者は設定を読めない)
+    const r2 = await fetch("/api/settings", { headers: headers() });
+    if (await needsDevice(r2)) { showDeviceVerify(); return; }
+    if (!r2.ok) { showLogin(true); return; }
+    appSettings = await r2.json();
+  } else {
+    appSettings = { company_name: me.company_name, timezone: me.timezone,
+                    mail_category_list: me.mail_category_list };
+  }
+  const name = appSettings.company_name || "";
+  $("brand").textContent = name ? name + " メール" : "メール対応";
+  baseTitle = (name ? name + " " : "") + "メール対応";
+  document.title = baseTitle;
+  $("login").hidden = true;
+  $("app").hidden = false;
+  applyRole();
+  if (isAdmin()) fillSettings(appSettings);
+  else renderCategoryFilter();
+  loadAssignees();   // 担当の選択肢は後から入る (受信箱を開くのを待たせない)
+  showInbox();
+  schedulePoll();    // 開いたままでも、新しいメールが届いたら受信箱を新しくする
+}
+
+// 役割に合わせて、出すもの・案内を変える。メール担当者には設定・送信などを出さない
+function applyRole() {
+  const admin = isAdmin();
+  $("nav-settings").hidden = !admin;
+  $("whoami").textContent = me.name ? me.name + (admin ? "" : "（メール担当）") : "";
+  $("admin-help").hidden = !admin;
+  $("fetch-error-hint").textContent = admin
+    ? "設定は「設定」の「受信するメールアドレス」で確かめられます。"
+    : "続くときは管理者に伝えてください。";
+  $("staff-help").hidden = admin;
+  $("staff-help").textContent = admin ? "" : me.require_approval
+    ? "メール担当者としてログインしています。返信の送信は管理者だけができます。返信画面で返信文を作ったら" +
+      "「確認をお願いする」を押してください（管理者が確かめて送ります。管理者が直してほしいところがあると" +
+      "「差し戻し」と出て、返信画面にコメントが出ます）。"
+    : "メール担当者としてログインしています。返信の送信は管理者だけができます。返信文は閉じると" +
+      "下書きに残るので、管理者に送信を頼んでください。";
+  if (!admin) { $("ai-warn").hidden = true; }
+}
+
+function switchView(name) {
+  viewName = name;
+  $("inbox").hidden = name !== "inbox";
+  $("settings-view").hidden = name !== "settings";
+  $("nav-inbox").classList.toggle("active", name === "inbox");
+  $("nav-settings").classList.toggle("active", name === "settings");
+}
+
+/* ---------- 受信の様子 (未対応の数・最終受信・受信の失敗) ---------- */
+let mailStatus = null;   // 前にサーバに聞いた受信の様子 (変わったかを比べる用)
+let connLost = false;    // サーバに聞けなかった (通信が切れた・サーバの更新中など)
+
+// サーバに受信の様子を聞いて画面に出す。前に聞いたときから受信箱の中身
+// (一番新しいメール・未対応の数) が変わっていたら true を返す。
+// ログインが切れていたら api() がログイン画面に切り替えて "auth" で投げる
+async function checkStatus() {
+  const r = await api("/api/mail/status");
+  if (!r.ok) throw new Error("status " + r.status);
+  const s = await r.json();
+  // 受信するアドレスを足した・消した・名前を変えたときも、受信箱 (宛先の表示) を取り直す
+  const acctSig = x => (x.accounts || []).map(a => `${a.id}:${a.label}`).join("\n") +
+    "|" + (x.deleted_mail_count || 0);
+  // 確認待ちの数が変わった (確認のお願いが来た・送った・差し戻した) ときも取り直す
+  const changed = !!mailStatus &&
+    (s.newest_id !== mailStatus.newest_id || s.unhandled !== mailStatus.unhandled ||
+     s.pending_approval !== mailStatus.pending_approval || acctSig(s) !== acctSig(mailStatus));
+  mailStatus = s;
+  connLost = false;
+  renderStatus();
+  return changed;
+}
+async function refreshStatus() {
+  try { await checkStatus(); } catch {}   // 失敗時は静かに諦める(アラートは出さない)
+}
+
+// 日時を会社のタイムゾーン (設定。既定は日本時間) で文字にする
+function fmtTz(date, o) {
+  try { return date.toLocaleString("ja-JP", { ...o, timeZone: appSettings.timezone || "Asia/Tokyo" }); }
+  catch { return date.toLocaleString("ja-JP", o); }   // ブラウザが知らないタイムゾーン
+}
+// 時刻を「10:03」にする。今日でなければ日付も付ける
+function fmtTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const day = { month: "numeric", day: "numeric" };
+  const time = fmtTz(d, { hour: "2-digit", minute: "2-digit" });
+  return fmtTz(d, day) === fmtTz(new Date(), day) ? time : `${fmtTz(d, day)} ${time}`;
+}
+// 日時を「2026/10/20 14:03」にする (やり取りの一覧用)
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : fmtTz(d, { year: "numeric", month: "numeric", day: "numeric",
+                                     hour: "2-digit", minute: "2-digit" });
+}
+
+// 未対応の数 (受信箱のボタン・タブの名前)、最終受信の時刻、直近の受信の失敗を出す。
+// 失敗の理由はサーバが分かりやすい言葉にしたもの。文字は textContent で入れる
+function renderStatus() {
+  const s = mailStatus || {};
+  const n = s.unhandled || 0;
+  $("inbox-badge").hidden = n === 0;
+  $("inbox-badge").textContent = n;
+  document.title = (n ? `(${n}) ` : "") + baseTitle;
+  // 確認待ち (メール担当者からの確認のお願い)。管理者には受信箱の上にも知らせを出す
+  const pend = s.pending_approval || 0;
+  $("nav-pending").hidden = pend === 0;
+  $("nav-pending").textContent = "確認待ち " + pend;
+  $("approval-banner").hidden = !isAdmin() || pend === 0 || $("filter").value === "pending_approval";
+  $("approval-banner-text").textContent =
+    `📝 メール担当者からの確認のお願いが ${pend} 件あります（返信文を確かめて「承認して送信」か「差し戻す」を押してください）`;
+  const info = [];
+  const accts = s.accounts || [];
+  if (mailStatus && !s.imap_set) {
+    info.push(accts.length ? "受信するメールアドレスを全部止めています" : "受信するメールアドレスが未設定です");
+  } else if (mailStatus) {
+    info.push("最終受信: " + (s.last_fetch_at ? fmtTime(s.last_fetch_at) : "まだありません"));
+    if (s.fetching) info.push("受信中…");
+    else if (!s.auto_fetch) info.push("自動受信はオフです");
+  }
+  if (connLost) info.push("サーバとつながっていません（つながると自動で新しくなります）");
+  $("fetch-info").textContent = info.join("・");
+  // 失敗しているアドレスが複数あるときは、一番長く受信できていないアドレスの理由を出す
+  const err = s.imap_set && s.last_error;
+  $("fetch-error-text").textContent = err
+    ? `${s.last_error_at ? fmtTime(s.last_error_at) + " の" : ""}受信に失敗しました` +
+      (accts.length > 1 && s.last_error_account ? `（${s.last_error_account}）` : "") + ": " +
+      s.last_error.replace(/[。.]?$/, "。") +
+      (s.error_count > 1 ? `ほかに${s.error_count - 1}つのアドレスでも受信できていません。` : "")
+    : "";
+  $("fetch-error").hidden = !err;
+  renderAccountFilter();
+}
+
+/* ---------- 受信箱 ---------- */
+// 種類のバッジ。種類が空 (この機能より前に届いたメール) は「未分類」。種類の名前は esc() を通す
+const catBadge = c => c ? `<span class="cat">${esc(c)}</span>` : '<span class="cat none">未分類</span>';
+// 同じ相手 (同じアドレス) から届いたほかのメールの数。返信画面の「この相手とのやり取り」で見られる
+// 届いたアドレス (受信するアドレスが2つ以上のときだけ出す)。名前は esc() を通す
+const acctList = () => (mailStatus && mailStatus.accounts) || [];
+const showAccounts = () => acctList().length >= 2 ||
+  (acctList().length >= 1 && ((mailStatus && mailStatus.deleted_mail_count) || 0) > 0);
+const acctBadge = m => !showAccounts() ? "" : m.account_id
+  ? `<span class="acct" title="このアドレスに届いたメールです（返信もこのアドレスから送ります）">宛先: ${esc(m.account_label)}</span>`
+  : '<span class="acct gone" title="一覧から削除したアドレスに届いたメールです">宛先: 削除したアドレス</span>';
+const threadBadge = m => m.thread_count > 0
+  ? ` <span class="thr-badge" title="この相手から届いたほかのメール（返信画面で見られます）">やり取り ${Number(m.thread_count)}件</span>`
+  : "";
+
+let inboxSeq = 0;        // 受信箱を取り直した回数 (前の取り直しの結果で上書きしない用)
+let inboxStale = false;  // 返信画面・設定を開いている間に受信箱が変わった (戻ったときに取り直す)
+
+// 受信箱を出す。auto: 新着に気付いて自動で取り直すとき (失敗してもアラートを出さず、
+// 見ていた場所も動かさない)。絞り込みはそのまま使う
+async function showInbox(opts = {}) {
+  switchView("inbox");
+  inboxStale = false;
+  const seq = ++inboxSeq;
+  // 先に受信の様子を聞いてから一覧を取る (間に届いたメールは、次の確認で
+  // 「変わった」と分かって取り直せる)
+  try { await checkStatus(); }
+  catch (e) {
+    if (e.message === "auth") return;  // ログイン画面に切り替わった
+    connLost = true;
+    renderStatus();
+  }
+  // 絞り込み (状態・種類・担当)。値は URLSearchParams で URL に入れる
+  const q = new URLSearchParams();
+  for (const [key, id] of [["status", "filter"], ["category", "filter-cat"], ["assignee", "filter-asg"],
+                           ["account", "filter-acct"]]) {
+    if ($(id).value) q.set(key, $(id).value);
+  }
+  const path = "/api/mail" + (q.toString() ? "?" + q : "");
+  let list;
+  if (opts.auto) {
+    try {
+      const r = await api(path);
+      if (!r.ok) throw new Error("list " + r.status);
+      list = await r.json();
+    } catch (e) {
+      // 次の確認のときにもう一度取り直す (アラートは出さない)
+      if (e.message !== "auth" && seq === inboxSeq) { inboxStale = true; connLost = true; renderStatus(); }
+      return;
+    }
+  } else {
+    list = await apiJson(path);
+  }
+  if (seq !== inboxSeq) return;        // 待っている間に、もう一度取り直し始めた
+  renderInbox(list, opts.auto);
+  refreshAiStatus();   // 自動受信の判定などで AI が失敗した・直ったかを、開くたびに出し直す
+}
+
+/* 「新着」の印: 前にこの受信箱を見た後に届いて、まだ開いていないメールに付ける。
+   どこまで見たか (メールの番号) はこのブラウザに覚えておく (覚えておけないブラウザでも動く。
+   そのときは、この画面を開いた後に届いたメールにだけ付く) */
+const SEEN_KEY = "zatsumu_mail_seen";
+function loadSeen() {
+  try {
+    const v = Number(localStorage.getItem(SEEN_KEY));
+    return v > 0 ? v : null;
+  } catch { return null; }
+}
+let seenId = loadSeen();     // これより大きい番号のメールに印を付ける (この画面を開いている間は変えない)
+let shownMax = 0;            // 受信箱に出した一番新しいメールの番号
+const openedIds = new Set(); // この画面で開いたメール (印を外す)
+// 覚えている番号より大きければ覚え直す (reset なら小さくても覚え直す)
+function saveSeen(n, reset) {
+  try {
+    if (reset || n > (Number(localStorage.getItem(SEEN_KEY)) || 0)) {
+      localStorage.setItem(SEEN_KEY, String(n));
+    }
+  } catch {}
+}
+function rememberShown(list) {
+  if (document.hidden) return;         // 隠れているタブで描き直しても、見たことにはしない
+  shownMax = Math.max(shownMax, ...list.map(m => Number(m.id)));
+  saveSeen(shownMax);
+}
+
+function renderInbox(list, keepPlace) {
+  const tbody = document.querySelector("#mail-table tbody");
+  const wrap = document.querySelector("#inbox .table-wrap");
+  const left = wrap.scrollLeft;
+  // 自動で取り直したときは、見ていた場所を動かさない (一番上に見えていた行が、
+  // 描き直した後も同じ位置に見えるようにする)。一番上にいるときは、上に増えた新着を見せる
+  const anchor = keepPlace && window.scrollY > 0
+    ? [...tbody.querySelectorAll(".mail-row")].find(tr => tr.getBoundingClientRect().bottom > 0)
+    : null;
+  const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+  const newest = mailStatus && mailStatus.newest_id || 0;
+  // 初めて開いた (覚えていない) ときは、今あるメールには印を付けない。
+  // DB を作り直した (覚えている番号の方が大きい) ときも、今あるメールまでを見たことにする
+  // (この番号はすぐ覚えておく。受信箱に出した番号だけを覚えると、絞り込みで出ていなかった
+  // 返信済みなどのメールに、次に開いたとき「新着」が付いてしまうため)
+  if (seenId === null || (mailStatus && seenId > newest)) {
+    const reset = seenId !== null;
+    seenId = newest || Math.max(0, ...list.map(m => Number(m.id)));
+    saveSeen(seenId, reset);
+  }
+  const filtered = $("filter-cat").value || $("filter-asg").value || $("filter-acct").value;
+  tbody.innerHTML = list.map(m => {
+    const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
+    return `
+    <tr class="mail-row ${["unhandled", "pending_approval"].includes(m.status) ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
+      <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
+      <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong>${threadBadge(m)}</td>
+      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
+      <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
+      <td data-label="状態"><span class="st-${esc(m.status)}">${esc(ST[m.status] || m.status)}</span>${m.status === "pending_approval" && m.requested_by ? `<small>（${esc(m.requested_by)}）</small>` : ""}${m.returned ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : ""}</td>
+      <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
+      <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
+    </tr>`;
+  }).join("") ||
+    (filtered
+      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の「種類」「担当」「アドレス」を「すべて」に戻すと全部見られます）</small></td></tr>`
+      : isAdmin()
+        ? `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`
+        : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
+  document.querySelectorAll(".mail-row").forEach(tr =>
+    tr.onclick = () => openMail(+tr.dataset.id));
+  wrap.scrollLeft = left;
+  const again = anchor && tbody.querySelector(`.mail-row[data-id="${Number(anchor.dataset.id)}"]`);
+  if (again) window.scrollBy(0, again.getBoundingClientRect().top - anchorTop);
+  rememberShown(list);
+}
+$("filter").onchange = () => showInbox();
+// 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱の横の「確認待ち」から)
+function showPending() {
+  $("filter").value = "pending_approval";
+  showInbox();
+}
+$("approval-show").onclick = () => showPending();
+$("filter-cat").onchange = () => showInbox();
+$("filter-asg").onchange = () => showInbox();
+$("filter-acct").onchange = () => showInbox();
+
+// 「アドレス」の絞り込み。受信するアドレスが2つ以上 (か、削除したアドレスのメールがある) ときだけ出す。
+// 選んでいたアドレスを削除したら「すべて」に戻す (受信箱は、変わったと分かった後に取り直す)
+function renderAccountFilter() {
+  const sel = $("filter-acct");
+  const opts = [["", "アドレス：すべて"], ...acctList().map(a => [String(a.id), a.label])];
+  if (mailStatus && mailStatus.deleted_mail_count) opts.push(["none", "削除したアドレス"]);
+  // 1分ごとに呼ばれるので、選択肢が変わったときだけ作り直す (開いている選択欄を閉じないように)
+  const sig = JSON.stringify(opts);
+  if (sel.dataset.sig !== sig) {
+    setOptions(sel, opts, sel.value);
+    sel.dataset.sig = sig;
+  }
+  sel.hidden = !showAccounts() && !sel.value;
+}
+
+/* 種類・担当の選択肢。名前 (設定や登録した人の名前) は textContent で入れる */
+let assignees = [];   // 担当に選べる人 [{id, name}]
+const categories = () => appSettings.mail_category_list || [];
+
+function setOptions(sel, opts, value) {
+  sel.textContent = "";
+  for (const [v, label] of opts) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = label;
+    sel.appendChild(o);
+  }
+  // 選んでいた値が無くなったら (種類を消した等)「すべて」などの先頭に戻す
+  sel.value = opts.some(([v]) => v === value) ? value : opts[0][0];
+}
+
+function renderCategoryFilter() {
+  setOptions($("filter-cat"),
+    [["", "種類：すべて"], ...categories().map(c => [c, c]), ["none", "未分類"]],
+    $("filter-cat").value);
+}
+
+async function loadAssignees() {
+  try {
+    const r = await api("/api/mail/assignees");
+    if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
+    assignees = await r.json();
+  } catch { return; }
+  setOptions($("filter-asg"),
+    [["", "担当：すべて"], ["me", "自分の担当"], ["none", "担当なし"],
+     ...assignees.map(u => [String(u.id), u.name])],
+    $("filter-asg").value);
+  // 設定の「種類ごとの担当」に書ける名前の案内
+  $("asg-names").textContent = assignees.length
+    ? "登録されている名前: " + assignees.map(u => u.name).join("、") : "";
+  if (modal.id) fillAssigneeSelect(modal.assigneeId, modal.assigneeName);
+}
+
+function fillCategorySelect(value) {
+  const opts = [["", "未分類"], ...categories().map(c => [c, c])];
+  // 一覧から消した種類のメールは、その種類を「今の種類」として残す
+  if (value && !categories().includes(value)) opts.push([value, value + "（今の種類）"]);
+  setOptions($("m-category"), opts, value || "");
+}
+
+function fillAssigneeSelect(id, name) {
+  const opts = [["", "担当なし"], ...assignees.map(u => [String(u.id), u.name])];
+  // 無効にした人などが担当のままのメールは、その人を「今の担当」として残す
+  if (id && !assignees.some(u => u.id === id)) {
+    opts.push([String(id), (name || "（名前が分かりません）") + "（今の担当）"]);
+  }
+  setOptions($("m-assignee"), opts, id ? String(id) : "");
+}
+
+$("fetch-now").onclick = async () => {
+  const b = $("fetch-now"), msg = $("fetch-msg");
+  b.disabled = true; b.textContent = "受信中…";
+  msg.textContent = "";
+  try {
+    const r = await api("/api/mail/fetch", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      // 一部のアドレスだけ受信できなかったときは、どのアドレスかも出す (理由は下の赤字)
+      const failed = (e.errors || []).map(x => x.label);
+      msg.style.color = failed.length ? "#b45309" : "#0a7d32";
+      msg.textContent = `新着 ${e.fetched} 件` +
+        (failed.length ? `（${failed.join("・")} は受信できませんでした）` : "");
+      setTimeout(() => msg.textContent = "", failed.length ? 10000 : 4000);
+    } else if (r.status === 409) {
+      // ほかの受信 (自動の受信・別の画面) の途中。終わると受信箱は自動で新しくなる
+      msg.style.color = "#b45309";
+      msg.textContent = e.detail || "受信中です。少し待ってからもう一度押してください";
+      setTimeout(() => msg.textContent = "", 8000);
+    } else {
+      alert(e.detail || "エラーが発生しました");
+    }
+    // 受信が遅くても他画面を奪わない。受信したメールの判定で AI が失敗した・直ったかも
+    // 注意書きに出し直す (受信箱なら showInbox が取り直す)。返信画面・設定を開いていたら
+    // 戻ったときに取り直す
+    if (viewName === "inbox" && $("mail-modal").hidden) showInbox();
+    else { inboxStale = true; refreshStatus(); refreshAiStatus(); }
+  } catch (e) {
+    if (e.message !== "auth") {
+      msg.style.color = "#c62828";
+      msg.textContent = "通信に失敗しました。もう一度お試しください";
+    }
+  }
+  b.disabled = false; b.textContent = "今すぐ受信";
+};
+
+/* ---------- 返信モーダル ---------- */
+async function openMail(id) {
+  const m = await apiJson(`/api/mail/${id}`);
+  // 開いたメールは「新着」の印を外す
+  openedIds.add(Number(id));
+  const row = document.querySelector(`.mail-row[data-id="${Number(id)}"]`);
+  if (row) {
+    row.classList.remove("new");
+    row.querySelector(".new-badge")?.remove();
+  }
+  const replied = m.status === "replied";
+  modal = { ...EMPTY_MODAL, id, savedDraft: m.draft_reply || "",
+            ccCandidates: (m.reply_cc_candidates || []).join(", "), notion: notionOf(m), mail: m };
+  // 宛先は元メールの差出人。CC は最初は空にしておき、「CCの人にも送る」を選んだときだけ
+  // 候補を入れる (元メールの To・Cc は送り主が自由に書けるので、知らない人を黙って CC に
+  // 入れて、鍵の番号などを送ってしまわないように)。
+  // 送信済みなら、実際に送った CC・BCC を出す。確認待ち・差し戻したメールなら、
+  // メール担当者が確認をお願いしたときの CC・BCC を出す。値は textContent / value で入れる
+  $("m-to").textContent = `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}>`;
+  // 差出人は、このメールが届いたアドレス (削除したアドレスなら共通の差出人メール)
+  $("m-from").textContent = (m.reply_from || "（未設定）") +
+    (!m.account_id && showAccounts() ? "（届いたアドレスは削除したため、共通の差出人で送ります）" : "");
+  $("m-from-row").hidden = !m.reply_from && !showAccounts();
+  const proposed = !replied && (m.status === "pending_approval" || !!m.return_note);
+  const addrList = a => (a || []).join(", ");
+  $("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc) : "";
+  $("m-bcc").value = replied ? addrList(m.reply_bcc) : proposed ? addrList(m.draft_bcc) : "";
+  $("m-cc-all").checked = !!$("m-cc").value;
+  $("m-cc-all-row").hidden = replied || !modal.ccCandidates;
+  $("m-cc-count").textContent = modal.ccCandidates
+    ? `元のメールの宛先・CC に ${(m.reply_cc_candidates || []).length}人` : "";
+  $("m-subject").textContent = m.subject || "（件名なし）";
+  $("m-body").textContent = m.body || "（本文なし）";
+  renderAttachments(id, m);
+  renderThread(m);
+  clearCalendar();   // 前のメールの予定の候補は出さない
+  ntnSeq++;          // 前のメールの Notion の登録結果は出さない
+  renderNotion(modal.notion);
+  $("m-priority").value = m.priority;
+  modal.category = m.category || "";
+  modal.assigneeId = m.assignee_user_id || null;
+  modal.assigneeName = m.assignee_name || "";
+  fillCategorySelect(modal.category);
+  fillAssigneeSelect(modal.assigneeId, modal.assigneeName);
+  $("m-reason").textContent = m.priority_reason
+    ? `判定理由: ${m.priority_reason}（${{ ai: "AI", rule: "ルール", manual: "手動" }[m.priority_source] || m.priority_source}）` : "";
+  $("m-draft").value = m.status === "replied" ? m.reply_body : (m.draft_reply || "");
+  cursorByProgram($("m-draft"));
+  $("m-draft-src").textContent =
+    m.status === "replied" ? "（送信済みの本文）"
+    : m.draft_source === "ai" ? "（AI生成の下書き）"
+    : m.draft_source === "template" ? "（定型文の下書き）" : "";
+  $("m-status").textContent = "";
+  $("m-ai-error").hidden = true;
+  $("m-inst").value = "";
+  $("m-req-note").value = "";
+  $("m-return-note").value = "";
+  $("m-gen").textContent = "返信文を生成";   // 前のメールで生成中のまま開いたときも戻す
+  renderControls(m);
+  $("m-back").hidden = !modalHistory.length;
+  $("mail-modal").hidden = false;
+  $("mail-modal").querySelector(".box").scrollTop = 0;   // やり取りから開いたときは先頭から見せる
+  loadModalTemplates(id);   // 一覧は後から入る (開くのを待たせない)
+}
+
+// 返信画面のボタンと欄を、メールの状態と自分の役割 (管理者・メール担当者) に合わせる。
+// 送信・対応不要は管理者だけ、「確認をお願いする」はメール担当者だけ (サーバも確かめる)
+function renderControls(m) {
+  const admin = isAdmin();
+  const replied = m.status === "replied", pending = m.status === "pending_approval";
+  $("m-meta").textContent =
+    `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}> ・ ` +
+    `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${ST[m.status] || m.status}` +
+    (!replied || !m.replied_by ? ""
+      : m.approved_by && m.requested_by ? `（${m.requested_by} さんの下書きを ${m.approved_by} が確認して送信）`
+      : `（${m.replied_by} が送信）`);
+  // 送信済みと、メール担当者が確認待ちの間は、返信文・CC・BCC を変えない (管理者が見ている文なので)
+  const locked = replied || (!admin && pending);
+  $("m-draft").readOnly = locked;
+  $("m-cc").readOnly = $("m-bcc").readOnly = locked;
+  $("m-cc-all").disabled = locked;
+  $("m-gen").disabled = locked;
+  if (locked) $("m-tpl").disabled = true;
+  $("m-send").hidden = !admin;
+  $("m-send").disabled = replied;
+  $("m-send").textContent = replied ? "返信済み" : pending ? "承認して送信" : "返信を送信";
+  $("m-archive").hidden = !admin;
+  $("m-archive").disabled = m.status !== "unhandled";
+  const canRequest = !admin && !!me.require_approval && !replied;
+  $("m-request").hidden = !canRequest;
+  $("m-request").disabled = pending;
+  $("m-request").textContent = pending ? "確認待ち" : "確認をお願いする";
+  $("m-req-row").hidden = !canRequest || pending;
+  $("m-staff-help").hidden = admin || replied;
+  $("m-staff-help").textContent = pending
+    ? "管理者の確認を待っています。確認待ちの間は、返信文を変えられません（直したいときは、管理者に「差し戻す」を頼んでください）。"
+    : me.require_approval
+      ? "送信は管理者だけができます。返信文ができたら「確認をお願いする」を押してください（管理者が確かめて送ります）。"
+      : "送信は管理者だけができます。返信文は閉じると下書きに残るので、管理者に送信を頼んでください。";
+  renderApprovalBox(m);
+}
+
+// 確認のお願い (確認待ち) と差し戻しの知らせ。名前・ひとこと・コメントは textContent で入れる
+function renderApprovalBox(m) {
+  const admin = isAdmin();
+  const pending = m.status === "pending_approval";
+  const returned = !pending && m.status !== "replied" && !!m.return_note;
+  $("m-appr").hidden = !pending && !returned;
+  $("m-appr").className = "appr" + (returned ? " ret" : "");
+  $("m-return-box").hidden = !(admin && pending);
+  let head = "", note = "", help = "";
+  if (pending) {
+    head = `📝 ${m.requested_by || "メール担当者"} さんが確認をお願いしています` +
+      (m.requested_at ? `（${fmtDate(m.requested_at)}）` : "");
+    note = m.approval_note ? "ひとこと: " + m.approval_note : "";
+    help = admin ? "返信文・CC・BCC を確かめて（直してもかまいません）「承認して送信」を押してください。" +
+      "直してほしいところがあるときは、下にコメントを書いて「差し戻す」を押してください。" : "";
+  } else if (returned) {
+    head = "↩ 差し戻されました" +
+      `（${[m.returned_by, m.returned_at ? fmtDate(m.returned_at) : ""].filter(Boolean).join("・")}）`;
+    note = "コメント: " + m.return_note;
+    help = admin ? "" : "コメントを見て返信文を直し、もう一度「確認をお願いする」を押してください。";
+  }
+  $("m-appr-head").textContent = head;
+  $("m-appr-note").textContent = note;
+  $("m-appr-note").hidden = !note;
+  $("m-appr-help").textContent = help;
+}
+
+$("m-priority").onchange = async () => {
+  if (!modal.id) return;
+  try {
+    await apiJson(`/api/mail/${modal.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priority: +$("m-priority").value }),
+    });
+    $("m-reason").textContent = "判定理由: 手動変更（手動）";
+    showInbox();
+  } catch {}
+};
+
+/* 種類・担当の変更 (すぐ保存する)。担当がいないメールの種類を変えると、
+   その種類の担当 (設定) が入るので、返ってきた担当に選択欄をそろえる */
+async function patchMail(fields) {
+  const r = await apiJson(`/api/mail/${modal.id}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  modal.category = r.category || "";
+  modal.assigneeId = r.assignee_user_id || null;
+  modal.assigneeName = r.assignee_name || "";
+  fillCategorySelect(modal.category);
+  fillAssigneeSelect(modal.assigneeId, modal.assigneeName);
+  showInbox();
+}
+$("m-category").onchange = async () => {
+  if (!modal.id) return;
+  try { await patchMail({ category: $("m-category").value }); }
+  catch { fillCategorySelect(modal.category); }   // 変えられなかったら元に戻す
+};
+$("m-assignee").onchange = async () => {
+  if (!modal.id) return;
+  const v = $("m-assignee").value;
+  try { await patchMail({ assignee_user_id: v ? Number(v) : null }); }
+  catch { fillAssigneeSelect(modal.assigneeId, modal.assigneeName); }
+};
+
+$("m-gen").onclick = async () => {
+  const b = $("m-gen");
+  // 作っている間に、やり取りの別のメールを開いたり閉じたりしたら、作った文はこの画面に
+  // 入れない (別の人あての返信画面に入って、そのまま送ってしまわないように)。
+  // 作った文はサーバが元のメールの下書きに残すので、元のメールを開き直せば出る
+  const id = modal.id;
+  b.disabled = true; b.textContent = "生成中…";
+  try {
+    const r = await apiJson(`/api/mail/${id}/draft`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instructions: $("m-inst").value, seen_request: seenRequest() }),
+    });
+    if (modal.id !== id) return;
+    $("m-draft").value = r.draft_reply;
+    modal.savedDraft = r.draft_reply;
+    cursorByProgram($("m-draft"));   // 入れ替えた文のどこに定型文を入れるかは、もう一度選んでもらう
+    $("m-draft-src").textContent =
+      r.draft_source === "ai" ? "（AI生成の下書き）"
+      : r.ai_error ? "（定型文の下書き・AIで作れませんでした）"
+      : "（定型文の下書き・APIキー未設定）";
+    // APIキーはあるのに AI で作れなかったときは理由を見せる (キーの間違い・残高不足など)
+    $("m-ai-error").textContent = r.ai_error ? "AIを使えなかった理由: " + r.ai_error : "";
+    $("m-ai-error").hidden = !r.ai_error;
+    refreshAiStatus();
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  if (modal.id !== id) return;         // ボタンは開き直したメールに合わせてある
+  b.disabled = false; b.textContent = "返信文を生成";
+};
+
+/* 全員に返信: チェックを付けると CC の欄に候補 (外す前に書き換えていればその内容) を入れ、
+   外すと CC の欄を空にする */
+$("m-cc-all").onchange = () => {
+  const cc = $("m-cc");
+  if ($("m-cc-all").checked) cc.value = modal.ccSaved || modal.ccCandidates;
+  else { modal.ccSaved = cc.value; cc.value = ""; }
+};
+// CC の欄を手で空にしたら / 書き足したら、チェックもそれに合わせる
+$("m-cc").addEventListener("input", () => { $("m-cc-all").checked = !!$("m-cc").value.trim(); });
+
+// CC・BCC の欄をアドレスの一覧にする。「,」「、」「;」・改行で区切る
+// (日本語入力の全角の英数字・記号は半角に直す)。メールソフトからコピーした
+// 「山田 太郎 <yamada@example.com>」は名前に空白があっても1件のまま送り、
+// 「<…>」の無いものだけ空白でも区切る。正しい形かはサーバが確かめる。
+// 「"Yamada, Taro" <taro@example.com>」のように "…" や <…> の中にある「,」では区切らない。
+// Outlook の「Yamada, Taro <taro@example.com>」(名前を "…" で囲まない形) も、
+// アドレスの無い名前だけの部分を、次の <…> 付きの部分とつないで1件にする
+const splitAddrs = v => {
+  const parts = [];
+  let cur = "", quoted = false, angle = false;
+  for (const ch of v.normalize("NFKC")) {
+    if (ch === '"' && !angle) quoted = !quoted;
+    else if (ch === "<" && !quoted) angle = true;
+    else if (ch === ">" && !quoted) angle = false;
+    if (!quoted && !angle && /[,、;\n]/.test(ch)) { parts.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  parts.push(cur);
+  for (let i = 0; i < parts.length - 1; i++) {
+    const x = parts[i].trim(), next = parts[i + 1];
+    if (x && !x.includes("@") && !x.includes("<") &&
+        next.includes("<") && !next.slice(0, next.indexOf("<")).includes("@")) {
+      parts[i + 1] = x + ", " + next.trim();
+      parts[i] = "";
+    }
+  }
+  return parts.flatMap(x => x.includes("<") ? [x.trim()] : x.trim().split(/\s+/))
+    .filter(Boolean);
+};
+
+$("m-send").onclick = async () => {
+  const text = $("m-draft").value.trim();
+  if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
+  const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
+  // 誰に届くかを送る前に見せる (全員に返信のつもりが無かった、などに気付けるように)
+  const approving = !!modal.mail && modal.mail.status === "pending_approval";
+  if (!confirm((approving
+      ? `${modal.mail.requested_by || "メール担当者"} さんの下書きを、この内容で送信しますか？（承認して送信）\n\n`
+      : "この内容で返信を送信しますか？\n\n") +
+      ($("m-from-row").hidden ? "" : "差出人: " + $("m-from").textContent + "\n") +
+      "宛先: " + $("m-to").textContent +
+      (cc.length ? "\nCC: " + cc.join(", ") : "") +
+      (bcc.length ? "\nBCC: " + bcc.join(", ") : "") +
+      (cc.length || bcc.length
+        ? "\n\n※CC・BCC の人にも同じ文が届きます。知らないアドレスが無いか確かめてください" : ""))) return;
+  const b = $("m-send");
+  // 送っている間に別のメールを開いたら、そのメールを「返信済み」の表示にしない
+  const id = modal.id;
+  b.disabled = true; b.textContent = "送信中…";
+  try {
+    const r = await apiJson(`/api/mail/${id}/send`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: text, cc, bcc,
+                             approve_request: approving ? (modal.mail.requested_at || "") : null }),
+    });
+    if (modal.id !== id) { showInbox(); return; }
+    modal.savedDraft = text;
+    const sentCc = r.cc || [], sentBcc = r.bcc || [];
+    // 0件の方は書かない (CC だけ送ったのに「BCC 0件」と出ると、文が長く分かりにくい)
+    const counts = [sentCc.length ? `CC ${sentCc.length}件` : "",
+                    sentBcc.length ? `BCC ${sentBcc.length}件` : ""].filter(Boolean);
+    $("m-status").textContent = `${r.sent} へ送信しました ✓` +
+      (counts.length ? `（${counts.join("・")}）` : "") +
+      (r.approved_by ? "（確認待ちの下書きを承認しました）" : "");
+    if ((r.refused || []).length) {
+      // CC・BCC の一部が相手のメールサーバに断られた (宛先の人には届いている)
+      $("m-status").textContent += `（次のアドレスには届きませんでした: ${r.refused.join(", ")}）`;
+    }
+    if (r.sent_save_error) {
+      // 相手には届いている。控えが残らなかったことだけ知らせる
+      $("m-status").textContent += `（送信済みフォルダへの保存はできませんでした: ${r.sent_save_error}）`;
+    }
+    b.textContent = "返信済み";
+    if (modal.mail) {
+      modal.mail.status = "replied";
+      renderApprovalBox(modal.mail);   // 確認のお願い・差し戻すの欄を閉じる
+    }
+    // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)。
+    // CC・BCC の欄は実際に送ったもの (重複を除いた後) にする
+    $("m-draft").readOnly = true;
+    $("m-gen").disabled = true;
+    $("m-tpl").disabled = true;
+    $("m-archive").disabled = true;
+    $("m-cc").value = sentCc.join(", ");
+    $("m-bcc").value = sentBcc.join(", ");
+    $("m-cc").readOnly = $("m-bcc").readOnly = true;
+    $("m-cc-all").disabled = true;
+    showInbox();
+  } catch {
+    if (modal.id === id) { b.disabled = false; b.textContent = approving ? "承認して送信" : "返信を送信"; }
+  }
+};
+
+$("m-archive").onclick = async () => {
+  try {
+    await apiJson(`/api/mail/${modal.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "archived" }),
+    });
+    inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
+    await closeModal();
+  } catch {}
+};
+
+/* メール担当者の「確認をお願いする」: 返信文・CC・BCC を下書きに残して「確認待ち」にし、
+   管理者に知らせる (送るのは管理者)。確認待ちの間は、返信文などを変えられない */
+$("m-request").onclick = async () => {
+  const text = $("m-draft").value.trim();
+  if (!text) { alert("返信文を入力するか「返信文を生成」を押してください"); return; }
+  const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
+  if (!confirm("この返信文で、管理者に確認をお願いしますか？\n\n" +
+      "宛先: " + $("m-to").textContent +
+      (cc.length ? "\nCC: " + cc.join(", ") : "") +
+      (bcc.length ? "\nBCC: " + bcc.join(", ") : "") +
+      "\n\n管理者が確かめてから送ります。確認待ちの間は、返信文を変えられません。")) return;
+  const id = modal.id, b = $("m-request");
+  b.disabled = true; b.textContent = "お願いしています…";
+  try {
+    const r = await apiJson(`/api/mail/${id}/request-approval`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: text, cc, bcc, note: $("m-req-note").value }),
+    });
+    if (modal.id !== id) { showInbox(); return; }
+    modal.savedDraft = text;
+    Object.assign(modal.mail, { status: "pending_approval", requested_by: r.requested_by,
+                                requested_at: r.requested_at, approval_note: $("m-req-note").value.trim(),
+                                draft_cc: cc, draft_bcc: bcc, return_note: "" });
+    renderControls(modal.mail);
+    $("m-status").textContent = "確認をお願いしました ✓（管理者が確かめて送ります）" +
+      ((r.notified || []).length ? "" : "（お知らせの送り先が未設定のため、管理者に一声かけてください）");
+    showInbox();
+  } catch {
+    if (modal.id === id) renderControls(modal.mail);   // ボタンを元に戻す
+  }
+};
+
+/* 管理者の「差し戻す」: 確認待ちから未対応に戻し、コメントをメール担当者の返信画面に出す。
+   直した返信文は下書きに残す (メール担当者がそこから直せるように) */
+$("m-return").onclick = async () => {
+  const note = $("m-return-note").value.trim();
+  if (!note) {
+    alert("差し戻すときのコメント（どこを直してほしいか）を入れてください");
+    $("m-return-note").focus();
+    return;
+  }
+  const id = modal.id, who = (modal.mail && modal.mail.requested_by) || "メール担当者";
+  if (!confirm(`${who} さんに差し戻しますか？\n\n「確認待ち」から「未対応」に戻り、` +
+      "コメントがメール担当者の返信画面に出ます。")) return;
+  const b = $("m-return");
+  b.disabled = true;
+  await saveDraft();
+  if (modal.id !== id) return;         // 保存を待っている間に閉じた
+  try {
+    const r = await apiJson(`/api/mail/${id}/send-back`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    });
+    if (modal.id !== id) { showInbox(); return; }
+    Object.assign(modal.mail, { status: "unhandled", returned_by: r.returned_by,
+                                returned_at: r.returned_at, return_note: r.return_note });
+    renderControls(modal.mail);
+    $("m-status").textContent = `${who} さんに差し戻しました ✓`;
+    showInbox();
+  } catch {}
+  b.disabled = false;
+};
+
+// この画面を開いたときの確認のお願いの時刻 (無ければ "")。下書きの保存・生成と送信に付けると、
+// 開いた後にメール担当者が確認をお願いしていたら、サーバが止めてくれる
+// (見ていない下書きを上書きしたり、承認したことにしたりしない)
+const seenRequest = () => modal.mail ? (modal.mail.requested_at || "") : null;
+
+// 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき。送信済みは保存しない)
+async function saveDraft() {
+  const draft = $("m-draft").value;
+  if (modal.id && !$("m-draft").readOnly && draft !== modal.savedDraft) {
+    try {
+      await api(`/api/mail/${modal.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draft_reply: draft, seen_request: seenRequest() }),
+      });
+      modal.savedDraft = draft;
+    } catch {}
+  }
+}
+
+async function closeModal() {
+  await saveDraft();
+  modal = { ...EMPTY_MODAL };
+  modalHistory = [];
+  clearAttachments();
+  clearThread();
+  clearCalendar();
+  ntnSeq++;
+  $("mail-modal").hidden = true;
+  // 開いている間に新着などで受信箱が変わっていたら、ここで取り直す
+  if (inboxStale && viewName === "inbox") showInbox({ auto: true });
+}
+$("m-close").onclick = () => closeModal();
+$("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
+
+/* この相手とのやり取り (同じ相手から届いたほかのメールと、こちらが送った返信)。
+   差出人・件名・本文などは外から来た文字なので、必ず esc() を通してから入れる。
+   届いたメールの全文は、その1通を開いたときに読み込む (やり取りが多くても返信画面をすぐ開ける) */
+let threadOpen = false;  // 「この相手とのやり取り」を開いていたか (次に開くメールでも同じにする)
+let threadSeq = 0;       // やり取りを描き直したら増やす (前のメールの読み込み結果を捨てる用)
+let modalHistory = [];   // やり取りから開く前に見ていたメール (「前のメールに戻る」用)
+
+const snip = (s, n = 60) => {
+  const t = String(s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n) + "…" : t;
+};
+
+function clearThread() {
+  threadSeq++;
+  $("m-thread-list").innerHTML = "";
+  $("m-thread").hidden = true;
+}
+
+function renderThread(m) {
+  clearThread();
+  const list = m.thread || [];
+  if (!list.length) return;
+  const total = Math.max(Number(m.thread_total) || 0, list.length);
+  const self = String(m.from_addr || "").toLowerCase();
+  $("m-thread-title").textContent = `この相手とのやり取り（${total}件）`;
+  $("m-thread-list").innerHTML = list.map(t => {
+    const other = String(t.from_addr || "").toLowerCase() !== self;
+    const who = `${t.from_name ? t.from_name + " " : ""}<${t.from_addr || "不明"}>`;
+    return `
+    <details class="thr-item" data-thr="${Number(t.id)}">
+      <summary>
+        <span class="thr-line thr-head">${esc(fmtDate(t.received_at))} ・ <span class="st-${esc(t.status)}">${esc(ST[t.status] || t.status)}</span></span>
+        ${other ? `<span class="thr-line thr-other">別のアドレスから: ${esc(who)}</span>` : ""}
+        <span class="thr-line thr-subj">${esc(t.subject) || "（件名なし）"}</span>
+        <span class="thr-line">📩 ${esc(t.snippet) || "（本文なし）"}</span>
+        ${t.replied_at ? `<span class="thr-line thr-reply">↩ 返信: ${esc(snip(t.reply_body))}</span>` : ""}
+      </summary>
+      <div class="thr-full">
+        <small>届いたメール（${esc(who)}）</small>
+        <div class="mail-body thr-body">読み込み中…</div>
+        ${t.replied_at ? `
+        <small>送った返信（${esc(fmtDate(t.replied_at))}${t.replied_by ? "・" + esc(t.replied_by) : ""}）${(t.reply_cc || []).length ? "<br>CC: " + esc(t.reply_cc.join(", ")) : ""}</small>
+        <div class="mail-body">${esc(t.reply_body) || "（本文なし）"}</div>` : ""}
+        <button class="ghost" data-thr-open="${Number(t.id)}">このメールを開く</button>
+      </div>
+    </details>`;
+  }).join("") +
+    (total > list.length ? `<small>新しい${list.length}件を出しています（前のものは受信箱から探せます）</small>` : "");
+  $("m-thread").open = threadOpen;
+  $("m-thread").hidden = false;
+}
+
+// やり取りの1通を開いたら、届いたメールの全文を読み込む (やり取りは要らないので thread=false)
+async function loadThreadBody(item) {
+  if (item.dataset.loaded) return;
+  item.dataset.loaded = "1";
+  const seq = threadSeq, el = item.querySelector(".thr-body");
+  try {
+    const r = await api(`/api/mail/${Number(item.dataset.thr)}?thread=false`);
+    if (!r.ok) throw new Error(r.status === 404 ? "gone" : "load");
+    const d = await r.json();
+    if (seq !== threadSeq) return;     // 待っている間に別のメールを開いた
+    el.textContent = d.body || "（本文なし）";
+  } catch (e) {
+    if (seq !== threadSeq || e.message === "auth") return;
+    delete item.dataset.loaded;        // 閉じてもう一度開くと読み直す
+    el.textContent = e.message === "gone"
+      ? "このメールは見つかりませんでした（保存日数を過ぎて消えた可能性があります）"
+      : "読み込めませんでした。閉じてもう一度開くと読み直します";
+  }
+}
+// toggle は親に伝わらないので、捕まえる側 (capture) で受け取る
+$("m-thread-list").addEventListener("toggle", e => {
+  if (e.target.matches && e.target.matches(".thr-item") && e.target.open) loadThreadBody(e.target);
+}, true);
+$("m-thread").addEventListener("toggle", e => {
+  if (e.target === $("m-thread")) threadOpen = $("m-thread").open;
+});
+
+// やり取りのメールを開く (書きかけの返信文は保存してから)。「前のメールに戻る」で戻れる
+async function openOtherMail(id, back) {
+  const from = modal.id;
+  if (!from || id === from) return;
+  await saveDraft();
+  if (modal.id !== from) return;       // 保存を待っている間に閉じた
+  if (back) modalHistory.pop(); else modalHistory.push(from);
+  try { await openMail(id); }
+  catch {                              // 開けなかった (apiJson が原因をアラート表示済み)
+    if (back) modalHistory.push(id); else modalHistory.pop();
+  }
+}
+$("m-thread-list").onclick = e => {
+  const b = e.target.closest("button[data-thr-open]");
+  if (b) openOtherMail(Number(b.dataset.thrOpen), false);
+};
+$("m-back").onclick = () => {
+  if (modalHistory.length) openOtherMail(modalHistory[modalHistory.length - 1], true);
+};
+
+/* 添付ファイル。中身は管理者のトークンが無いと受け取れないので、リンクではなく
+   fetch で受け取り、ブラウザの中だけの一時的なURL (blob:) で表示・保存する */
+const PREVIEW_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+let attList = [];        // 開いているメールの添付 (保存したもの)
+let attUrls = [];        // 縮小画像の一時的なURL (閉じるときに消す)
+let attSeq = 0;          // メールを開き直したら増やす (前のメールの読み込み結果を捨てる用)
+
+function fmtSize(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function clearAttachments() {
+  attSeq++;
+  attUrls.forEach(u => URL.revokeObjectURL(u));
+  attUrls = [];
+  attList = [];
+  $("m-atts").innerHTML = "";
+  $("m-atts").hidden = true;
+  closeViewer();
+}
+
+function renderAttachments(id, m) {
+  clearAttachments();
+  attList = m.attachments || [];
+  const skipped = m.skipped_attachments || [];
+  if (!attList.length && !skipped.length) return;
+  // ファイル名・理由は外から来た文字なので esc() を通す。番号は数字にしてから入れる
+  $("m-atts").innerHTML =
+    `<small>📎 添付ファイル（${attList.length + skipped.length}）</small>` +
+    attList.map(a => `
+    <div class="att">
+      ${a.previewable ? `<img class="att-thumb" data-att="${Number(a.id)}" alt="${esc(a.filename)}">`
+                      : `<span class="att-icon">📄</span>`}
+      <div class="att-name">${esc(a.filename)}<br><small>${esc(fmtSize(a.size))}</small></div>
+      <button class="ghost" data-att-dl="${Number(a.id)}">ダウンロード</button>
+    </div>`).join("") +
+    skipped.map(a => `
+    <div class="att skipped">
+      <span class="att-icon">⚠</span>
+      <div class="att-name">${esc(a.filename)}${a.size ? ` <small>（${esc(fmtSize(a.size))}）</small>` : ""}<br>
+        <small>${esc(a.reason)}</small></div>
+    </div>`).join("") +
+    (skipped.length ? "<small>保存していないファイルは、Webメールで元のメールを開くと見られます。</small>" : "");
+  $("m-atts").hidden = false;
+  loadThumbnails(id, attSeq);
+}
+
+// 添付ファイルを受け取って Blob にする。画像 (png/jpeg/gif/webp) の表示用以外は
+// 必ず「ただのデータ」として扱う (HTML などをこの画面の中で開いてしまわないように)
+async function fetchAttachment(mailId, a, preview) {
+  const r = await api(`/api/mail/${mailId}/attachments/${Number(a.id)}` + (preview ? "?inline=1" : ""));
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.detail || "添付ファイルを受け取れませんでした");
+  }
+  const type = preview && PREVIEW_TYPES.includes(a.content_type) ? a.content_type
+    : "application/octet-stream";
+  return new Blob([await r.arrayBuffer()], { type });
+}
+
+// 縮小画像は1つずつ読み込む (写真がたくさんあってもスマホのメモリを使いすぎないように)
+async function loadThumbnails(mailId, seq) {
+  for (const a of attList.filter(x => x.previewable)) {
+    let url;
+    try { url = URL.createObjectURL(await fetchAttachment(mailId, a, true)); }
+    catch { continue; }                // 出せなければ縮小画像なし (ダウンロードはできる)
+    if (seq !== attSeq) { URL.revokeObjectURL(url); return; }   // 待っている間に閉じた
+    attUrls.push(url);
+    const img = $("m-atts").querySelector(`img[data-att="${Number(a.id)}"]`);
+    if (img) img.src = url;
+  }
+}
+
+async function downloadAttachment(button) {
+  const a = attList.find(x => x.id === +button.dataset.attDl);
+  if (!a || !modal.id) return;
+  button.disabled = true; button.textContent = "準備中…";
+  try {
+    const url = URL.createObjectURL(await fetchAttachment(modal.id, a, false));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = a.filename || "添付ファイル";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // すぐ消すと保存が始まる前に消えてしまうブラウザがあるので、少し待ってから消す
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    if (e.message !== "auth") alert(e.message);
+  }
+  button.disabled = false; button.textContent = "ダウンロード";
+}
+
+$("m-atts").onclick = e => {
+  const dl = e.target.closest("button[data-att-dl]");
+  if (dl) { downloadAttachment(dl); return; }
+  const img = e.target.closest("img[data-att]");
+  if (img && img.src) {                // 縮小画像を押すと大きく見られる
+    $("att-viewer-img").src = img.src;
+    $("att-viewer-img").alt = img.alt;
+    $("att-viewer").hidden = false;
+  }
+};
+function closeViewer() {
+  $("att-viewer").hidden = true;
+  $("att-viewer-img").removeAttribute("src");
+}
+$("att-viewer").onclick = () => closeViewer();
+
+/* ---------- カレンダーに登録 (メールの日付から予定を作る) ----------
+   サーバがメールから予定の候補 (日付・時刻・場所など) を探し、ここで直してから
+   Google カレンダーの登録画面を新しいタブで開くか、予定ファイル (.ics) を保存する。
+   Google へはこの画面 (ブラウザ) が、担当者が確かめた欄の内容だけを渡す (サーバからは送らない) */
+
+// カレンダー: 日時の形を決め、Google カレンダーの URL と予定ファイルを作る (画面の部品は使わない)
+// ev = { title, date: "YYYY-MM-DD", start: "HH:MM", end: "HH:MM", all_day, location, note }
+const calYmd = t => t.toISOString().slice(0, 10).replace(/-/g, "");
+const calHm = v => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(v || "");
+  return m && +m[1] < 24 && +m[2] < 60 ? +m[1] * 60 + +m[2] : null;
+};
+// 予定の始まりと終わり。終日なら "YYYYMMDD" (終わりは次の日。カレンダーの決まり)、
+// 時刻ありならその場所の時刻 "YYYYMMDDTHHMMSS"。終わりが空なら1時間、開始より前なら
+// 次の日 (夜をまたぐ)。おかしな欄があれば Error (文はそのまま画面に出す)
+function calRange(ev) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ev.date || "");
+  if (!d) throw new Error("日付を入れてください");
+  const day = new Date(Date.UTC(+d[1], +d[2] - 1, +d[3]));
+  if (day.getUTCFullYear() !== +d[1] || day.getUTCMonth() !== +d[2] - 1 || day.getUTCDate() !== +d[3])
+    throw new Error("日付が正しくありません");
+  if (ev.all_day)
+    return { allDay: true, start: calYmd(day), end: calYmd(new Date(day.getTime() + 864e5)) };
+  const s = calHm(ev.start);
+  if (s === null)
+    throw new Error("開始の時刻を入れてください（時刻が決まっていないときは「終日」にチェックを付けてください）");
+  let e = calHm(ev.end);
+  if (e === null || e === s) e = s + 60;
+  else if (e < s) e += 24 * 60;
+  const at = mins => {
+    const t = new Date(day.getTime() + mins * 60000);   // 世界標準時の時計で日付と時刻を数える
+    return calYmd(t) + "T" + t.toISOString().slice(11, 16).replace(":", "") + "00";
+  };
+  return { allDay: false, start: at(s), end: at(e) };
+}
+// その場所の時刻 "YYYYMMDDTHHMMSS" を、世界標準時 "YYYYMMDDTHHMMSSZ" にする (予定ファイル用)。
+// 夏時間のある場所でも合うよう、ブラウザのタイムゾーンの知識で確かめながら直す
+function calUtc(local, tzName) {
+  const p = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/.exec(local);
+  const want = Date.UTC(+p[1], +p[2] - 1, +p[3], +p[4], +p[5]);
+  let t = want;
+  try {
+    const f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tzName || "Asia/Tokyo", hourCycle: "h23", year: "numeric", month: "numeric",
+      day: "numeric", hour: "numeric", minute: "numeric" });
+    for (let i = 0; i < 3; i++) {
+      const v = {};
+      for (const x of f.formatToParts(new Date(t))) v[x.type] = +x.value;
+      const seen = Date.UTC(v.year, v.month - 1, v.day, v.hour % 24, v.minute);
+      if (seen === want) break;
+      t += want - seen;
+    }
+  } catch { t = want - 9 * 3600e3; }   // タイムゾーンが分からないブラウザでは日本時間
+  return new Date(t).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+}
+// Google カレンダーの登録画面の URL (開くと内容が入った状態で出る。保存は担当者が押す)。
+// 文字は URL 用に変換する (「/」はそのままでよいので読みやすく残す)
+function calGoogleUrl(ev, tzName) {
+  const r = calRange(ev);
+  const q = [["action", "TEMPLATE"], ["text", ev.title || "予定"], ["dates", r.start + "/" + r.end]];
+  if (ev.note) q.push(["details", ev.note]);
+  if (ev.location) q.push(["location", ev.location]);
+  q.push(["ctz", tzName || "Asia/Tokyo"]);
+  return "https://calendar.google.com/calendar/render?" +
+    q.map(([k, v]) => k + "=" + encodeURIComponent(v).replace(/%2F/g, "/")).join("&");
+}
+// 予定ファイル (.ics) の文字の欄: \ ; , と改行を決まりどおりに書き換え、ほかの制御文字は除く
+const icsText = s => String(s ?? "").replace(/\r\n?/g, "\n")
+  .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+  .replace(/[\\;,]/g, c => "\\" + c).replace(/\n/g, "\\n");
+// 1行が75バイト (UTF-8) を超えないよう折り返す (続きの行は空白で始める。文字の途中では切らない)
+function icsFold(line) {
+  const enc = new TextEncoder(), out = [];
+  let cur = "", bytes = 0;
+  for (const ch of line) {
+    const n = enc.encode(ch).length;
+    if (bytes + n > (out.length ? 74 : 75)) { out.push(cur); cur = ""; bytes = 0; }
+    cur += ch; bytes += n;
+  }
+  out.push(cur);
+  return out.join("\r\n ");
+}
+// 予定ファイル (.ics・RFC 5545) の中身。時刻は世界標準時で書く (どの端末でも同じ時刻になる)
+function calIcs(ev, tzName, now, uid) {
+  const r = calRange(ev);
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//zatsumu//mail//JA",
+    "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "BEGIN:VEVENT", "UID:" + uid,
+    "DTSTAMP:" + new Date(now).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z",
+    ...(r.allDay ? ["DTSTART;VALUE=DATE:" + r.start, "DTEND;VALUE=DATE:" + r.end]
+                 : ["DTSTART:" + calUtc(r.start, tzName), "DTEND:" + calUtc(r.end, tzName)]),
+    "SUMMARY:" + icsText(ev.title || "予定")];
+  if (ev.location) lines.push("LOCATION:" + icsText(ev.location));
+  if (ev.note) lines.push("DESCRIPTION:" + icsText(ev.note));
+  lines.push("END:VEVENT", "END:VCALENDAR");
+  return lines.map(icsFold).join("\r\n") + "\r\n";
+}
+// カレンダー: ここまで
+
+let calTz = "Asia/Tokyo";   // 予定の時刻のタイムゾーン (サーバの設定。既定は日本時間)
+let calBlank = {};          // 「＋ 予定を追加」で出す、日付の入っていない予定 (件名・差出人入り)
+let calSeq = 0;             // メールを開き直したら増やす (前のメールの読み取り結果を捨てる用)
+
+function clearCalendar() {
+  calSeq++;
+  $("m-cal-list").innerHTML = "";
+  $("m-cal-panel").hidden = true;
+  $("m-cal-open").hidden = false;
+  $("m-cal").disabled = false;
+  $("m-cal").textContent = "📅 カレンダーに登録";
+}
+
+// 予定の候補1つ分のカード。値は外から来た文字 (件名・本文から読み取ったもの) なので、
+// 枠を作ってから value / textContent で入れる
+function calCard(ev) {
+  const div = document.createElement("div");
+  div.className = "cal-ev";
+  div.innerHTML = `
+    <label>予定の名前<input type="text" class="ev-title" maxlength="100"></label>
+    <div class="cal-line">
+      <label>日付<input type="date" class="ev-date"></label>
+      <label class="cal-chk"><input type="checkbox" class="ev-allday">終日</label>
+    </div>
+    <div class="cal-line cal-times">
+      <label>開始<input type="time" class="ev-start"></label>
+      <label>終了（空なら1時間）<input type="time" class="ev-end"></label>
+    </div>
+    <label>場所<input type="text" class="ev-loc" maxlength="100" placeholder="任意"></label>
+    <label>メモ<textarea class="ev-note" maxlength="500"></textarea></label>
+    <div class="ev-warn" hidden></div>
+    <div class="cal-btns">
+      <button class="ev-google">Googleカレンダーで開く</button>
+      <button class="ghost ev-ics">予定ファイル(.ics)を保存</button>
+    </div>`;
+  const q = c => div.querySelector(c);
+  q(".ev-title").value = ev.title || "";
+  q(".ev-date").value = ev.date || "";
+  q(".ev-allday").checked = !!ev.all_day;
+  q(".ev-start").value = ev.start || "";
+  q(".ev-end").value = ev.end || "";
+  q(".ev-loc").value = ev.location || "";
+  q(".ev-note").value = ev.note || "";
+  q(".cal-times").hidden = !!ev.all_day;
+  if (ev.warning) {
+    q(".ev-warn").textContent = "⚠ " + ev.warning;
+    q(".ev-warn").hidden = false;
+  }
+  return div;
+}
+
+function calRead(div) {
+  const q = c => div.querySelector(c);
+  return { title: q(".ev-title").value.trim(), date: q(".ev-date").value,
+           all_day: q(".ev-allday").checked, start: q(".ev-start").value, end: q(".ev-end").value,
+           location: q(".ev-loc").value.trim(), note: q(".ev-note").value.trim() };
+}
+
+function renderCalendar(r) {
+  calTz = r.tz || "Asia/Tokyo";
+  calBlank = r.blank || {};
+  const list = r.events || [];
+  const how = r.source === "ai" ? "AIがメールから読み取った予定です。"
+    : r.ai_error ? "AIで読み取れなかったため、メールの中の日付から探しました。"
+    : r.ai_used ? "AIは予定を見つけられなかったため、メールの中の日付から探しました。"
+    : "メールの中の日付から探した予定です。";
+  $("m-cal-src").textContent = list.length
+    ? how + "日時・場所が合っているか確かめてから登録してください。"
+    : "メールの中に日付が見つかりませんでした。日付と時刻を入れると登録できます。";
+  $("m-cal-err").textContent = r.ai_error ? "AIを使えなかった理由: " + r.ai_error : "";
+  $("m-cal-err").hidden = !r.ai_error;
+  $("m-cal-list").innerHTML = "";
+  for (const ev of (list.length ? list : [calBlank])) $("m-cal-list").appendChild(calCard(ev));
+  $("m-cal-open").hidden = true;
+  $("m-cal-panel").hidden = false;
+}
+
+$("m-cal").onclick = async () => {
+  const id = modal.id, seq = ++calSeq, b = $("m-cal");
+  if (!id) return;
+  b.disabled = true; b.textContent = "日付を探しています…";
+  try {
+    const r = await apiJson(`/api/mail/${id}/events`, { method: "POST" });
+    if (seq !== calSeq || modal.id !== id) return;   // 待っている間に別のメールを開いた・閉じた
+    renderCalendar(r);
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  if (seq !== calSeq) return;
+  b.disabled = false; b.textContent = "📅 カレンダーに登録";
+};
+$("m-cal-add").onclick = () => {
+  const card = calCard(calBlank);
+  $("m-cal-list").appendChild(card);
+  card.querySelector(".ev-date").focus();
+};
+$("m-cal-close").onclick = () => clearCalendar();
+// 「終日」にしたら時刻の欄を隠す (外したら出す)
+$("m-cal-list").addEventListener("change", e => {
+  if (e.target.matches(".ev-allday"))
+    e.target.closest(".cal-ev").querySelector(".cal-times").hidden = e.target.checked;
+});
+$("m-cal-list").onclick = e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const ev = calRead(b.closest(".cal-ev"));
+  try {
+    if (b.classList.contains("ev-google")) {
+      // 新しいタブで開く (この画面の URL は Google に渡さない)。押したその場で開くので
+      // スマホでもポップアップとして止められない
+      const link = document.createElement("a");
+      link.href = calGoogleUrl(ev, calTz);
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } else if (b.classList.contains("ev-ics")) {
+      const uid = (self.crypto && crypto.randomUUID ? crypto.randomUUID()
+        : Date.now().toString(36) + Math.random().toString(36).slice(2)) + "@zatsumu";
+      const url = URL.createObjectURL(new Blob([calIcs(ev, calTz, Date.now(), uid)],
+                                                { type: "text/calendar;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `予定_${ev.date}.ics`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // すぐ消すと保存が始まる前に消えてしまうブラウザがあるので、少し待ってから消す
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+  } catch (err) { alert(err.message); }
+};
+
+/* ---------- Notionに登録 (問い合わせのメールを案件DBに1行で入れる) ----------
+   サーバが Notion のデータベースに1行 (ページ) を作り、本文と添付ファイルも入れる。
+   登録したページはサーバが覚えていて、次からは「Notionで開く」を出す (二重に登録しない)。
+   「もう一度登録」は確かめてから、Notion にもう1行作る */
+let ntnSeq = 0;   // メールを開き直したら増やす (前のメールの登録結果をこの画面に出さない用)
+// Notion に登録できる設定があるか (保存済みのシークレットとデータベース)
+const notionReady = () => !!(appSettings.notion_token_set && appSettings.notion_database_id);
+// Notion のページの URL だけをリンクにする (サーバも確かめている)
+const notionUrl = u =>
+  /^https:\/\/([a-z0-9-]+\.)*notion\.(so|site|com)\/[^\s"'<>]*$/i.test(String(u || "")) ? String(u) : "";
+const notionOf = m => ({ notion_page_url: m.notion_page_url || "",
+                         notion_registered_at: m.notion_registered_at || "",
+                         notion_registered_by: m.notion_registered_by || "" });
+function ntnMsg(text, kind) {
+  $("m-ntn-msg").className = "ntn-msg" + (kind ? " " + kind : "");
+  $("m-ntn-msg").textContent = text;   // サーバの文 (列の名前など) は textContent で入れる
+}
+// 登録済みならリンクと「もう一度登録」、まだなら「Notionに登録」を出す。
+// 設定が無く、登録もしていないメールでは何も出さない (Notion を使わない人の画面を増やさない)
+function renderNotion(n, keepMsg) {
+  const url = notionUrl(n.notion_page_url);
+  $("m-ntn").hidden = !url && !notionReady();
+  $("m-ntn-reg").hidden = !!url;
+  $("m-ntn-reg").disabled = false;
+  $("m-ntn-reg").textContent = "🗂 Notionに登録";
+  $("m-ntn-open").hidden = !url;
+  if (url) $("m-ntn-open").href = url; else $("m-ntn-open").removeAttribute("href");
+  $("m-ntn-again").hidden = !url || !notionReady();
+  $("m-ntn-again").disabled = false;
+  $("m-ntn-again").textContent = "もう一度登録";
+  if (keepMsg) return;
+  const who = [n.notion_registered_at ? fmtDate(n.notion_registered_at) : "",
+               n.notion_registered_by || ""].filter(Boolean).join("・");
+  ntnMsg(url ? "Notionに登録済みです" + (who ? `（${who}）` : "") : "", "");
+}
+async function registerNotion(again) {
+  const id = modal.id;
+  if (!id) return;
+  if (again && !confirm("もう一度登録すると、Notionに同じ問い合わせの行がもう1つできます。登録しますか？\n\n" +
+      "（前に登録した行は消えません。要らなければ Notion で消してください）")) return;
+  if (modal.id !== id) return;
+  const seq = ++ntnSeq, b = again ? $("m-ntn-again") : $("m-ntn-reg");
+  $("m-ntn-reg").disabled = $("m-ntn-again").disabled = true;
+  b.textContent = "登録しています…";
+  ntnMsg("Notionに登録しています…（添付ファイルがあると1分ほどかかることがあります。" +
+         "この画面を閉じても、登録は続きます）", "");
+  let r, e;
+  try {
+    r = await api(`/api/mail/${id}/notion`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ again }),
+    });
+    e = await r.json().catch(() => ({}));
+  } catch (err) {
+    if (err.message === "auth" || seq !== ntnSeq || modal.id !== id) return;
+    renderNotion(modal.notion, true);
+    ntnMsg("通信に失敗しました。Notionに登録できている場合があるので、Notionで確かめてから" +
+           "もう一度押してください", "err");
+    return;
+  }
+  if (seq !== ntnSeq || modal.id !== id) return;   // 待っている間に別のメールを開いた・閉じた
+  if (r.ok) {
+    modal.notion = notionOf(e);
+    renderNotion(modal.notion, true);
+    const notes = [...(e.attachment_notes || []).map(x => "📎 " + x),
+                   ...(e.warnings || []).map(x => "⚠ " + x)];
+    if (e.ai_error) notes.push("⚠ AIを使えなかったため、決めた列だけを入れました（理由: " + e.ai_error + "）");
+    ntnMsg("Notionに登録しました ✓" + (e.database_title ? `（${e.database_title}）` : "") +
+           (e.attachments_uploaded ? `　添付ファイル ${e.attachments_uploaded}件も載せました。` : "") +
+           (notes.length ? "\n" + notes.join("\n") : ""), notes.length ? "warn" : "ok");
+    return;
+  }
+  if (r.status === 409) {
+    // ほかの画面 (人) が先に登録した・今登録しているところ。登録したページがあれば出す
+    try {
+      const r2 = await api(`/api/mail/${id}?thread=false`);
+      if (r2.ok) modal.notion = notionOf(await r2.json());
+    } catch {}
+    if (seq !== ntnSeq || modal.id !== id) return;
+    renderNotion(modal.notion, true);
+    ntnMsg(e.detail || "このメールはもうNotionに登録しています", "warn");
+    return;
+  }
+  renderNotion(modal.notion, true);
+  ntnMsg(e.detail || "Notionに登録できませんでした", "err");
+}
+$("m-ntn-reg").onclick = () => registerNotion(false);
+$("m-ntn-again").onclick = () => registerNotion(true);
+
+/* 定型文を入れる。差し込み ({相手の名前} など) はサーバがこのメール用に置き換え済み */
+let modalTemplates = [];
+async function loadModalTemplates(id) {
+  const sel = $("m-tpl");
+  sel.disabled = true;
+  sel.length = 1;                      // 先頭の「定型文を入れる…」だけ残す
+  modalTemplates = [];
+  let list;
+  try {
+    const r = await api(`/api/mail/${id}/templates`);
+    if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
+    list = await r.json();
+  } catch { return; }
+  if (modal.id !== id) return;         // 待っている間に別のメールを開いた
+  modalTemplates = list;
+  for (const t of list) {
+    const o = document.createElement("option");
+    o.value = t.id;
+    o.textContent = t.name;            // 名前は innerHTML に入れない
+    sel.appendChild(o);
+  }
+  sel.options[0].textContent = list.length ? "定型文を入れる…" : "定型文なし（設定で登録できます）";
+  sel.disabled = !list.length || $("m-draft").readOnly;
+}
+
+// テキスト欄のカーソルの位置に文字を入れる (選んでいる文字があれば置き換える)
+function insertAtCursor(ta, text) {
+  const s = ta.selectionStart, e = ta.selectionEnd, v = ta.value;
+  ta.value = v.slice(0, s) + text + v.slice(e);
+  ta.focus();
+  ta.setSelectionRange(s + text.length, s + text.length);
+}
+
+// 画面が返信文を入れ替えたときに呼ぶ。カーソルの位置はまだ人が選んでいないことにし、
+// 今の位置を覚えておく (ここから動いていれば、人が動かしたと分かる)
+function cursorByProgram(ta) {
+  modal.cursorSet = false;
+  modal.autoSel = [ta.selectionStart, ta.selectionEnd];
+}
+
+// 人が返信文の欄をタップ・クリックした / キーで動かした・打ったときだけ「カーソルの位置を
+// 選んだ」とみなす。focus は下の ta.focus() でも起き、select は Chrome だと
+// setSelectionRange でも後から起きるので使わない (続けて選んだ定型文が先頭に黙って入ってしまう)。
+// pointerdown も使わない (iPhone で返信文の欄に指を置いて画面を動かしただけでも起きる。
+// click はカーソルを置いたときだけ起き、画面を動かしたときは起きない)。
+// Tab・Shift などはカーソルを動かさない (Shift+Tab で定型文の欄へ戻るときにも起きる) ので数えない。
+// keyup でなく keydown なのは、確認を Enter で閉じたときの keyup が返信文の欄に届くことがあるため
+const NO_CURSOR_KEYS = ["Tab", "Shift", "Control", "Alt", "Meta", "Escape", "CapsLock"];
+$("m-draft").addEventListener("click", () => { modal.cursorSet = true; });
+$("m-draft").addEventListener("input", () => { modal.cursorSet = true; });
+$("m-draft").addEventListener("keydown", e => {
+  if (!NO_CURSOR_KEYS.includes(e.key)) modal.cursorSet = true;
+});
+$("m-tpl").onchange = () => {
+  const sel = $("m-tpl"), ta = $("m-draft");
+  const t = modalTemplates.find(x => String(x.id) === sel.value);
+  sel.value = "";                      // 同じ定型文をもう一度選べるよう表示を戻す
+  if (!t || ta.readOnly) return;
+  // 長押しで文字を選んだときなど、上のどれも起きずにカーソルが動くこともあるので、
+  // 入れ替えた直後の位置から動いていれば、人が選んだとみなす
+  const a = modal.autoSel;
+  if (a && (ta.selectionStart !== a[0] || ta.selectionEnd !== a[1])) modal.cursorSet = true;
+  if (ta.value.trim() && modal.cursorSet) {
+    insertAtCursor(ta, t.body);        // 書きかけの返信文の、カーソルの位置に入れる
+    return;
+  }
+  // 空なら署名付きで丸ごと入れる。下書きがあってカーソルの位置が分からないときは
+  // 黙って末尾 (署名の後) に足さず、置き換えてよいか聞く
+  if (ta.value.trim() && !confirm(
+      `今の返信文を、定型文「${t.name}」に置き換えますか？\n\n` +
+      "文の途中に入れたいときは「キャンセル」を押し、返信文の入れたい場所を" +
+      "タップしてから、もう一度選んでください。")) return;
+  ta.value = t.body_with_signature;
+  $("m-draft-src").textContent = "（定型文から作成）";
+  ta.focus();
+  ta.setSelectionRange(0, 0);
+  ta.scrollTop = 0;   // 欄が下までスクロールしたままだと、先頭 (宛名) が見えない
+  // 丸ごと入れ替えた文のどこに次の定型文を入れるかは、もう一度選んでもらう
+  // (カーソルは先頭に置いただけなので、続けて選ぶと置き換えてよいか聞く)
+  cursorByProgram(ta);
+};
+
+/* ---------- 設定 ---------- */
+// 直近にサーバから読み込んだ設定。共有項目(SMTP)を古い表示値で
+// 上書きしないよう、保存時に「画面で実際に変えたか」の判定に使う。
+let loaded = {};
+
+async function openSettings() {
+  if (!isAdmin()) return;              // 設定は管理者だけ (メール担当者にはボタンも出さない)
+  switchView("settings");
+  // SMTP は勤怠画面からも変更されうるので、開くたびに取り直す
+  try { appSettings = await apiJson("/api/settings"); } catch { return; }
+  fillSettings(appSettings);
+  loadDevices();
+  loadTemplates();
+  loadAccounts();
+  loadStaff();
+  loadAssignees();   // 登録されている名前 (種類ごとの担当の案内) を取り直す
+}
+
+function fillSettings(s) {
+  loaded = s;
+  $("set-mail-fetch-enabled").checked = !!s.mail_fetch_enabled;
+  $("set-mail-fetch-interval").value = s.mail_fetch_interval_min;
+  $("set-mail-fetch-days").value = s.mail_fetch_days;
+  $("set-mail-retention").value = s.mail_retention_days;
+  $("set-notify-mail-high").checked = !!s.notify_mail_high;
+  $("set-mail-auto-draft").checked = !!s.mail_auto_draft;
+  $("set-anthropic-key").value = "";
+  $("set-anthropic-key").placeholder = s.anthropic_api_key_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-anthropic-key-clear").hidden = !s.anthropic_api_key_set;
+  fillModelSelect("set-anthropic-model", s.anthropic_model, AI_DEFAULT_MODEL);
+  fillModelSelect("set-anthropic-classify-model", s.anthropic_classify_model,
+                  AI_DEFAULT_CLASSIFY_MODEL);
+  renderAiStatus(s);
+  $("set-mail-signature").value = s.mail_signature;
+  $("set-mail-instructions").value = s.mail_reply_instructions;
+  $("set-mail-vip").value = s.mail_vip_addresses;
+  $("set-mail-keywords").value = s.mail_urgent_keywords;
+  $("set-mail-categories").value = s.mail_categories;
+  $("set-mail-category-keywords").value = s.mail_category_keywords;
+  $("set-mail-category-assignees").value = s.mail_category_assignees;
+  renderCategoryFilter();   // 種類の一覧を変えたら、受信箱の絞り込みもそろえる
+  $("set-smtp-host").value = s.smtp_host;
+  $("set-smtp-port").value = s.smtp_port;
+  $("set-smtp-user").value = s.smtp_user;
+  $("set-smtp-pass").value = "";
+  $("set-smtp-pass").placeholder = s.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-mail-from").value = s.mail_from;
+  fillRemindSettings(s);
+  fillReportSettings(s);
+  fillNotionSettings(s);
+  $("set-require-approval").checked = !!s.mail_require_approval;
+  $("set-msg").textContent = "";
+  $("test-ai-msg").textContent = "";
+  $("test-email-msg").textContent = "";
+  $("test-remind-msg").textContent = "";
+  $("report-msg").textContent = "";
+  $("report-preview").hidden = true;   // 設定を変えたら見本も変わるので、見るときに作り直す
+}
+
+/* ---------- 返事をしていないメールのお知らせ (設定) ---------- */
+// 「お知らせしない時間帯」は設定では "21-8" の形 (空 = なし)。画面では2つの選択欄で選ぶ
+function fillQuietSelects(value) {
+  const from = $("set-remind-quiet-from"), to = $("set-remind-quiet-to");
+  if (!from.options.length) {
+    from.add(new Option("なし", ""));
+    for (let h = 0; h < 24; h++) {
+      from.add(new Option(h + "時", String(h)));
+      to.add(new Option(h + "時", String(h)));
+    }
+  }
+  const mt = /^(\d{1,2})-(\d{1,2})$/.exec(value || "");
+  from.value = mt ? String(+mt[1]) : "";
+  to.value = mt ? String(+mt[2]) : "8";
+  to.disabled = !mt;
+}
+$("set-remind-quiet-from").onchange = () => {
+  $("set-remind-quiet-to").disabled = !$("set-remind-quiet-from").value;
+};
+function quietValue() {
+  const from = $("set-remind-quiet-from").value;
+  return from ? `${from}-${$("set-remind-quiet-to").value}` : "";
+}
+function fillRemindSettings(s) {
+  $("set-remind-enabled").checked = !!s.mail_remind_enabled;
+  $("set-remind-high").value = s.mail_remind_hours_high;
+  $("set-remind-normal").value = s.mail_remind_hours_normal;
+  fillQuietSelects(s.mail_remind_quiet);
+  $("quiet-tz").textContent = !s.timezone || s.timezone === "Asia/Tokyo"
+    ? "日本時間" : s.timezone;
+  $("set-mail-to").value = s.mail_to || "";
+  // Slack の URL は、知っている人なら誰でも投稿できるので画面には出さない (変えるときだけ入れる)
+  $("set-slack").value = "";
+  $("set-slack").placeholder = s.slack_webhook_url ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-slack-clear").hidden = !s.slack_webhook_url;
+  $("set-mail-page-url").value = s.mail_page_url || "";
+  const auto = s.mail_page_url_auto || "";
+  const example = location.origin + "/mail";
+  $("set-mail-page-url").placeholder = auto || "例: " + example;
+  $("page-url-help").textContent = auto
+    ? `空のままなら ${auto} を載せます。`
+    : `空のままなら、アドレスは載せません（このページなら ${example} です）。`;
+  renderRemindDest(s);
+}
+// いまの送り先 (保存済みの設定で。お知らせを送るのはこの送り先)
+// 保存済みの送り先 (Slack・通知先メール) の名前
+function destNames(s) {
+  const names = [];
+  if (s.slack_webhook_url) names.push("Slack");
+  if (s.smtp_host && s.mail_to) names.push("通知先メール");
+  return names;
+}
+function renderRemindDest(s) {
+  const names = destNames(s);
+  const dest = $("remind-dest");
+  dest.className = names.length ? "" : "error";
+  dest.textContent = names.length
+    ? `いまの送り先: ${names.join("・")}`
+    : "⚠ 送り先（通知先メールか Slack）が入っていないため、お知らせは送られません。" +
+      (s.mail_to && !s.smtp_host ? "通知先メールに送るには「返信の送信（SMTP）」の設定も必要です。" : "");
+}
+// Slack の URL を消す (保存では空の欄は送らないため、消すときはこのボタンで消す)
+$("set-slack-clear").onclick = async () => {
+  if (!confirm("Slack にお知らせを送らないようにしますか？\n\n" +
+      "勤怠管理の Slack 通知や「優先度[高]の受信を通知」も Slack には届かなくなります。" +
+      "\nもう一度使うときは、URL を入れて保存してください。")) return;
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slack_webhook_url: "" }),
+  });
+  // Slack のところだけ表示を直す (ほかの欄の、まだ保存していない入力は消さない)
+  $("set-slack").value = "";
+  $("set-slack").placeholder = "(未設定)";
+  $("set-slack-clear").hidden = true;
+  renderRemindDest(appSettings);
+  renderReportNext(appSettings);
+  $("test-remind-msg").style.color = "#0a7d32";
+  $("test-remind-msg").textContent = "Slack の URL を消しました ✓";
+};
+// 送り先 (Slack・通知先メール) を入れただけで、まだ保存していないか。
+// 送るのは保存済みの送り先なので、先に保存してもらう
+const destUnsaved = () =>
+  !!$("set-slack").value || $("set-mail-to").value !== (loaded.mail_to ?? "");
+// 送った結果 (送れた送り先・送れなかった送り先) を出す (お知らせのテスト送信・週ごとのまとめ)
+const CHANNEL_LABEL = { slack: "Slack", email: "通知先メール" };
+function showSent(msg, e) {
+  const names = list => (list || []).map(c => CHANNEL_LABEL[c] || c).join("・");
+  const failed = names(e.failed);
+  msg.style.color = failed ? "#b45309" : "#0a7d32";
+  msg.textContent = `${names(e.sent)} に送りました ✓` +
+    (failed ? `（${failed} には送れませんでした。設定を確かめてください）` : "");
+}
+$("set-test-remind").onclick = async () => {
+  const b = $("set-test-remind"), msg = $("test-remind-msg");
+  if (destUnsaved()) {
+    msg.style.color = "#c62828";
+    msg.textContent = "送り先の変更がまだ保存されていません。先に下の「保存」を押してから試してください";
+    return;
+  }
+  b.disabled = true;
+  msg.style.color = "#475569";
+  msg.textContent = "送信中...";
+  try {
+    const r = await api("/api/settings/test-remind", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showSent(msg, e);
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "送信できませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+};
+
+/* ---------- 週ごとのまとめ (設定) ---------- */
+const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];   // 設定の 0=月曜 … 6=日曜
+function fillReportSettings(s) {
+  const wd = $("set-report-weekday"), hr = $("set-report-hour");
+  if (!wd.options.length) {
+    WEEKDAYS.forEach((w, i) => wd.add(new Option(w + "曜日", String(i))));
+    for (let h = 0; h < 24; h++) hr.add(new Option(h + "時", String(h)));
+  }
+  $("set-report-enabled").checked = !!s.mail_report_enabled;
+  wd.value = String(s.mail_report_weekday ?? 0);
+  hr.value = String(s.mail_report_hour ?? 9);
+  $("report-tz").textContent = !s.timezone || s.timezone === "Asia/Tokyo"
+    ? "日本時間" : s.timezone;
+  renderReportNext(s);
+}
+// 次に送る日時 (保存済みの設定で)。送り先が無ければ、送られないことを知らせる
+function renderReportNext(s) {
+  const el = $("report-next");
+  let text = "", warn = false;
+  if (!s.mail_report_enabled) {
+    text = "いまは送っていません（「週ごとのまとめを送る」にチェックを入れて「保存」すると、毎週送ります）。";
+  } else if (!destNames(s).length) {
+    text = "⚠ 送り先（通知先メールか Slack）が入っていないため、まとめは送られません。";
+    warn = true;
+  } else if (s.mail_report_next_at) {
+    const at = new Date(s.mail_report_next_at);
+    text = at <= new Date()
+      ? "まだ送っていない今週の分を、次の自動受信のときに送ります。"
+      : `次に送るのは ${fmtTz(at, { month: "numeric", day: "numeric", weekday: "short", hour: "numeric" })}ごろです。`;
+  }
+  el.className = warn ? "error" : "";
+  el.textContent = text;
+}
+// 見本 (昨日までの7日間の分。保存済みの設定で作る)。サーバから来た文は textContent で出す
+$("set-report-preview").onclick = async () => {
+  const b = $("set-report-preview"), msg = $("report-msg"), box = $("report-preview");
+  b.disabled = true;
+  msg.style.color = "#475569";
+  msg.textContent = "作っています...";
+  try {
+    const r = await api("/api/mail/report/preview");
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      msg.textContent = "";
+      box.textContent = `件名: ${e.subject}\n\n${e.text}`;
+      box.hidden = false;
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "見本を作れませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+};
+$("set-report-send").onclick = async () => {
+  const b = $("set-report-send"), msg = $("report-msg");
+  if (destUnsaved()) {
+    msg.style.color = "#c62828";
+    msg.textContent = "送り先の変更がまだ保存されていません。先に下の「保存」を押してから送ってください";
+    return;
+  }
+  const names = destNames(appSettings);
+  if (!names.length) {
+    msg.style.color = "#c62828";
+    msg.textContent = "送り先が未設定です。Slack の URL か、通知先メール" +
+      "（「返信の送信（SMTP）」の設定も必要）を入れて「保存」してからお試しください";
+    return;
+  }
+  if (!confirm(`前の7日間（昨日まで）のまとめを、いまの送り先（${names.join("・")}）に送りますか？\n\n` +
+      "毎週決まった曜日に送る分とは別です（いつもの分も、そのまま送ります）。")) return;
+  b.disabled = true;
+  msg.style.color = "#475569";
+  msg.textContent = "送信中...";
+  try {
+    const r = await api("/api/mail/report/send-now", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showSent(msg, e);
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "送信できませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+};
+
+/* ---------- Notion（案件DB）(設定) ---------- */
+function fillNotionSettings(s) {
+  // シークレットは表示しない (サーバも返さない)。変えるときだけ入れる
+  $("set-notion-token").value = "";
+  $("set-notion-token").placeholder = s.notion_token_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-notion-token-clear").hidden = !s.notion_token_set;
+  $("set-notion-db").value = s.notion_database_id || "";
+  $("set-notion-ai").checked = !!s.notion_ai_fill;
+  $("set-notion-map").value = s.notion_property_map || "";
+  $("test-notion-msg").textContent = "";
+  $("notion-cols").hidden = true;   // 設定を変えたら列の一覧も変わるので、テストで取り直す
+}
+// シークレットを消す (保存では空の欄は送らないため、消すときはこのボタンで消す)
+$("set-notion-token-clear").onclick = async () => {
+  if (!confirm("Notionのシークレットを消しますか？\n\n消すと、返信画面の「Notionに登録」が出なくなります" +
+      "（登録済みの行は Notion に残ります）。\nもう一度使うときは、シークレットを入れて保存してください。")) return;
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notion_token: "" }),
+  });
+  // シークレットのところだけ表示を直す (ほかの欄の、まだ保存していない入力は消さない)
+  $("set-notion-token").value = "";
+  $("set-notion-token").placeholder = "(未設定)";
+  $("set-notion-token-clear").hidden = true;
+  $("test-notion-msg").style.color = "#0a7d32";
+  $("test-notion-msg").textContent = "シークレットを消しました ✓";
+  $("notion-cols").hidden = true;
+};
+$("set-test-notion").onclick = async () => {
+  const b = $("set-test-notion"), msg = $("test-notion-msg"), cols = $("notion-cols");
+  // 試すのは保存済みの設定。入れただけのシークレットや URL は先に保存してもらう
+  if ($("set-notion-token").value || $("set-notion-db").value.trim() !== (loaded.notion_database_id || "") ||
+      $("set-notion-map").value !== (loaded.notion_property_map || "") ||
+      $("set-notion-ai").checked !== !!loaded.notion_ai_fill) {
+    msg.style.color = "#c62828";
+    msg.textContent = "変更がまだ保存されていません。先に下の「保存」を押してから試してください";
+    return;
+  }
+  b.disabled = true;
+  cols.hidden = true;
+  msg.style.color = "#475569";
+  msg.textContent = "確認中...";
+  try {
+    const r = await api("/api/settings/test-notion", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      const probs = e.problems || [], list = e.properties || [];
+      msg.style.color = probs.length ? "#b45309" : "#0a7d32";
+      msg.textContent = `つながりました ✓ データベース「${e.title || "（名前なし）"}」（列 ${list.length}個）` +
+        (probs.length ? "\n⚠ 列に入れるもののうち、このデータベースでは使えない行があります" +
+                        "（直して「保存」してください）:\n" + probs.map(p => "・" + p).join("\n") : "");
+      // 列の名前などは Notion から来た文字なので esc() を通す
+      cols.innerHTML = "<small>登録するときに入れるもの</small>" + list.map(p => `
+        <div class="ntn-col"><b>${esc(p.name)}</b><small>${esc(p.label)}</small>
+          <span>← ${esc(p.fill)}</span></div>`).join("");
+      cols.hidden = !list.length;
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "Notionにつながりませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+};
+
+/* AI のモデルの選び方。値はモデル名、表示は分かりやすい言葉にする。
+   既定 (おすすめ) はサーバ側の設定の既定値 (server/db.py) と同じにしておく */
+const AI_MODELS = [
+  ["claude-opus-5-5", "高品質"],
+  ["claude-sonnet-5-5", "標準"],
+  ["claude-haiku-5-5", "低価格"],
+];
+const AI_DEFAULT_MODEL = "claude-opus-5-5";            // 返信文の作成
+const AI_DEFAULT_CLASSIFY_MODEL = "claude-haiku-5-5";  // 優先度の判定
+function fillModelSelect(id, value, recommended) {
+  const sel = $(id);
+  const opts = AI_MODELS.map(([v, label]) =>
+    [v, label + (v === recommended ? "（おすすめ）" : "")]);
+  // 一覧に無いモデル (以前の既定値や手で入れた名前) も「今の設定」として残す
+  if (value && !AI_MODELS.some(([v]) => v === value)) opts.push([value, value + "（今の設定）"]);
+  sel.textContent = "";
+  for (const [v, label] of opts) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.value = value || recommended;
+  sel.dataset.saved = sel.value;   // 「保存していない変更」の判定用
+}
+
+// AI を使えなかった用途ごとに、代わりに何で動いているか (使えている用途のことは書かない)
+const AI_FALLBACK = {
+  draft: "返信文の作成にAIを使えていないため、定型文で下書きしています。",
+  classify: "優先度の判定にAIを使えていないため、優先度と種類はキーワードで判定しています。",
+};
+const aiWarnText = errs =>
+  errs.map(e => AI_FALLBACK[e.purpose] || `${e.label}にAIを使えていません。`).join("");
+// AI の直近の失敗を、設定のカード (理由) と受信箱 (注意書き) に出す
+function renderAiStatus(s) {
+  const errs = (s && s.ai_errors) || [];
+  $("ai-status").textContent = errs.length
+    ? "⚠ " + aiWarnText(errs) + "\n" +
+      errs.map(e => `・${e.label}（${new Date(e.at).toLocaleString("ja-JP")}）: ${e.message}`).join("\n")
+    : "";
+  $("ai-status").hidden = !errs.length;
+  $("ai-warn-text").textContent = aiWarnText(errs);
+  $("ai-warn").hidden = !errs.length;
+}
+async function refreshAiStatus() {
+  if (!isAdmin()) return;              // AI の設定は管理者だけが直せる (メール担当者には出さない)
+  try {
+    const r = await api("/api/settings");
+    if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
+    appSettings.ai_errors = (await r.json()).ai_errors;
+    renderAiStatus(appSettings);
+  } catch {}
+}
+// 設定画面を開いて AI のカードまで動かす (スマホではカードが縦に並び、
+// 一番上の受信のカードしか見えないため)
+$("ai-warn-link").onclick = async e => {
+  e.preventDefault();
+  await openSettings();
+  $("ai-card").scrollIntoView({ block: "start" });
+};
+
+$("set-save").onclick = async () => {
+  // メール関連のキーだけ送る。PATCH は部分更新なので勤怠側の設定は変わらない
+  const body = {
+    mail_fetch_enabled: $("set-mail-fetch-enabled").checked,
+    mail_fetch_interval_min: +$("set-mail-fetch-interval").value,
+    mail_fetch_days: +$("set-mail-fetch-days").value,
+    mail_retention_days: +$("set-mail-retention").value,
+    notify_mail_high: $("set-notify-mail-high").checked,
+    mail_auto_draft: $("set-mail-auto-draft").checked,
+    anthropic_model: $("set-anthropic-model").value,
+    anthropic_classify_model: $("set-anthropic-classify-model").value,
+    mail_signature: $("set-mail-signature").value,
+    mail_reply_instructions: $("set-mail-instructions").value,
+    mail_vip_addresses: $("set-mail-vip").value,
+    mail_urgent_keywords: $("set-mail-keywords").value,
+    mail_categories: $("set-mail-categories").value,
+    mail_category_keywords: $("set-mail-category-keywords").value,
+    mail_category_assignees: $("set-mail-category-assignees").value,
+    mail_remind_enabled: $("set-remind-enabled").checked,
+    mail_remind_hours_high: +$("set-remind-high").value,
+    mail_remind_hours_normal: +$("set-remind-normal").value,
+    mail_remind_quiet: quietValue(),
+    mail_page_url: $("set-mail-page-url").value,
+    mail_report_enabled: $("set-report-enabled").checked,
+    mail_report_weekday: +$("set-report-weekday").value,
+    mail_report_hour: +$("set-report-hour").value,
+    notion_database_id: $("set-notion-db").value,
+    notion_property_map: $("set-notion-map").value,
+    notion_ai_fill: $("set-notion-ai").checked,
+    mail_require_approval: $("set-require-approval").checked,
+  };
+  // 空の欄は 0 (お知らせしない) と区別がつかないので、入れてもらう
+  for (const id of ["set-remind-high", "set-remind-normal"]) {
+    if ($(id).value.trim() === "") {
+      alert("お知らせまでの時間を入れてください（お知らせしないときは 0）");
+      $(id).focus();
+      return;
+    }
+  }
+  // SMTP と通知先メールは勤怠画面と共通。この画面で実際に変えた項目だけ送り、
+  // 表示していた古い値で相手側の変更を消さないようにする
+  for (const [key, id] of [["smtp_host", "set-smtp-host"],
+                           ["smtp_port", "set-smtp-port"],
+                           ["smtp_user", "set-smtp-user"],
+                           ["mail_from", "set-mail-from"],
+                           ["mail_to", "set-mail-to"]]) {
+    const v = $(id).value;
+    if (v !== (loaded[key] ?? "")) body[key] = v;
+  }
+  if ($("set-anthropic-key").value) body.anthropic_api_key = $("set-anthropic-key").value;
+  if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
+  if ($("set-slack").value.trim()) body.slack_webhook_url = $("set-slack").value.trim();
+  if ($("set-notion-token").value.trim()) body.notion_token = $("set-notion-token").value.trim();
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  fillSettings(appSettings);
+  me.require_approval = !!appSettings.mail_require_approval;
+  // 受信するメールアドレスの欄は、このボタンでは保存されない (カードのボタンで保存する)
+  $("set-msg").textContent = "保存しました ✓" + (acctDirty()
+    ? "（「受信するメールアドレス」の入力は、まだ保存されていません。そのカードの「" +
+      $("acct-save").textContent + "」を押してください）" : "");
+  setTimeout(() => $("set-msg").textContent = "", acctDirty() ? 10000 : 2500);
+};
+
+// 保存では空のキー欄は送らない (「変更時のみ入力」のため) ので、消すときはこのボタンで消す。
+// 間違ったキーを入れたままだと、AI を使えないという注意が受信箱に出続ける
+$("set-anthropic-key-clear").onclick = async () => {
+  if (!confirm("Claude APIキーを消しますか？\n\n消すと、返信文は定型文で下書きし、" +
+      "優先度と種類はキーワードで判定します（AIの料金はかかりません）。" +
+      "\nもう一度使うときは、キーを入れて保存してください。")) return;
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ anthropic_api_key: "" }),
+  });
+  // キーのところだけ表示を直す (ほかの欄の、まだ保存していない入力は消さない)
+  $("set-anthropic-key").value = "";
+  $("set-anthropic-key").placeholder = "(未設定)";
+  $("set-anthropic-key-clear").hidden = true;
+  renderAiStatus(appSettings);         // 受信箱の注意書きも消える
+  $("test-ai-msg").style.color = "#0a7d32";
+  $("test-ai-msg").textContent = "APIキーを消しました ✓";
+};
+
+$("set-test-ai").onclick = async () => {
+  const b = $("set-test-ai"), msg = $("test-ai-msg");
+  // 試すのは保存済みの設定。入力しただけのキーや選び直したモデルは先に保存してもらう
+  if ($("set-anthropic-key").value ||
+      $("set-anthropic-model").value !== $("set-anthropic-model").dataset.saved ||
+      $("set-anthropic-classify-model").value !== $("set-anthropic-classify-model").dataset.saved) {
+    msg.style.color = "#c62828";
+    msg.textContent = "変更がまだ保存されていません。先に下の「保存」を押してから試してください";
+    return;
+  }
+  b.disabled = true;
+  msg.style.color = "#475569";
+  msg.textContent = "確認中...（30秒ほどかかることがあります）";
+  try {
+    const r = await api("/api/settings/test-ai", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      msg.style.color = "#0a7d32";
+      msg.textContent = `AIを使えます ✓（返信文の作成: ${e.model}／優先度の判定: ${e.classify_model}）`;
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "AIを使えませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+  refreshAiStatus();
+};
+
+$("set-test-email").onclick = async () => {
+  const to = $("set-test-email-to").value.trim();
+  if (!to) {
+    $("test-email-msg").style.color = "#c62828";
+    $("test-email-msg").textContent = "送信先メールを入力してください";
+    return;
+  }
+  $("test-email-msg").style.color = "#475569";
+  $("test-email-msg").textContent = "送信中...";
+  try {
+    await apiJson("/api/settings/test-email", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to }),
+    });
+    $("test-email-msg").style.color = "#0a7d32";
+    $("test-email-msg").textContent = to + " に送信しました ✓";
+  } catch {
+    $("test-email-msg").style.color = "#c62828";
+    $("test-email-msg").textContent = "送信できませんでした（SMTP設定を保存後にお試しください）";
+  }
+};
+
+/* ---------- 受信するメールアドレス (設定) ---------- */
+// 追加・変更・止める・削除・並べ替えは、ボタンを押した時点でサーバに保存する (下の「保存」とは別)。
+// パスワードはサーバが返さない (入っているかだけ)。名前・アドレス・失敗の理由は esc() を通す
+let accounts = [];          // 受信するメールアドレス [{id, label, address, ...}]
+let deletedMailCount = 0;   // 一覧から削除したアドレスに届いたメールの数
+let acctEditing = null;     // 編集中のアドレスの id (null = 新しく追加)
+let acctAutoUser = "";      // メールアドレスから自動で入れた IMAP ユーザー (人が変えたら上書きしない)
+
+async function loadAccounts() {
+  let d;
+  try { d = await apiJson("/api/mail/accounts"); } catch { return; }
+  accounts = d.accounts || [];
+  deletedMailCount = d.deleted_mail_count || 0;
+  renderAccountList();
+  if (!acctEditing && !acctDirty()) resetAcctForm();   // 入力中の内容は消さない
+}
+
+function renderAccountList() {
+  const last = accounts.length - 1;
+  $("acct-list").innerHTML = (accounts.length ? accounts.map((a, i) => {
+    const id = Number(a.id);
+    const st = !a.enabled ? "<small>止めています（受信しません）</small>"
+      : a.last_error
+        ? `<small class="acct-err">⚠ ${a.last_error_at ? esc(fmtTime(a.last_error_at)) + " の" : ""}受信に失敗しました: ${esc(a.last_error)}</small>`
+        : `<small>最終受信: ${a.last_fetch_at ? esc(fmtTime(a.last_fetch_at)) : "まだありません"}</small>`;
+    return `
+    <div class="acct-row${a.enabled ? "" : " off"}"><div>
+      <b>${esc(a.label)}</b> <small>${esc(a.address)}</small><br>${st}<br>
+      <small>受信箱のメール ${Number(a.mail_count) || 0}通${a.smtp_user ? "・送信用のユーザーで送ります" : ""}</small>
+    </div><div class="acct-btns">
+      <button class="ghost" data-acct="${id}" data-act="test">接続テスト</button>
+      <button class="ghost" data-acct="${id}" data-act="edit">編集</button>
+      <button class="ghost" data-acct="${id}" data-act="toggle">${a.enabled ? "止める" : "受信する"}</button>
+      <button class="ghost" data-acct="${id}" data-act="del">削除</button>
+      <span class="acct-move">
+        <button class="ghost" data-acct="${id}" data-act="up" aria-label="上へ"${i === 0 ? " disabled" : ""}>↑</button>
+        <button class="ghost" data-acct="${id}" data-act="down" aria-label="下へ"${i === last ? " disabled" : ""}>↓</button>
+      </span>
+    </div><div class="acct-test" id="acct-test-${id}"></div></div>`;
+  }).join("") : "<small>まだありません。下の欄から追加してください（追加するまで、メールは受信しません）</small>") +
+    (deletedMailCount ? `<p><small>削除したアドレスに届いたメール: ${Number(deletedMailCount)}通（受信箱に残っています）</small></p>` : "");
+}
+
+const ACCT_TEXT = { label: "acct-label", from_addr: "acct-from", imap_host: "acct-imap-host",
+                    imap_port: "acct-imap-port", imap_user: "acct-imap-user",
+                    imap_folder: "acct-imap-folder", imap_sent_folder: "acct-sent-folder",
+                    smtp_user: "acct-smtp-user" };
+function acctMsg(text, color) {
+  $("acct-msg").style.color = color || "#0a7d32";
+  $("acct-msg").textContent = text;
+}
+// 追加の欄に何か入れたか (下の「保存」を押しても、ここは保存されないことを知らせる用)
+const acctDirty = () => acctEditing !== null || !!($("acct-from").value.trim() ||
+  $("acct-imap-pass").value || $("acct-imap-user").value.trim() || $("acct-smtp-pass").value);
+
+function resetAcctForm() {
+  acctEditing = null;
+  // 同じ会社のアドレスなら、受信サーバは同じことが多いので、1つ目のアドレスのものを入れておく
+  const base = accounts[0];
+  for (const id of Object.values(ACCT_TEXT)) $(id).value = "";
+  $("acct-imap-host").value = base ? base.imap_host : "";
+  $("acct-imap-port").value = base ? base.imap_port : "993";
+  $("acct-imap-ssl").checked = base ? !!base.imap_ssl : true;
+  $("acct-save-sent").checked = true;
+  $("acct-imap-pass").value = $("acct-smtp-pass").value = "";
+  $("acct-imap-pass").placeholder = $("acct-smtp-pass").placeholder = "(未設定)";
+  $("acct-label").placeholder = "例：黒須";
+  $("acct-more").open = false;
+  acctAutoUser = "";
+  $("acct-form-title").textContent = "アドレスを追加";
+  $("acct-save").textContent = "アドレスを追加";
+  $("acct-cancel").hidden = true;
+}
+
+function editAccount(a) {
+  acctEditing = a.id;
+  for (const [key, id] of Object.entries(ACCT_TEXT)) $(id).value = a[key] || "";
+  $("acct-imap-ssl").checked = !!a.imap_ssl;
+  $("acct-save-sent").checked = !!a.save_sent;
+  $("acct-imap-pass").value = $("acct-smtp-pass").value = "";
+  $("acct-imap-pass").placeholder = a.imap_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("acct-smtp-pass").placeholder = a.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  // 「くわしい設定」を変えてあるアドレスは、最初から開いておく
+  $("acct-more").open = !!(a.smtp_user || a.imap_sent_folder || !a.save_sent ||
+                           (a.imap_folder && a.imap_folder !== "INBOX"));
+  acctAutoUser = "";
+  $("acct-form-title").textContent = `「${a.label}」を編集中`;
+  $("acct-save").textContent = "変更を保存";
+  $("acct-cancel").hidden = false;
+  acctMsg("");
+  $("acct-form-title").scrollIntoView({ block: "start", behavior: "smooth" });
+  $("acct-from").focus({ preventScroll: true });
+}
+
+// メールアドレスを入れたら、IMAP ユーザー (空か、前に自動で入れたもの) にも入れ、
+// 名前の例も @ の前にする (名前を空のまま追加すると、サーバが @ の前を名前にする)
+$("acct-from").addEventListener("input", () => {
+  const v = $("acct-from").value;
+  const addr = ((/<([^<>]*)>/.exec(v) || [])[1] || v).trim();
+  const user = $("acct-imap-user");
+  if (!user.value.trim() || user.value === acctAutoUser) {
+    user.value = addr;
+    acctAutoUser = addr;
+  }
+  $("acct-label").placeholder = "例：" + (addr.split("@")[0] || "黒須");
+});
+
+$("acct-save").onclick = async () => {
+  const body = {};
+  for (const [key, id] of Object.entries(ACCT_TEXT)) body[key] = $(id).value;
+  body.imap_ssl = $("acct-imap-ssl").checked;
+  body.save_sent = $("acct-save-sent").checked;
+  // パスワードは入れたときだけ送る (空は「変えない」)
+  if ($("acct-imap-pass").value) body.imap_pass = $("acct-imap-pass").value;
+  if ($("acct-smtp-pass").value) body.smtp_pass = $("acct-smtp-pass").value;
+  const editing = acctEditing, b = $("acct-save");
+  b.disabled = true;
+  acctMsg("保存しています...", "#475569");
+  try {
+    const r = await api(editing ? `/api/mail/accounts/${editing}` : "/api/mail/accounts", {
+      method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const e = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      acctMsg(e.detail || "保存できませんでした", "#c62828");
+    } else {
+      resetAcctForm();
+      acctMsg(editing ? `「${e.label}」の変更を保存しました ✓`
+        : `「${e.label}」を追加しました ✓ 次の自動受信から受信します（「接続テスト」で確かめられます）`);
+      await loadAccounts();
+      refreshStatus();
+    }
+  } catch (e) {
+    if (e.message !== "auth") acctMsg("通信に失敗しました。もう一度お試しください", "#c62828");
+  }
+  b.disabled = false;
+};
+$("acct-cancel").onclick = () => { resetAcctForm(); acctMsg(""); };
+
+$("acct-list").onclick = async e => {
+  const b = e.target.closest("button[data-acct]");
+  if (!b) return;
+  const a = accounts.find(x => x.id === +b.dataset.acct);
+  if (!a) return;
+  const act = b.dataset.act;
+  if (act === "edit") { editAccount(a); return; }
+  if (act === "test") {
+    const msg = $(`acct-test-${Number(a.id)}`);
+    b.disabled = true;
+    msg.style.color = "#475569";
+    msg.textContent = "接続中...（保存済みの設定で試します）";
+    try {
+      const r = await api(`/api/mail/accounts/${a.id}/test`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        msg.style.color = "#0a7d32";
+        msg.textContent = `接続できました ✓（フォルダ内 ${d.count} 通）` +
+          (d.sent_folder ? `／送信済みフォルダ: ${d.sent_folder}`
+            : `／送信済みフォルダ: 見つかりません（${d.sent_folder_error}）`);
+      } else {
+        msg.style.color = "#c62828";
+        msg.textContent = d.detail || "接続できませんでした";
+      }
+    } catch (err) {
+      if (err.message !== "auth") {
+        msg.style.color = "#c62828";
+        msg.textContent = "通信に失敗しました。もう一度お試しください";
+      }
+    }
+    b.disabled = false;
+    return;
+  }
+  if (act === "del" && !confirm(
+      `「${a.label}」（${a.address}）を、受信するメールアドレスの一覧から削除しますか？\n\n` +
+      "このアドレスは受信しなくなります。届いたメール" +
+      (a.mail_count ? ` ${a.mail_count}通` : "") + "は消えません" +
+      "（受信箱では「削除したアドレス」と出て、返信は共通の差出人で送ります）。\n" +
+      "受信を休むだけなら「止める」を押してください。")) return;
+  let req;
+  if (act === "del") req = { method: "DELETE" };
+  else {
+    const body = act === "toggle" ? { enabled: !a.enabled } : { move: act };
+    req = { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  }
+  try { await apiJson(`/api/mail/accounts/${a.id}`, req); } catch { return; }
+  if (act === "del" && acctEditing === a.id) resetAcctForm();
+  if (act === "del") acctMsg(`「${a.label}」を削除しました（届いたメールは受信箱に残っています）`);
+  await loadAccounts();
+  refreshStatus();   // 受信箱の「アドレス」の絞り込みと宛先の表示も、そろえる
+};
+resetAcctForm();     // 一覧を読み込めなくても、追加の欄は既定の値 (SSL・993番など) にしておく
+
+/* ---------- メール担当者 (設定) ---------- */
+// 「担当にする」「外す」は押した時点でサーバに保存する (下の「保存」とは別)。名前は esc() を通す
+let staffList = [];
+async function loadStaff() {
+  try { staffList = await apiJson("/api/mail/staff"); } catch { return; }
+  $("staff-list").innerHTML = staffList.length ? staffList.map(u => {
+    const id = Number(u.id);
+    const st = u.is_admin ? "<small>管理者（もともと全部使えます）</small>"
+      : u.staff ? `<small class="on">メール担当者</small>${u.active ? "" : "<small>（無効にした人）</small>"}`
+      : "<small>メール画面は使えません</small>";
+    return `
+    <div class="staff-row"><div><b>${esc(u.name)}</b><br>${st}</div>${u.is_admin ? ""
+      : `<button class="ghost" data-staff="${id}" data-on="${u.staff ? 0 : 1}">${u.staff ? "外す" : "担当にする"}</button>`}</div>`;
+  }).join("") : "<small>登録されている人がいません</small>";
+}
+function staffMsg(text, color) {
+  $("staff-msg").style.color = color || "#0a7d32";
+  $("staff-msg").textContent = text;
+}
+$("staff-list").onclick = async e => {
+  const b = e.target.closest("button[data-staff]");
+  if (!b) return;
+  const u = staffList.find(x => x.id === +b.dataset.staff);
+  if (!u) return;
+  const on = b.dataset.on === "1";
+  if (!confirm(on
+      ? `${u.name} さんをメール担当者にしますか？\n\nお客様のメールを読み、返信文を作れるようになります` +
+        "（送信はできません）。この画面に入るには、本人のトークン（合言葉）を使います。"
+      : `${u.name} さんをメール担当者から外しますか？\n\n次の操作から、この画面を使えなくなります。`)) return;
+  b.disabled = true;
+  try {
+    await apiJson(`/api/mail/staff/${u.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ staff: on }),
+    });
+  } catch { b.disabled = false; return; }
+  staffMsg(on ? `${u.name} さんをメール担当者にしました ✓` : `${u.name} さんをメール担当者から外しました`);
+  loadStaff();
+};
+
+/* ---------- 定型文 (設定) ---------- */
+// 追加・変更・削除・並べ替えは、ボタンを押した時点でサーバに保存する (下の「保存」とは別)
+let tplList = [];
+let tplEditing = null;   // 編集中の定型文の id (null = 新しく追加)
+
+async function loadTemplates() {
+  try { tplList = await apiJson("/api/mail/templates"); } catch { return; }
+  const last = tplList.length - 1;
+  $("tpl-list").innerHTML = tplList.length ? tplList.map((t, i) => {
+    const preview = t.body.replace(/\s+/g, " ");
+    return `
+    <div class="tpl-row"><div>
+      <b>${esc(t.name)}</b><br>
+      <small>${esc(preview.slice(0, 60))}${preview.length > 60 ? "…" : ""}</small>
+    </div><div class="tpl-btns">
+      <button class="ghost" data-tpl="${Number(t.id)}" data-act="up" aria-label="上へ"${i === 0 ? " disabled" : ""}>↑</button>
+      <button class="ghost" data-tpl="${Number(t.id)}" data-act="down" aria-label="下へ"${i === last ? " disabled" : ""}>↓</button>
+      <button class="ghost" data-tpl="${Number(t.id)}" data-act="edit">編集</button>
+      <button class="ghost" data-tpl="${Number(t.id)}" data-act="del">削除</button>
+    </div></div>`;
+  }).join("") : "<small>定型文はまだありません。下の欄から追加してください</small>";
+}
+
+function tplMsg(text, isError) {
+  $("tpl-msg").style.color = isError ? "#c62828" : "#0a7d32";
+  $("tpl-msg").textContent = text;
+  if (!isError) setTimeout(() => $("tpl-msg").textContent = "", 2500);
+}
+
+function resetTplForm() {
+  tplEditing = null;
+  $("tpl-name").value = "";
+  $("tpl-body").value = "";
+  $("tpl-form-title").textContent = "新しい定型文";
+  $("tpl-save").textContent = "定型文を追加";
+  $("tpl-cancel").hidden = true;
+}
+
+$("tpl-list").onclick = async e => {
+  const b = e.target.closest("button[data-tpl]");
+  if (!b) return;
+  const t = tplList.find(x => x.id === +b.dataset.tpl);
+  if (!t) return;
+  const act = b.dataset.act;
+  if (act === "edit") {
+    tplEditing = t.id;
+    $("tpl-name").value = t.name;
+    $("tpl-body").value = t.body;
+    $("tpl-form-title").textContent = `「${t.name}」を編集中`;
+    $("tpl-save").textContent = "変更を保存";
+    $("tpl-cancel").hidden = false;
+    $("tpl-msg").textContent = "";
+    $("tpl-name").focus();
+    return;
+  }
+  if (act === "del" && !confirm(`定型文「${t.name}」を削除しますか？`)) return;
+  try {
+    await apiJson(`/api/mail/templates/${t.id}`, act === "del" ? { method: "DELETE" } : {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ move: act }),
+    });
+  } catch { return; }
+  if (act === "del" && tplEditing === t.id) resetTplForm();
+  loadTemplates();
+};
+
+$("tpl-save").onclick = async () => {
+  const name = $("tpl-name").value.trim(), body = $("tpl-body").value;
+  if (!name || !body.trim()) { tplMsg("名前と本文を入力してください", true); return; }
+  const editing = tplEditing;
+  const b = $("tpl-save");
+  b.disabled = true;
+  try {
+    await apiJson(editing ? `/api/mail/templates/${editing}` : "/api/mail/templates", {
+      method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, body }),
+    });
+    resetTplForm();
+    tplMsg(editing ? "変更を保存しました ✓" : "追加しました ✓");
+    loadTemplates();
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  b.disabled = false;
+};
+$("tpl-cancel").onclick = () => { resetTplForm(); $("tpl-msg").textContent = ""; };
+// 「差し込み」ボタン: 本文のカーソルの位置に {相手の名前} などを入れる
+document.querySelectorAll(".tpl-ph button").forEach(b =>
+  b.onclick = () => insertAtCursor($("tpl-body"), b.dataset.ph));
+
+/* ---------- 新着の自動確認 (画面を開いたままでも新しいメールが出る) ---------- */
+// 1分ごとに、受信の様子 (未対応の数・一番新しいメールの番号など) だけをサーバに聞き、
+// 変わっていたら受信箱を取り直す。サーバが受信サーバへ新しいメールを確かめに行く間隔は
+// 設定の「自動受信の間隔」。タブが隠れている間は聞かず、戻ったらすぐ聞く
+const POLL_MS = 60 * 1000;
+let pollTimer = null;
+let polling = false;
+
+function stopPolling() {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+function schedulePoll() {
+  stopPolling();
+  // ログイン画面・確認コードの画面や、隠れているタブでは聞かない
+  if (!$("app").hidden && !document.hidden) pollTimer = setTimeout(pollNow, POLL_MS);
+}
+async function pollNow() {
+  stopPolling();
+  if ($("app").hidden || document.hidden || polling) return;
+  polling = true;
+  let changed;
+  try {
+    changed = await checkStatus();
+  } catch (e) {
+    polling = false;
+    if (e.message === "auth") return;  // ログインし直す画面に切り替わった (聞くのをやめる)
+    // 通信の失敗・サーバの更新中など。アラートは出さず、次の回にもう一度聞く
+    connLost = true;
+    renderStatus();
+    schedulePoll();
+    return;
+  }
+  polling = false;
+  if (changed || inboxStale) refreshInbox();
+  schedulePoll();
+}
+// 受信箱を取り直す。返信画面を開いている間・設定を見ている間は取り直さない
+// (書きかけの返信や見ている画面を動かさない)。受信箱に戻ったときに取り直す
+function refreshInbox() {
+  if (viewName === "inbox" && $("mail-modal").hidden) showInbox({ auto: true });
+  else inboxStale = true;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPolling();
+  else pollNow();                      // 戻ってきたら、すぐ新着を確かめる
+});
+window.addEventListener("online", () => pollNow());   // 通信が戻ったら、すぐ確かめる
+window.addEventListener("offline", () => {
+  if ($("app").hidden) return;
+  connLost = true;
+  renderStatus();
+});
+// iPhone の Safari などで、前のページから戻ってきたとき (ページが作り直されない)
+window.addEventListener("pageshow", e => { if (e.persisted) pollNow(); });
+
+/* ---------- ナビ・ログイン ---------- */
+$("nav-inbox").onclick = () => showInbox();
+// 受信箱の横の「確認待ち N」を押したら、確認待ちのメールだけを出す
+$("nav-pending").onclick = () => showPending();
+$("nav-settings").onclick = () => openSettings();
+$("login-btn").onclick = () => {
+  localStorage.setItem(KEY, $("token-input").value.trim());
+  showApp();
+};
+$("token-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("login-btn").click();
+});
+$("logout").onclick = () => {
+  localStorage.removeItem(KEY);   // 端末トークン (DKEY) は消さない
+  dvSetPending(null);
+  $("token-input").value = "";
+  showLogin(false);
+};
+
+/* ---------- 新しい端末の確認 (メールの確認コード) ---------- */
+// 送ったコードの request_id はタブを閉じるまで覚えておく (再読み込みで送り直さない)
+const DV_PENDING = "zatsumu_device_pending";
+let dvSending = false;
+const DV_NOT_FOUND = "確認コードの仕組みにつながりません。サーバの設定（Caddy）が古い可能性があります。"
+  + "サーバの担当者に DEPLOY.md の「更新するとき」の手順（Caddy の作り直し）をお願いしてください";
+function dvPending() {
+  try {
+    const p = JSON.parse(sessionStorage.getItem(DV_PENDING) || "null");
+    return p && Date.now() - p.at < 10 * 60 * 1000 ? p : null;   // コードの有効は10分
+  } catch { return null; }
+}
+function dvSetPending(p) {
+  try {
+    if (p) sessionStorage.setItem(DV_PENDING, JSON.stringify(p));
+    else sessionStorage.removeItem(DV_PENDING);
+  } catch {}
+}
+function dvError(msg) {
+  $("dv-error").textContent = msg || "";
+  $("dv-error").hidden = !msg;
+}
+function showDeviceVerify() {
+  stopPolling();
+  $("app").hidden = true;
+  $("login").hidden = true;
+  if (!$("device-verify").hidden) return;   // 表示中 (同時に複数の API が 401 になった)
+  $("device-verify").hidden = false;
+  $("dv-code").value = "";
+  dvError("");
+  const p = dvPending();
+  $("dv-staff").hidden = !(p && p.staff);
+  if (p) $("dv-sent").innerHTML = `<b>${esc(p.sent_to)}</b> に送った確認コードを入力してください`;
+  else sendDeviceCode();
+  $("dv-code").focus();
+}
+async function sendDeviceCode() {
+  if (dvSending) return;
+  dvSending = true;
+  $("dv-resend").disabled = true;
+  dvError("");
+  try {
+    const r = await fetch("/api/device/start", {
+      method: "POST", headers: { Authorization: "Bearer " + localStorage.getItem(KEY) },
+    });
+    const e = await r.json().catch(() => ({}));
+    if (r.status === 401) { showLogin(true); return; }
+    if (!r.ok) {
+      if (!dvPending()) $("dv-sent").textContent = "確認コードはまだ送れていません";
+      // 404 = 途中の Caddy が /api/device を通していない (更新後に Caddy を作り直していない)
+      dvError(r.status === 404 ? DV_NOT_FOUND : e.detail || "確認コードを送れませんでした");
+      return;
+    }
+    // メール担当者のコードは管理者のメールに届く (管理者に聞いて入れてもらう)
+    dvSetPending({ request_id: e.request_id, sent_to: e.sent_to, staff: !!e.staff, at: Date.now() });
+    $("dv-staff").hidden = !e.staff;
+    $("dv-sent").innerHTML = e.staff
+      ? `管理者のメール <b>${esc(e.sent_to)}</b> に確認コードを送りました（管理者に聞いて、10分以内に入力してください）`
+      : `<b>${esc(e.sent_to)}</b> に確認コードを送りました（10分以内に入力してください）`;
+    $("dv-code").value = "";
+  } catch {
+    dvError("通信に失敗しました。もう一度お試しください");
+  } finally {
+    dvSending = false;
+    $("dv-resend").disabled = false;
+  }
+}
+async function verifyDeviceCode() {
+  // 日本語入力のままだと全角 (１２３４５６) になるので半角に直してから数字だけにする
+  // (貼り付けの "123 456" なども通す。サーバ側でも同じように直して照合する)
+  const code = $("dv-code").value.normalize("NFKC").replace(/\D/g, "");
+  if (code.length !== 6) { dvError("6桁の数字を入力してください"); return; }
+  const p = dvPending();
+  if (!p) { dvError("コードの有効期限が切れました。「再送」を押してください"); return; }
+  $("dv-ok").disabled = true;
+  try {
+    const r = await fetch("/api/device/verify", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + localStorage.getItem(KEY),
+                 "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: p.request_id, code }),
+    });
+    const e = await r.json().catch(() => ({}));
+    if (r.status === 401) { showLogin(true); return; }
+    if (!r.ok) { dvError(r.status === 404 ? DV_NOT_FOUND : e.detail || "確認できませんでした"); return; }
+    localStorage.setItem(DKEY, e.device_token);
+    dvSetPending(null);
+    $("device-verify").hidden = true;
+    showApp();
+  } catch {
+    dvError("通信に失敗しました。もう一度お試しください");
+  } finally {
+    $("dv-ok").disabled = false;
+  }
+}
+$("dv-ok").onclick = () => verifyDeviceCode();
+$("dv-code").addEventListener("keydown", e => {
+  // 日本語入力の確定に使った Enter では送らない (確定前の値で確認してしまうため)
+  if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) verifyDeviceCode();
+});
+$("dv-resend").onclick = () => sendDeviceCode();
+$("dv-back").onclick = () => {
+  localStorage.removeItem(KEY);   // 別のトークンで入り直す (端末トークンは残す)
+  dvSetPending(null);
+  $("token-input").value = "";
+  showLogin(false);
+};
+
+/* 確認済みの端末の一覧・取り消し (設定画面。機能が無効なら出さない) */
+async function loadDevices() {
+  let d;
+  try { d = await apiJson("/api/devices"); } catch { return; }
+  $("dev-card").hidden = !d.enabled;
+  if (!d.enabled) return;
+  $("dev-list").innerHTML = d.devices.length ? d.devices.map(x => `
+    <div class="dev-row"><div>
+      <b>${esc(x.user_name)}</b>${x.current ? " <small>（この端末）</small>" : ""}<br>
+      <small>${esc(x.label || "不明な端末")}</small><br>
+      <small>最終利用 ${esc(new Date(x.last_used_at).toLocaleString("ja-JP"))}・IP ${esc(x.ip || "-")}</small>
+    </div><button class="ghost" data-dev="${Number(x.id)}">取り消し</button></div>`).join("")
+    : "<small>確認済みの端末はありません</small>";
+}
+$("dev-list").onclick = async e => {
+  const id = e.target.dataset && e.target.dataset.dev;
+  if (!id) return;
+  if (!confirm("この端末を取り消しますか？\n（その端末では次の操作から確認コードが必要になります）")) return;
+  try { await apiJson(`/api/devices/${id}`, { method: "DELETE" }); } catch { return; }
+  loadDevices();
+};
+
+if (localStorage.getItem(KEY)) showApp(); else showLogin(false);
+</script>
+</body>
+</html>

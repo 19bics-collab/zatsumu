@@ -1,0 +1,14 @@
+# 自動更新係 (中身は /usr/local/sbin/zatsumu-auto-update)。install.sh で登録する。
+# このファイルが新しくなると、自動更新係が自分で入れ替えて systemctl daemon-reload する
+[Unit]
+Description=zatsumu auto update (GitHub の最新版をテスト合格後に反映)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+ExecStart=/usr/local/sbin/zatsumu-auto-update
+# 1回の更新の時間の上限。docker や git が固まっても、ここで打ち切って次の回に進める
+# (打ち切られた更新は、次の回に元の版へ戻してからやり直す)
+TimeoutStartSec=40min
