@@ -12,6 +12,7 @@ import ssl
 import threading
 import urllib.request
 from email.mime.text import MIMEText
+from email.utils import formataddr, parseaddr
 
 # 最初から暗号化して話すポート (SMTPS)。それ以外は平文で繋いで STARTTLS で暗号化する
 SMTPS_PORT = 465
@@ -105,14 +106,28 @@ def smtp_send(settings: dict, sender: str, recipients: list[str],
         return s.sendmail(sender, recipients, message) or {}
 
 
+def _from_header(sender) -> str:
+    """From ヘッダに入れる形 (「黒須 <kurosu@…>」は名前だけを符号化する).
+
+    そのまま入れると全体が1つの符号化した文字になり、From にアドレスが無いメールになって
+    受け取らない・迷惑メールにするメールサーバがあるため。
+    """
+    text = " ".join(str(sender or "").split())
+    name, addr = parseaddr(text)
+    if "@" not in addr:
+        return text
+    return formataddr((name, addr), charset="utf-8") if name else addr
+
+
 def send_email(settings: dict, subject: str, text: str) -> None:
     msg = MIMEText(text, "plain", "utf-8")
     msg["Subject"] = subject
     sender = settings.get("mail_from") or settings.get("smtp_user")
     recipients = [a.strip() for a in settings["mail_to"].split(",") if a.strip()]
-    msg["From"] = sender
+    msg["From"] = _from_header(sender)
     msg["To"] = ", ".join(recipients)
-    smtp_send(settings, sender, recipients, msg.as_string())
+    envelope = parseaddr(str(sender or ""))[1] or sender   # 送信者はアドレスの部分だけ
+    smtp_send(settings, envelope, recipients, msg.as_string())
 
 
 def deliver(settings: dict, text: str, subject: str = "zatsumu 通知") -> list[str]:

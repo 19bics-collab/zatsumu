@@ -564,6 +564,11 @@ def test_sender_refused_by_shared_smtp_is_explained(client, users, tmp_path, mon
 
 @pytest.mark.parametrize("exc, expected", [
     (smtplib.SMTPSenderRefused(553, b"rejected", "a@b.example"), True),
+    # MAIL FROM への一時的な失敗・容量オーバーは差出人の問題ではない
+    (smtplib.SMTPSenderRefused(451, b"4.7.1 Sender rate limit exceeded", "a@b.example"), False),
+    (smtplib.SMTPSenderRefused(421, b"4.4.2 Connection dropped", "a@b.example"), False),
+    (smtplib.SMTPSenderRefused(552, b"5.3.4 Message size exceeds fixed limit", "a@b.example"),
+     False),
     (smtplib.SMTPRecipientsRefused({"x@y.example": (553, b"5.7.1 Sender address rejected: "
                                                           b"not owned by user")}), True),
     (smtplib.SMTPDataError(554, b"5.2.252 SendAsDenied; info@ not allowed to send as kurosu@"),
@@ -829,3 +834,104 @@ def test_mail_page_has_account_ui(client):
     assert "受信に失敗しました: ${esc(a.last_error)}" in page
     # 古い1つだけの受信サーバの欄は無い (アドレスごとに入れる)
     assert 'id="set-imap-host"' not in page and 'imap_host: $("set-imap-host")' not in page
+
+
+# ---------- 前の版に戻ったとき用に、旧設定もアドレス1と同じにしておく ----------
+
+def _legacy_state(conn):
+    return {r[0]: r[1] for r in conn.execute(
+        "SELECT key, value FROM settings WHERE key IN"
+        " ('mail_state_uidvalidity', 'mail_state_last_uid')")}
+
+
+def test_fetch_on_first_account_also_moves_the_legacy_position(tmp_path, monkeypatch):
+    """アドレス1で受信したら、前の版が読む続きの位置も進める (前の版に戻っても、新しい版が
+    飛ばした自分の返信の控えを読み直して取り込まない)."""
+    from server import db, mail
+    path = tmp_path / "old.db"
+    _legacy_db(path, mail_auto_draft=0)
+    own_copy = raw_mail(122, frm="info@bics.example", to="kurosu@bics.example")
+    box = Box({121: raw_mail(121), 122: own_copy}, uidvalidity=b"777")
+    use_boxes(monkeypatch, {"imap.bics.example": box})
+    conn = db.connect(path)
+    added = mail.fetch_mail_locked(conn, db.get_settings(conn))
+    assert [a["message_id"] for a in added] == ["<u121@example.com>"]   # 控えは飛ばす
+    assert conn.execute("SELECT state_last_uid FROM mail_accounts").fetchone()[0] == 122
+    assert _legacy_state(conn) == {"mail_state_uidvalidity": "777", "mail_state_last_uid": "122"}
+    # UIDVALIDITY が変わったときは、それも書き写す
+    box.uidvalidity = b"888"
+    box.mails = {5: raw_mail(5)}
+    mail.fetch_mail_locked(conn, db.get_settings(conn))
+    assert _legacy_state(conn) == {"mail_state_uidvalidity": "888", "mail_state_last_uid": "5"}
+    # 旧設定が別の受信先を指しているとき (前の版の画面で変えたなど) は、進めない
+    conn.execute("UPDATE settings SET value = 'other@bics.example' WHERE key = 'imap_user'")
+    conn.commit()
+    box.mails = {5: raw_mail(5), 6: raw_mail(6)}
+    mail.fetch_mail_locked(conn, db.get_settings(conn))
+    assert conn.execute("SELECT state_last_uid FROM mail_accounts").fetchone()[0] == 6
+    assert _legacy_state(conn)["mail_state_last_uid"] == "5"
+    conn.close()
+
+
+def test_fetch_on_other_accounts_does_not_touch_the_legacy_position(client, users, tmp_path,
+                                                                    monkeypatch):
+    from server import db, mail
+    _, admin = users
+    other = add_account(client, admin, **KUROSU)
+    box = Box({50: raw_mail(50, to="kurosu@bics.example")})
+    use_boxes(monkeypatch, {"imap2.bics.example": box})
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES"
+                     " ('mail_state_last_uid', '7')")
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                     (db.MAIL_LEGACY_ACCOUNT_KEY, str(other["id"] + 100)))
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        mail.fetch_mail_locked(conn, {**db.get_settings(conn), "mail_auto_draft": 0})
+        assert _legacy_state(conn)["mail_state_last_uid"] == "7"
+
+
+def test_editing_first_account_updates_the_legacy_settings(client, users, tmp_path):
+    """アドレス1 (旧設定から作ったもの) の受信の設定を変えたら、旧設定にも書き写す
+    (前の版に戻っても、新しいパスワード・受信先で受信する)。ほかのアドレスでは変えない."""
+    from server import db
+    _, admin = users
+    client.patch("/api/settings", headers=auth(admin),
+                 json={"imap_host": "imap.bics.example", "imap_user": "info@bics.example",
+                       "imap_pass": "old-pw", "mail_from": "info@bics.example"})
+    _add_mail(tmp_path, n=1)                   # この接続で旧設定から1つ目のアドレスを作る
+    legacy = accounts_rows(tmp_path)[0]["id"]
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES"
+                     " ('mail_state_uidvalidity', '777'), ('mail_state_last_uid', '120')")
+
+    def legacy_settings():
+        with db.get_db(tmp_path / "zatsumu.db") as conn:
+            s = db.get_settings(conn)
+            return s, _legacy_state(conn)
+
+    # パスワードだけ: 旧設定のパスワードを変え、続きの位置はそのまま
+    r = client.patch(f"/api/mail/accounts/{legacy}", headers=auth(admin),
+                     json={"imap_pass": "new-pw", "label": "インフォ",
+                           "from_addr": "ビックス <info@bics.example>"})
+    assert r.status_code == 200, r.text
+    s, state = legacy_settings()
+    assert s["imap_pass"] == "new-pw"
+    assert s["mail_from"] == "info@bics.example"      # 共通の差出人は変えない
+    assert state == {"mail_state_uidvalidity": "777", "mail_state_last_uid": "120"}
+    # 受信先を変えたら、旧設定も変えて、続きの位置も消す
+    r = client.patch(f"/api/mail/accounts/{legacy}", headers=auth(admin),
+                     json={"imap_host": "imap9.bics.example", "imap_folder": "INBOX.cases",
+                           "imap_ssl": False, "imap_port": "143", "save_sent": False,
+                           "imap_sent_folder": "INBOX.Sent"})
+    assert r.status_code == 200, r.text
+    s, state = legacy_settings()
+    assert (s["imap_host"], s["imap_folder"], s["imap_use_ssl"], s["imap_port"],
+            s["mail_save_sent"], s["imap_sent_folder"]) == (
+        "imap9.bics.example", "INBOX.cases", 0, "143", 0, "INBOX.Sent")
+    assert state == {"mail_state_uidvalidity": "", "mail_state_last_uid": "0"}
+    # ほかのアドレスを変えても、旧設定は変えない
+    other = add_account(client, admin, **KUROSU)
+    client.patch(f"/api/mail/accounts/{other['id']}", headers=auth(admin),
+                 json={"imap_pass": "kurosu-new", "imap_host": "imap3.bics.example"})
+    s, _ = legacy_settings()
+    assert (s["imap_pass"], s["imap_host"]) == ("new-pw", "imap9.bics.example")

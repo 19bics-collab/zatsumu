@@ -653,9 +653,10 @@ def test_grant_and_revoke_staff(client, users, tmp_path):
     logs = _audits(tmp_path, "mail_staff")
     assert [x["detail"] for x in logs] == ["staff=on tanaka", "staff=off tanaka"]
     assert all(x["target_user_id"] == worker["id"] and x["admin_id"] == admin["id"] for x in logs)
-    # 管理者は切り替えられない・いない人は 404・無効にした人はメール担当者にできない
+    # 管理者はメール担当者にできない (外すのは受け付ける)・いない人は 404・
+    # 無効にした人はメール担当者にできない
     assert client.patch(f"/api/mail/staff/{admin['id']}", headers=auth(admin),
-                        json={"staff": False}).status_code == 400
+                        json={"staff": True}).status_code == 400
     assert client.patch("/api/mail/staff/9999", headers=auth(admin),
                         json={"staff": True}).status_code == 404
     client.patch(f"/api/users/{worker['id']}", headers=auth(admin), json={"active": False})
@@ -927,3 +928,32 @@ def test_manage_add_mail_staff_and_issue_device(client, users, tmp_path, monkeyp
     # 端末トークンはメール担当者にも発行できる (一般メンバーにはできない)
     assert _manage(monkeypatch, path, capsys, "issue-device", "田中")[0] == 0
     assert _manage(monkeypatch, path, capsys, "issue-device", "tanaka")[0] == 1
+
+
+def test_switching_admin_clears_mail_staff(client, users, tmp_path):
+    """メール担当者を管理者にして、あとで管理者から外しても、メール担当者の権限が知らないうちに
+    戻らない (勤怠の管理画面にはメール担当者の印が出ないので、気づけないため)."""
+    worker, staff, admin = users
+    r = client.patch(f"/api/users/{staff['id']}", headers=auth(admin), json={"is_admin": True})
+    assert r.status_code == 200
+    by = {u["name"]: u for u in client.get("/api/mail/staff", headers=auth(admin)).json()}
+    assert by["田中"]["is_admin"] is True and by["田中"]["staff"] is False
+    r = client.patch(f"/api/users/{staff['id']}", headers=auth(admin), json={"is_admin": False})
+    assert r.status_code == 200
+    r = client.get("/api/mail", headers=auth(staff))
+    assert r.status_code == 403 and r.json()["detail"] == NO_ACCESS
+    assert [x["detail"] for x in _audits(tmp_path, "mail_staff")] == [
+        "staff=off 田中 (管理者の切り替え)"]
+    # 管理者に印が残っていても (前に付いたもの)、メール画面の設定から外せる
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("UPDATE users SET mail_role = 'staff' WHERE id = ?", (admin["id"],))
+    assert client.patch(f"/api/mail/staff/{admin['id']}", headers=auth(admin),
+                        json={"staff": True}).status_code == 400
+    r = client.patch(f"/api/mail/staff/{admin['id']}", headers=auth(admin), json={"staff": False})
+    assert r.status_code == 200 and r.json()["staff"] is False
+    # 管理者でない人の切り替えでは、印はそのまま (ほかの項目を変えても消えない)
+    client.patch(f"/api/mail/staff/{worker['id']}", headers=auth(admin), json={"staff": True})
+    client.patch(f"/api/users/{worker['id']}", headers=auth(admin),
+                 json={"is_admin": False, "email": "w@example.com"})
+    assert client.get("/api/mail", headers=auth(worker)).status_code == 200

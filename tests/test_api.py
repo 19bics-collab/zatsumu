@@ -2612,3 +2612,26 @@ def test_mail_only_caddyfile_allows_only_mail_paths():
     catch_all = text[text.rindex("handle {"):]
     assert "respond" in catch_all and "404" in catch_all
     assert "reverse_proxy" not in catch_all
+
+
+def test_send_email_encodes_only_the_name_of_mail_from(monkeypatch):
+    """差出人メールが「名前 <アドレス>」でも、From にアドレスがそのまま入る (名前だけ符号化)."""
+    import email as _email
+    import email.policy as _policy
+    from server import notify
+
+    sent = []
+    monkeypatch.setattr(notify, "smtp_send",
+                        lambda s, frm, to, msg: sent.append((frm, to, msg)))
+    cfg = {"smtp_host": "smtp.e", "smtp_user": "u@e", "mail_to": "a@e.com",
+           "mail_from": "黒須 <kurosu@bics.example>"}
+    notify.send_email(cfg, "件名", "本文")
+    frm, to, raw = sent[0]
+    assert frm == "kurosu@bics.example"          # 送信者はアドレスの部分だけ
+    header = [ln for ln in raw.splitlines() if ln.startswith("From:")][0]
+    assert "<kurosu@bics.example>" in header
+    msg = _email.message_from_string(raw, policy=_policy.default)
+    assert msg["From"].addresses[0].addr_spec == "kurosu@bics.example"
+    assert msg["From"].addresses[0].display_name == "黒須"
+    notify.send_email({**cfg, "mail_from": "only@bics.example"}, "s", "t")
+    assert "From: only@bics.example" in sent[1][2]

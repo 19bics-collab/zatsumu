@@ -871,3 +871,50 @@ def test_mail_page_has_notion_ui(client):
     assert 'JSON.stringify({ notion_token: "" })' in page
     # Notion から来た列の名前は esc() を通し、結果の文は textContent で入れる
     assert "${esc(p.name)}" in page and '$("m-ntn-msg").textContent = text' in page
+
+
+def test_upload_name_matches_the_content_type(client, users, tmp_path, fake):
+    """中身が PNG の『photo.jpg』や拡張子の無いファイルは、送る種類に合う拡張子で Notion に送る
+    (Notion は種類とファイル名の拡張子が合わないと受け付けない)。ページの名前は元のまま."""
+    from server import db, mail, notion
+    assert notion._upload_name("photo.jpg", "image/png") == "photo.png"
+    assert notion._upload_name("添付ファイル", "application/pdf") == "添付ファイル.pdf"
+    assert notion._upload_name("plan.v2", "image/jpeg") == "plan.v2.jpg"
+    assert notion._upload_name("a.JPG", "image/jpeg") == "a.JPG"
+    assert notion._upload_name("見積書.pdf", "application/pdf") == "見積書.pdf"
+    assert notion._upload_name("data", "application/octet-stream") == "data"
+    _, admin = users
+    _configure(client, admin)
+    mid = _mail(tmp_path)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        mail.save_attachments(conn, tmp_path / "mail_attachments", mid, [
+            {"filename": "photo.jpg", "content_type": "image/png", "size": len(PNG),
+             "data": PNG, "skip": ""},
+        ], "2026-10-22T00:00:00+00:00")
+    d = client.post(f"/api/mail/{mid}/notion", headers=auth(admin)).json()
+    assert d["attachments_uploaded"] == 1
+    created = [c.body for c in fake.calls if c.path == "/file_uploads"]
+    assert created == [{"mode": "single_part", "filename": "photo.png",
+                        "content_type": "image/png"}]
+    sends = [c for c in fake.calls if c.path.endswith("/send")]
+    assert 'filename="photo.png"'.encode() in sends[0].body
+    block = fake.of("PATCH", "/blocks/")[0].body["children"][0]
+    assert block["image"]["caption"][0]["text"]["content"] == "photo.jpg"
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_page_5xx_asks_to_check_notion_before_pressing_again(client, users, tmp_path, fake,
+                                                             status):
+    """ページを作る依頼が 5xx のときは、できている場合があるので Notion で確かめるよう案内する."""
+    _, admin = users
+    _configure(client, admin)
+    mid = _mail(tmp_path)
+    fake.fail[("POST", "/pages")] = [(status, {"code": "gateway_timeout", "message": "x"}, None)]
+    r = client.post(f"/api/mail/{mid}/notion", headers=auth(admin))
+    assert r.status_code == 502
+    assert "登録できている場合があるので、Notionで確かめてから" in r.json()["detail"]
+    assert _row(tmp_path, mid)["notion_page_url"] == ""
+    # データベースを読む (GET) の 5xx は今までどおり (二重にはならない)
+    fake.fail[("GET", "/databases/")] = [(503, {"code": "service_unavailable"}, None)]
+    r = client.post(f"/api/mail/{mid}/notion", headers=auth(admin))
+    assert "登録できている場合" not in r.json()["detail"]

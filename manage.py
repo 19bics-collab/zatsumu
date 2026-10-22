@@ -93,7 +93,7 @@ def main() -> None:
                     print(f"確認済みの端末 {n} 台を取り消しました。")
             else:
                 conn.execute(
-                    "UPDATE users SET is_admin = 1, active = 1 WHERE id = ?",
+                    "UPDATE users SET is_admin = 1, active = 1, mail_role = '' WHERE id = ?",
                     (row["id"],),
                 )
                 print(f"{row['name']} を管理者にしました。")

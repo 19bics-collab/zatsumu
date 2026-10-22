@@ -1366,7 +1366,9 @@ def sender_refused(e: BaseException) -> bool:
     import smtplib
 
     if isinstance(e, smtplib.SMTPSenderRefused):
-        return True
+        # smtplib は MAIL FROM への 250 以外の返事を全部これにする。混雑などの一時的な
+        # 失敗 (4xx) と容量オーバー (552) は差出人の問題ではないので除く
+        return e.smtp_code >= 500 and e.smtp_code != 552
     if isinstance(e, smtplib.SMTPRecipientsRefused):
         # 差出人の確かめを送り先ごとの返事で返すサーバもある (全員分が差出人の理由のときだけ)
         replies = [r[1] if isinstance(r, tuple) and len(r) > 1 else r
@@ -1680,6 +1682,85 @@ def fill_missing_accounts(conn) -> int:
     _set_state(conn, db.MAIL_ACCOUNTS_FILLED_KEY, newest)
     conn.commit()
     return cur.rowcount
+
+
+# 旧設定から作ったアドレス (アドレス1) の項目と、前の版が読む旧設定のキーの対応
+_LEGACY_SETTING_OF = {"imap_host": "imap_host", "imap_port": "imap_port",
+                      "imap_ssl": "imap_use_ssl", "imap_user": "imap_user",
+                      "imap_pass": "imap_pass", "imap_folder": "imap_folder",
+                      "imap_sent_folder": "imap_sent_folder", "save_sent": "mail_save_sent"}
+
+
+def _is_legacy_account(conn, account_id) -> bool:
+    try:
+        legacy_id = int(_get_state(conn, db.MAIL_LEGACY_ACCOUNT_KEY) or 0)
+    except ValueError:
+        return False
+    return bool(legacy_id) and legacy_id == account_id
+
+
+def _legacy_connection(s: dict) -> tuple:
+    """旧設定の受信の接続先 (アドレスの行と同じ形にそろえる)."""
+    ssl_on = int(bool(int(s.get("imap_use_ssl") or 0)))
+    # ポートが空なら前の版は 993 で接続する (アドレス1を作ったときも 993 にした)
+    return (str(s.get("imap_host") or "").strip().lower(),
+            str(s.get("imap_port") or "").strip() or "993",
+            ssl_on, str(s.get("imap_user") or "").strip(),
+            str(s.get("imap_folder") or "").strip() or "INBOX")
+
+
+def _account_connection(account: dict) -> tuple:
+    ssl_on = int(bool(account["imap_ssl"]))
+    return (str(account["imap_host"] or "").strip().lower(),
+            str(account["imap_port"] or "").strip() or ("993" if ssl_on else "143"),
+            ssl_on, str(account["imap_user"] or "").strip(),
+            str(account["imap_folder"] or "").strip() or "INBOX")
+
+
+def sync_legacy_fetch_state(conn, account: dict, uidvalidity: str, last_uid: int) -> None:
+    """アドレス1で受信したら、前の版が読む旧設定の続きの位置も一緒に進める.
+
+    進めないと、自動更新などで前の版に戻ったときに古い位置から読み直し、新しい版が
+    飛ばした自分の返信の控え (info@ から送って kurosu@ に届いたもの) などを、
+    お客さまのメールとして取り込んでしまう。旧設定がアドレス1と同じ受信先のときだけ進める。
+    """
+    if not _is_legacy_account(conn, account["id"]):
+        return
+    if _legacy_connection(db.get_settings(conn)) != _account_connection(account):
+        return
+    saved_uv = _get_state(conn, "mail_state_uidvalidity")
+    try:
+        saved_uid = int(_get_state(conn, "mail_state_last_uid", "0") or 0)
+    except ValueError:
+        saved_uid = 0
+    if uidvalidity and uidvalidity != saved_uv:
+        _set_state(conn, "mail_state_uidvalidity", uidvalidity)
+        _set_state(conn, "mail_state_last_uid", last_uid)
+    elif last_uid > saved_uid:
+        _set_state(conn, "mail_state_last_uid", last_uid)
+
+
+def sync_legacy_settings(conn, account: dict, changed) -> None:
+    """アドレス1の受信の設定を変えたら、前の版が読む旧設定 (imap_* など) も同じにする.
+
+    前の版に戻ったときに、古いパスワードで受信に失敗し続けたり、前の受信先から受信して
+    そのメールが今のアドレス1のものになったりしないように。受信先を変えたときは、
+    旧設定の続きの位置も消す (新しい版と同じく、新しい受信先は初回と同じように読む)。
+    差出人 (mail_from) は共通の差出人でもあるので変えない。
+    """
+    if not _is_legacy_account(conn, account["id"]):
+        return
+    keys = [k for k in changed if k in _LEGACY_SETTING_OF]
+    if not keys:
+        return
+    for k in keys:
+        value = account[k]
+        if k in ("imap_ssl", "save_sent"):
+            value = int(bool(value))
+        db.set_setting(conn, _LEGACY_SETTING_OF[k], value)
+    if any(k in ACCOUNT_CONNECTION_KEYS for k in keys):
+        _set_state(conn, "mail_state_uidvalidity", "")
+        _set_state(conn, "mail_state_last_uid", 0)
 
 
 # ---------- IMAP 受信 ----------
@@ -2113,12 +2194,14 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None,
             if account is not None:
                 # 受信している間に接続先 (サーバ・ユーザー・フォルダ) を変えていたら書かない
                 # (変えたときに続きの位置は消してあり、新しい接続先には当てはまらないため)
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE mail_accounts SET state_uidvalidity = ?, state_last_uid = ?"
                     " WHERE id = ? AND imap_host = ? AND imap_port = ? AND imap_ssl = ?"
                     " AND imap_user = ? AND imap_folder = ?",
                     (uv or saved_uv, max_uid, account["id"],
                      *(account[k] for k in ACCOUNT_CONNECTION_KEYS)))
+                if cur.rowcount:
+                    sync_legacy_fetch_state(conn, account, uv or saved_uv, max_uid)
             else:
                 if uv:
                     _set_state(conn, "mail_state_uidvalidity", uv)

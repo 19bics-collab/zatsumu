@@ -17,6 +17,7 @@
 import http.client
 import json
 import mimetypes
+import os
 import re
 import threading
 import time
@@ -322,8 +323,12 @@ def _request(settings: dict, method: str, path: str, *, body=None, data: bytes |
                 _sleep(_retry_after(e.headers))
                 continue
             info = _error_body(e)
-            raise NotionError(_error_text(e.code, info, what), e.code,
-                              str(info.get("code") or "")) from None
+            text = _error_text(e.code, info, what)
+            if e.code >= 500 and method == "POST" and path == "/pages":
+                # 502・504 などは、Notion 側ではページができていることがある (時間切れと同じ)
+                text = (f"Notion側で一時的な問題が起きました（{e.code}）。登録できている場合が"
+                        "あるので、Notionで確かめてから、もう一度押してください")
+            raise NotionError(text, e.code, str(info.get("code") or "")) from None
         except (TimeoutError, urllib.error.URLError, OSError, http.client.HTTPException) as e:
             timed_out = isinstance(e, TimeoutError) or isinstance(
                 getattr(e, "reason", None), TimeoutError)
@@ -788,6 +793,31 @@ def _content_type(filename: str, stored: str) -> str:
     return stored if stored and stored != mail.OCTET_STREAM else "application/octet-stream"
 
 
+# Notion に送るファイル名の拡張子 (種類からの決まった形。ほかは mimetypes に聞く)
+_EXT_OF = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+           "image/webp": ".webp", "application/pdf": ".pdf", "text/plain": ".txt"}
+
+
+def _upload_name(filename: str, ctype: str) -> str:
+    """Notion に送るファイル名 (拡張子を、送る種類に合わせる).
+
+    Notion は、伝えた種類とファイル名の拡張子が合わないと受け付けない。中身が PNG の
+    『photo.jpg』は『photo.png』にし、拡張子の無い・分からない名前には拡張子を足す。
+    """
+    if not ctype or ctype == "application/octet-stream":
+        return filename
+    guessed = mimetypes.guess_type(filename)[0]
+    if guessed == ctype:
+        return filename
+    ext = _EXT_OF.get(ctype) or mimetypes.guess_extension(ctype) or ""
+    if not ext:
+        return filename
+    stem, old_ext = os.path.splitext(filename)
+    if guessed and old_ext:          # 別の種類の拡張子なら付け替える
+        return (stem or filename) + ext
+    return filename + ext            # 拡張子が無い・分からないなら足す
+
+
 def _multipart(boundary: str, filename: str, ctype: str, data: bytes) -> bytes:
     """ファイルを送る形 (multipart/form-data。ブラウザと同じ書き方)."""
     name = filename.replace("\\", "_").replace('"', "%22").replace("\r", " ").replace("\n", " ")
@@ -870,7 +900,7 @@ def attach_files(settings: dict, page_id: str, attachments: list[dict],
             continue
         ctype = _content_type(name, str(a.get("content_type") or ""))
         try:
-            fid = upload_file(settings, name, ctype, data)
+            fid = upload_file(settings, _upload_name(name, ctype), ctype, data)
         except NotionError as e:
             notes.append(f"{name}: 載せられませんでした（{e}）")
             if e.status in (401, 403):

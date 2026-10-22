@@ -1488,6 +1488,13 @@ def patch_user(
             "UPDATE users SET is_admin = ? WHERE id = ?",
             (int(body.is_admin), user_id),
         )
+        if bool(target["is_admin"]) != body.is_admin and target["mail_role"]:
+            # 管理者にする・外すときは、メール担当者の印も消す。残すと、管理者から外したときに
+            # メール担当者の権限が知らないうちに戻ってしまう (この画面には出ないので気づけない)。
+            # メール担当者のままにしたいときは、メール画面の設定でもう一度メール担当者にする
+            conn.execute("UPDATE users SET mail_role = '' WHERE id = ?", (user_id,))
+            _audit(conn, admin, "mail_staff", user_id,
+                   detail=f"staff=off {target['name']} (管理者の切り替え)")
         _audit(conn, admin, "user_admin", user_id, detail=str(body.is_admin))
     if body.capture_enabled is not None:
         conn.execute(
@@ -2844,7 +2851,8 @@ def patch_mail_staff(
     target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if not target:
         raise HTTPException(404, "その人が見つかりません")
-    if target["is_admin"]:
+    if target["is_admin"] and body.staff:
+        # 外す (staff:false) のは受け付ける (前に付いた印を消せるように)
         raise HTTPException(400, "管理者は、もともとメール画面を全部使えます")
     if body.staff and not target["active"]:
         raise HTTPException(400, "無効にした人はメール担当者にできません"
@@ -2973,6 +2981,8 @@ def patch_mail_account(
                          " WHERE id = ?", (account_id,))
         if any(k in (*mail.ACCOUNT_CONNECTION_KEYS, "imap_pass", "enabled") for k in changed):
             mail.clear_fetch_error(conn, account_id)
+        # 旧設定から作ったアドレスなら、前の版が読む旧設定も同じにする (前の版に戻ったとき用)
+        mail.sync_legacy_settings(conn, {**fields, "id": account_id}, changed)
         _audit(conn, admin, "mail_account_update",
                detail=f"account={account_id} {current['label']}: "
                       + _account_audit(fields, changed))
