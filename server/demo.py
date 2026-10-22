@@ -178,23 +178,28 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
         # 返信画面の「この相手とのやり取り」の確認用
         received = (now_utc - timedelta(minutes=mins_ago)).isoformat()
         reply_body, reply_mins, replied_by, reply_cc = reply or ("", None, "", "")
+        # 対応不要にした時刻 (週ごとのまとめの確認用。届いてから30分後に対応不要にした)
+        archived = ((now_utc - timedelta(minutes=mins_ago - 30)).isoformat()
+                    if status == "archived" else None)
         mail_id = conn.execute(
             "INSERT INTO mails (message_id, from_addr, from_name, to_addr,"
             " cc_addr, subject, body, received_at, fetched_at, priority,"
             " priority_reason, priority_source, status, draft_reply,"
             " draft_source, draft_generated_at, category, assignee_user_id,"
             " references_hdr, reply_subject, reply_body, reply_cc, replied_at,"
-            " replied_by, reply_message_id)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " replied_by, reply_message_id, archived_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # 取り込んだ時刻は届いた時刻と同じにする (週ごとのまとめ・お知らせの待ち時間の確認用)
             (f"<demo-{mins_ago}@example.com>", from_addr, from_name,
              "info@example.com", cc, subject, body, received,
-             now_utc.isoformat(), prio, reason, "rule", status, draft,
+             received, prio, reason, "rule", status, draft,
              "template" if draft else "",
              now_utc.isoformat() if draft else None, category, assignee,
              in_reply_to, mail.reply_subject(subject) if reply else "", reply_body,
              reply_cc,
              (now_utc - timedelta(minutes=reply_mins)).isoformat() if reply else None,
-             replied_by, f"<demo-reply-{mins_ago}@example.com>" if reply else ""),
+             replied_by, f"<demo-reply-{mins_ago}@example.com>" if reply else "",
+             archived),
         ).lastrowid
         mail.save_refs(conn, mail_id, in_reply_to, in_reply_to)
         return mail_id

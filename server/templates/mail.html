@@ -100,6 +100,14 @@
   .set-row .quiet-sel select { width: 5.6rem; }
   #remind-dest, #test-remind-msg { font-size: .85rem; overflow-wrap: anywhere; }
   #test-remind-msg { margin-top: .4rem; }
+  /* 週ごとのまとめ (設定)。見本は送る文そのまま (改行も) を出し、長い行は折り返す */
+  .report-btns { display: flex; gap: .5rem; flex-wrap: wrap; }
+  #report-next, #report-msg { font-size: .85rem; overflow-wrap: anywhere; }
+  #report-msg { margin-top: .4rem; }
+  #report-preview { white-space: pre-wrap; overflow-wrap: anywhere; margin: .6rem 0 0;
+                    background: #f9fafb; border: 1px solid var(--line); border-radius: 6px;
+                    padding: .7rem; font-family: inherit; font-size: .85rem; line-height: 1.6;
+                    color: #374151; max-height: 26rem; overflow: auto; }
   .set-card textarea { width: 100%; box-sizing: border-box; min-height: 3.6rem;
                        padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
                        font-size: .9rem; font-family: inherit; }
@@ -445,6 +453,27 @@
       id="page-url-help"></span></small></p>
       <button class="ghost" id="set-test-remind">テスト送信</button>
       <div id="test-remind-msg"></div>
+    </div>
+    <div class="set-card" id="report-card">
+      <h3>週ごとのまとめ</h3>
+      <label class="set-row"><span>週ごとのまとめを送る</span>
+        <input type="checkbox" id="set-report-enabled"></label>
+      <label class="set-row"><span>送る曜日</span>
+        <select id="set-report-weekday"></select></label>
+      <label class="set-row"><span>送る時刻</span>
+        <select id="set-report-hour"></select></label>
+      <p class="set-help"><small>毎週この曜日・時刻（<span id="report-tz">日本時間</span>）に、
+      その前の7日間（月曜なら、前の週の月曜〜日曜）のメールの様子を1通にまとめて送ります。
+      届いたメールの数（優先度・種類ごと）、返信した数と返信までの時間、対応不要にした数、
+      いま未対応のメール、よく届いた差出人などです。
+      送り先は「返事をしていないメールのお知らせ」と同じ（通知先メール・Slack）です。</small></p>
+      <p id="report-next"></p>
+      <div class="report-btns">
+        <button class="ghost" id="set-report-preview">見本を見る</button>
+        <button class="ghost" id="set-report-send">今すぐ送る</button>
+      </div>
+      <div id="report-msg"></div>
+      <pre id="report-preview" hidden></pre>
     </div>
     <div class="set-card" id="cat-card">
       <h3>種類と担当（問い合わせの自動仕分け）</h3>
@@ -1531,11 +1560,14 @@ function fillSettings(s) {
   $("set-smtp-pass").placeholder = s.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
   $("set-mail-from").value = s.mail_from;
   fillRemindSettings(s);
+  fillReportSettings(s);
   $("set-msg").textContent = "";
   $("test-imap-msg").textContent = "";
   $("test-ai-msg").textContent = "";
   $("test-email-msg").textContent = "";
   $("test-remind-msg").textContent = "";
+  $("report-msg").textContent = "";
+  $("report-preview").hidden = true;   // 設定を変えたら見本も変わるので、見るときに作り直す
 }
 
 /* ---------- 返事をしていないメールのお知らせ (設定) ---------- */
@@ -1608,13 +1640,26 @@ $("set-slack-clear").onclick = async () => {
   $("set-slack").placeholder = "(未設定)";
   $("set-slack-clear").hidden = true;
   renderRemindDest(appSettings);
+  renderReportNext(appSettings);
   $("test-remind-msg").style.color = "#0a7d32";
   $("test-remind-msg").textContent = "Slack の URL を消しました ✓";
 };
+// 送り先 (Slack・通知先メール) を入れただけで、まだ保存していないか。
+// 送るのは保存済みの送り先なので、先に保存してもらう
+const destUnsaved = () =>
+  !!$("set-slack").value || $("set-mail-to").value !== (loaded.mail_to ?? "");
+// 送った結果 (送れた送り先・送れなかった送り先) を出す (お知らせのテスト送信・週ごとのまとめ)
+const CHANNEL_LABEL = { slack: "Slack", email: "通知先メール" };
+function showSent(msg, e) {
+  const names = list => (list || []).map(c => CHANNEL_LABEL[c] || c).join("・");
+  const failed = names(e.failed);
+  msg.style.color = failed ? "#b45309" : "#0a7d32";
+  msg.textContent = `${names(e.sent)} に送りました ✓` +
+    (failed ? `（${failed} には送れませんでした。設定を確かめてください）` : "");
+}
 $("set-test-remind").onclick = async () => {
   const b = $("set-test-remind"), msg = $("test-remind-msg");
-  // 送るのは保存済みの送り先。入れただけでまだ保存していないものは先に保存してもらう
-  if ($("set-slack").value || $("set-mail-to").value !== (loaded.mail_to ?? "")) {
+  if (destUnsaved()) {
     msg.style.color = "#c62828";
     msg.textContent = "送り先の変更がまだ保存されていません。先に下の「保存」を押してから試してください";
     return;
@@ -1626,12 +1671,91 @@ $("set-test-remind").onclick = async () => {
     const r = await api("/api/settings/test-remind", { method: "POST" });
     const e = await r.json().catch(() => ({}));
     if (r.ok) {
-      const label = { slack: "Slack", email: "通知先メール" };
-      const sent = (e.sent || []).map(c => label[c] || c).join("・");
-      const failed = (e.failed || []).map(c => label[c] || c).join("・");
-      msg.style.color = failed ? "#b45309" : "#0a7d32";
-      msg.textContent = `${sent} に送りました ✓` +
-        (failed ? `（${failed} には送れませんでした。設定を確かめてください）` : "");
+      showSent(msg, e);
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "送信できませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+};
+
+/* ---------- 週ごとのまとめ (設定) ---------- */
+const WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];   // 設定の 0=月曜 … 6=日曜
+function fillReportSettings(s) {
+  const wd = $("set-report-weekday"), hr = $("set-report-hour");
+  if (!wd.options.length) {
+    WEEKDAYS.forEach((w, i) => wd.add(new Option(w + "曜日", String(i))));
+    for (let h = 0; h < 24; h++) hr.add(new Option(h + "時", String(h)));
+  }
+  $("set-report-enabled").checked = !!s.mail_report_enabled;
+  wd.value = String(s.mail_report_weekday ?? 0);
+  hr.value = String(s.mail_report_hour ?? 9);
+  $("report-tz").textContent = !s.timezone || s.timezone === "Asia/Tokyo"
+    ? "日本時間" : s.timezone;
+  renderReportNext(s);
+}
+// 次に送る日時 (保存済みの設定で)。送り先が無ければ、送られないことを知らせる
+function renderReportNext(s) {
+  const el = $("report-next");
+  let text = "", warn = false;
+  if (!s.mail_report_enabled) {
+    text = "いまは送っていません（「週ごとのまとめを送る」にチェックを入れて「保存」すると、毎週送ります）。";
+  } else if (!(s.slack_webhook_url || (s.smtp_host && s.mail_to))) {
+    text = "⚠ 送り先（通知先メールか Slack）が入っていないため、まとめは送られません。";
+    warn = true;
+  } else if (s.mail_report_next_at) {
+    const at = new Date(s.mail_report_next_at);
+    text = at <= new Date()
+      ? "まだ送っていない今週の分を、次の自動受信のときに送ります。"
+      : `次に送るのは ${fmtTz(at, { month: "numeric", day: "numeric", weekday: "short", hour: "numeric" })}ごろです。`;
+  }
+  el.className = warn ? "error" : "";
+  el.textContent = text;
+}
+// 見本 (昨日までの7日間の分。保存済みの設定で作る)。サーバから来た文は textContent で出す
+$("set-report-preview").onclick = async () => {
+  const b = $("set-report-preview"), msg = $("report-msg"), box = $("report-preview");
+  b.disabled = true;
+  msg.style.color = "#475569";
+  msg.textContent = "作っています...";
+  try {
+    const r = await api("/api/mail/report/preview");
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      msg.textContent = "";
+      box.textContent = `件名: ${e.subject}\n\n${e.text}`;
+      box.hidden = false;
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "見本を作れませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+};
+$("set-report-send").onclick = async () => {
+  const b = $("set-report-send"), msg = $("report-msg");
+  if (destUnsaved()) {
+    msg.style.color = "#c62828";
+    msg.textContent = "送り先の変更がまだ保存されていません。先に下の「保存」を押してから送ってください";
+    return;
+  }
+  if (!confirm("前の7日間（昨日まで）のまとめを、いまの送り先（Slack・通知先メール）に送りますか？\n\n" +
+      "毎週決まった曜日に送る分とは別です（いつもの分も、そのまま送ります）。")) return;
+  b.disabled = true;
+  msg.style.color = "#475569";
+  msg.textContent = "送信中...";
+  try {
+    const r = await api("/api/mail/report/send-now", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      showSent(msg, e);
     } else {
       msg.style.color = "#c62828";
       msg.textContent = e.detail || "送信できませんでした";
@@ -1733,6 +1857,9 @@ $("set-save").onclick = async () => {
     mail_remind_hours_normal: +$("set-remind-normal").value,
     mail_remind_quiet: quietValue(),
     mail_page_url: $("set-mail-page-url").value,
+    mail_report_enabled: $("set-report-enabled").checked,
+    mail_report_weekday: +$("set-report-weekday").value,
+    mail_report_hour: +$("set-report-hour").value,
   };
   // 空の欄は 0 (お知らせしない) と区別がつかないので、入れてもらう
   for (const id of ["set-remind-high", "set-remind-normal"]) {

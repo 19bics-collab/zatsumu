@@ -97,7 +97,7 @@ def check_clockout_reminders(conn) -> int:
 
 
 def _mail_tick() -> None:
-    """メールの定期受信と保存期間パージ、返事をしていないメールのお知らせ
+    """メールの定期受信と保存期間パージ、返事をしていないメールのお知らせ、週ごとのまとめ
     (ネットワークI/Oを含むため別スレッドで実行)."""
     conn = db.connect(DATA_DIR / "zatsumu.db")
     try:
@@ -114,6 +114,13 @@ def _mail_tick() -> None:
             except Exception as e:  # noqa: BLE001
                 conn.rollback()
                 print(f"返事をしていないメールのお知らせでエラー: {e}")
+            # 週ごとのまとめ (決めた曜日・時刻に1回だけ)。失敗してもほかの処理は止めない
+            try:
+                conn.rollback()
+                mail.send_weekly_report(conn)
+            except Exception as e:  # noqa: BLE001
+                conn.rollback()
+                print(f"週ごとのまとめでエラー: {e}")
     finally:
         conn.close()
 
@@ -409,6 +416,9 @@ class SettingsPatch(BaseModel):
     mail_remind_hours_normal: int | None = None
     mail_remind_quiet: str | None = None
     mail_page_url: str | None = None
+    mail_report_enabled: bool | None = None
+    mail_report_weekday: int | None = None
+    mail_report_hour: int | None = None
     anthropic_api_key: str | None = None
     anthropic_model: str | None = None
     anthropic_classify_model: str | None = None
@@ -837,10 +847,11 @@ def _monthly_detail(conn, user, month: str) -> dict:
     }
 
 
-def _mask_settings(s: dict) -> dict:
+def _mask_settings(s: dict, conn) -> dict:
     """秘密情報 (パスワード・APIキー) はレスポンスに含めない(設定済みかだけ返す).
 
-    あわせて、AI の直近の失敗 (読み取り専用・設定画面と受信箱の注意書き用) を添える。
+    あわせて、AI の直近の失敗 (読み取り専用・設定画面と受信箱の注意書き用) と、
+    次に週ごとのまとめを送る日時 (読み取り専用) を添える。
     """
     s["ai_errors"] = [
         {**e, "message": notify.safe_error(RuntimeError(e["message"]), s)}
@@ -851,6 +862,9 @@ def _mask_settings(s: dict) -> dict:
     # 「メール画面のアドレス」が空のときにお知らせに載せるアドレス (読み取り専用。
     # サーバの環境変数から作る。分からなければ空)
     s["mail_page_url_auto"] = mail.env_mail_page_url()
+    # 次に週ごとのまとめを送る日時 (UTC ISO。送る設定がオフなら null)
+    nxt = mail.next_report_at(s, datetime.now(timezone.utc), mail.report_last_sent(conn))
+    s["mail_report_next_at"] = tz.utc_iso(nxt) if nxt else None
     for key in ("smtp_pass", "imap_pass", "anthropic_api_key"):
         s[f"{key}_set"] = bool(s.get(key))
         s[key] = ""
@@ -859,7 +873,7 @@ def _mask_settings(s: dict) -> dict:
 
 @app.get("/api/settings")
 def get_settings_api(_admin=Depends(require_admin), conn=Depends(get_conn)):
-    return _mask_settings(db.get_settings(conn))
+    return _mask_settings(db.get_settings(conn), conn)
 
 
 # 範囲外のときに画面に出す名前 (メール画面の数値の欄。無いものは設定の名前のまま出す)
@@ -869,6 +883,8 @@ SETTING_LABELS = {
     "mail_retention_days": "メール保存日数",
     "mail_remind_hours_high": "お知らせまでの時間・優先度[高]（時間）",
     "mail_remind_hours_normal": "お知らせまでの時間・優先度[中]・[低]（時間）",
+    "mail_report_weekday": "週ごとのまとめを送る曜日（0=月曜〜6=日曜）",
+    "mail_report_hour": "週ごとのまとめを送る時刻（時）",
 }
 # 変えたら、記録してある受信の失敗を消す設定 (前の設定での失敗は当てにならないので)
 IMAP_SETTING_KEYS = ("imap_host", "imap_port", "imap_user", "imap_pass",
@@ -915,6 +931,9 @@ def patch_settings(
         "mail_remind_enabled": (0, 1),
         "mail_remind_hours_high": mail.REMIND_HOURS_RANGE,
         "mail_remind_hours_normal": mail.REMIND_HOURS_RANGE,
+        "mail_report_enabled": (0, 1),
+        "mail_report_weekday": mail.REPORT_WEEKDAY_RANGE,
+        "mail_report_hour": mail.REPORT_HOUR_RANGE,
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -1006,7 +1025,7 @@ def patch_settings(
               "imap_pass", "imap_user", "anthropic_api_key"}
     _audit(conn, admin, "settings_update", detail=", ".join(
         f"{k}=***" if k in secret else f"{k}={v}" for k, v in changes.items()))
-    return _mask_settings(db.get_settings(conn))
+    return _mask_settings(db.get_settings(conn), conn)
 
 
 @app.post("/api/settings/test-notify")
@@ -2183,6 +2202,7 @@ def audit_csv(
         "mail_send": "メール返信送信",
         "mail_send_refused": "メール返信送信（宛先に届かず）",
         "mail_update": "メール状態変更",
+        "mail_report_send": "メールの週ごとのまとめを送信",
         "device_code_sent": "端末確認コード送信",
         "device_code_send_fail": "端末確認コード送信失敗",
         "device_verify_ok": "端末確認成功",
@@ -2492,6 +2512,58 @@ def list_mail_assignees(_admin=Depends(require_admin), conn=Depends(get_conn)):
         "SELECT id, name FROM users WHERE active = 1 ORDER BY name, id")]
 
 
+# ----- 週ごとのまとめ -----
+# /api/mail/report/... は /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)
+
+@app.get("/api/mail/report/preview")
+def mail_report_preview(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """週ごとのまとめの見本 (昨日までの7日間の分。メール画面の設定で見る用。読むだけ).
+
+    送られる文 (件名・本文) と、まとめた期間 (集計のタイムゾーンの日付。end は最後の日)、
+    次に送る日時、前に送った週の「送る日」、いまの送り先を返す。
+    """
+    s = db.get_settings(conn)
+    now = datetime.now(timezone.utc)
+    day = now.astimezone(tz.TZ).date()
+    subject, text = mail.weekly_report(conn, s, now, day)
+    last_sent = mail.report_last_sent(conn)
+    nxt = mail.next_report_at(s, now, last_sent)
+    return {
+        "subject": subject,
+        "text": text,
+        "start": (day - timedelta(days=mail.REPORT_DAYS)).isoformat(),
+        "end": (day - timedelta(days=1)).isoformat(),
+        "next_at": tz.utc_iso(nxt) if nxt else None,
+        "last_sent_for": last_sent or None,
+        "channels": notify.channels(s),
+    }
+
+
+@app.post("/api/mail/report/send-now")
+def mail_report_send_now(admin=Depends(require_admin), conn=Depends(get_conn)):
+    """週ごとのまとめ (昨日までの7日間の分) を、いまの送り先へすぐ送る (試す用).
+
+    送る設定がオフでも送れる。決まった曜日・時刻に送る分とは別に数える
+    (送ったことにはしないので、その週の分もいつもどおり送る)。
+    送れた送り先と、送れなかった送り先を返す。
+    """
+    s = db.get_settings(conn)
+    configured = notify.channels(s)
+    if not configured:
+        raise HTTPException(
+            400, "送り先が未設定です。Slack の URL か、通知先メール"
+                 "（「返信の送信（SMTP）」の設定も必要）を入れて「保存」してからお試しください")
+    subject, text = mail.weekly_report(conn, s, datetime.now(timezone.utc),
+                                       sent_by=admin["name"])
+    conn.commit()   # 送信 (時間がかかる) の間、DB の書き込みロックを持たない
+    sent = notify.deliver(s, text, subject)
+    if not sent:
+        raise HTTPException(
+            502, "送信できませんでした。Slack の URL・通知先メール・SMTP の設定を確かめてください")
+    _audit(conn, admin, "mail_report_send", detail="sent=" + ",".join(sent))
+    return {"sent": sent, "failed": [c for c in configured if c not in sent]}
+
+
 @app.get("/api/mail/{mail_id}/templates")
 def mail_templates_for_mail(
     mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
@@ -2674,6 +2746,10 @@ def mail_patch(
             "UPDATE mails SET status = ? WHERE id = ?",
             (changes["status"], mail_id),
         )
+        if changes["status"] == "archived" and row["status"] != "archived":
+            # 対応不要にした時刻も残す (週ごとのまとめの「対応不要にした」の数)
+            conn.execute("UPDATE mails SET archived_at = ? WHERE id = ?",
+                         (now_iso(), mail_id))
     if "draft_reply" in changes:
         conn.execute(
             "UPDATE mails SET draft_reply = ? WHERE id = ?",

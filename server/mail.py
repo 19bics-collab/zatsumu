@@ -25,6 +25,8 @@ In-Reply-To・References でつながるメール (別のアドレスからの�
 こちらが送った返信と一緒に「この相手とのやり取り」として出す (mail_thread)。
 届いてから決めた時間がたっても「未対応」のままのメールは、定期受信の回ごとに
 Slack・通知先メールへまとめてお知らせする (1通につき1回。夜中などは止めておく。remind_unanswered)。
+週に1回、決めた曜日・時刻に、前の7日間のメールの数・返信までの時間・まだ返事をしていない
+メールなどを1通にまとめて同じ送り先へ送る (週ごとのまとめ。send_weekly_report)。
 """
 import base64
 import email
@@ -33,17 +35,19 @@ import hashlib
 import html as html_
 import imaplib
 import json
+import math
 import mimetypes
 import os
 import re
 import shutil
 import socket
 import ssl
+import statistics
 import tempfile
 import threading
 import time
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 from urllib.parse import quote
@@ -2223,6 +2227,330 @@ def remind_test_message(conn, settings: dict, admin_name: str,
     rows = conn.execute(_REMIND_SELECT + " ORDER BY m.priority, m.fetched_at, m.id LIMIT ?",
                         (REMIND_SCAN_MAX,)).fetchall()
     return remind_message(rows, settings, now, test_by=admin_name)
+
+
+# ---------- 週ごとのまとめ ----------
+
+# 曜日の名前 (設定 mail_report_weekday の 0=月曜 … 6=日曜。Python の weekday() と同じ順)
+WEEKDAY_NAMES = ("月", "火", "水", "木", "金", "土", "日")
+REPORT_WEEKDAY_RANGE = (0, 6)
+REPORT_HOUR_RANGE = (0, 23)
+# まとめる日数 (送る日の前の日までの7日間。月曜に送るなら、前の週の月曜〜日曜)
+REPORT_DAYS = 7
+# 最後に送ったまとめの「送る日」(集計のタイムゾーンの日付 YYYY-MM-DD。settings の非公開キー)。
+# 再起動しても、同じ週のまとめを二度送らないように覚えておく
+REPORT_SENT_KEY = "mail_state_report_sent_for"
+# 前に送った日から、これより近い日には送らない (曜日を変えた直後に、続けて送らないため)
+REPORT_MIN_GAP_DAYS = 4
+# 種類を並べる数 (残りは「ほか N通」)
+REPORT_CATEGORY_MAX = 8
+# よく届いた差出人を並べる数 (同じ差出人から2通以上届いたものだけ)
+REPORT_SENDER_MAX = 5
+REPORT_SENDER_MIN_COUNT = 2
+# 差出人の名前と、アドレスの @ の前を何文字まで載せるか (残りは「…」)
+REPORT_NAME_MAX_CHARS = 20
+REPORT_ADDR_LOCAL_CHARS = 4
+
+
+def _at_hour(day: date, hour: int) -> datetime:
+    """その日のその時刻 (集計のタイムゾーン)."""
+    return datetime(day.year, day.month, day.day, hour, tzinfo=tz.TZ)
+
+
+def report_period(day: date) -> tuple[datetime, datetime]:
+    """まとめる期間 [始まり, 終わり): day (送る日) の前の7日間.
+
+    日の区切りは集計のタイムゾーン (既定は日本時間) の 0時。
+    """
+    return _at_hour(day - timedelta(days=REPORT_DAYS), 0), _at_hour(day, 0)
+
+
+def day_label(d: date) -> str:
+    """日付を「10/19(月)」のような言葉にする."""
+    return f"{d.month}/{d.day}({WEEKDAY_NAMES[d.weekday()]})"
+
+
+def short_address(addr) -> str:
+    """差出人のアドレスを縮める (まとめに載せる用。yamamoto@example.com → yama…@example.com)."""
+    text = "".join(str(addr or "").split())
+    local, at, domain = text.rpartition("@")
+    if not at:
+        return _remind_part(text, 30)
+    if len(local) > REPORT_ADDR_LOCAL_CHARS:
+        local = local[:REPORT_ADDR_LOCAL_CHARS] + "…"
+    return _remind_part(f"{local}@{domain}", 60)
+
+
+def _parse_time(value) -> datetime | None:
+    """DB の時刻 (UTC ISO) を datetime にする (読めなければ None)."""
+    try:
+        d = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def weekly_stats(conn, start: datetime, end: datetime, now: datetime) -> dict:
+    """期間 [start, end) のメールの数と、いま未対応のメールの様子を数える (読むだけ).
+
+    「届いた」は、このサーバが取り込んだ時刻 (fetched_at) で数える (差出人が付ける日付は
+    ずれていたり細工されていたりするため。返事をしていないメールのお知らせと同じ考え)。
+    「返信した」「対応不要にした」は、その期間に返信した・対応不要にしたメール (届いたのが
+    前の週でも数える)。返信までの時間は、取り込んでから返信するまで。
+    """
+    lo, hi = tz.utc_iso(start), tz.utc_iso(end)
+    received = conn.execute(
+        "SELECT priority, category, from_addr, from_name, priority_source FROM mails"
+        " WHERE fetched_at >= ? AND fetched_at < ? ORDER BY fetched_at, id", (lo, hi)).fetchall()
+    by_priority = {p: 0 for p in PRIORITY_LABELS}
+    by_category: dict[str, int] = {}
+    senders: dict[str, dict] = {}
+    for r in received:
+        by_priority[r["priority"] if r["priority"] in by_priority else 2] += 1
+        by_category[r["category"] or ""] = by_category.get(r["category"] or "", 0) + 1
+        addr = (r["from_addr"] or "").strip()
+        if addr:
+            # 大文字・小文字の違いは同じ差出人。名前は一番新しいメールのもの
+            s = senders.setdefault(addr.lower(), {"addr": addr, "name": "", "count": 0})
+            s["count"] += 1
+            s["name"] = r["from_name"] or s["name"]
+    top = sorted((s for s in senders.values() if s["count"] >= REPORT_SENDER_MIN_COUNT),
+                 key=lambda s: (-s["count"], s["addr"].lower()))[:REPORT_SENDER_MAX]
+    replied = conn.execute(
+        "SELECT fetched_at, replied_at, draft_source FROM mails"
+        " WHERE status = 'replied' AND replied_at >= ? AND replied_at < ?", (lo, hi)).fetchall()
+    waits = []
+    for r in replied:
+        got, sent = _parse_time(r["fetched_at"]), _parse_time(r["replied_at"])
+        if got and sent:
+            waits.append(max((sent - got).total_seconds(), 0.0))
+    archived = conn.execute(
+        "SELECT COUNT(*) FROM mails WHERE status = 'archived'"
+        " AND archived_at >= ? AND archived_at < ?", (lo, hi)).fetchone()[0]
+    unhandled, unhandled_high, oldest = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(priority = 1), 0), MIN(fetched_at) FROM mails"
+        " WHERE status = 'unhandled'").fetchone()
+    oldest_at = _parse_time(oldest) if oldest else None
+    return {
+        "received": len(received),
+        "by_priority": by_priority,
+        "by_category": by_category,
+        "top_senders": top,
+        "replied": len(replied),
+        "reply_median_sec": statistics.median(waits) if waits else None,
+        "reply_average_sec": sum(waits) / len(waits) if waits else None,
+        "archived": archived,
+        "unhandled": unhandled,
+        "unhandled_high": unhandled_high,
+        "oldest_wait_sec": max((now - oldest_at).total_seconds(), 0.0) if oldest_at else None,
+        # AI を使った数 (分かる分だけ): 優先度と種類を AI が決めたメール (人が優先度を直したものは
+        # 入らない) と、返信したメールのうち AI の下書きがあったもの
+        "ai_classified": sum(1 for r in received if r["priority_source"] == "ai"),
+        "ai_drafted": sum(1 for r in replied if r["draft_source"] == "ai"),
+    }
+
+
+def _duration_text(seconds: float) -> str:
+    """返信までの時間を「45分」「2時間30分」「1日3時間」のような言葉にする.
+
+    「半分のメールは○○以内」と書くので、短く見せないよう切り上げる (1分に満たなくても「1分」)。
+    """
+    minutes = max(math.ceil(seconds / 60), 1)
+    if minutes < 60:
+        return f"{minutes}分"
+    hours, rest = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}時間" + (f"{rest}分" if rest else "")
+    days, hours = divmod(math.ceil(minutes / 60), 24)
+    return f"{days}日" + (f"{hours}時間" if hours else "")
+
+
+def _count_list(items) -> str:
+    """[(名前, 数)] を「高 5通／中 30通」のような言葉にする."""
+    return "／".join(f"{name} {n}通" for name, n in items)
+
+
+def _report_categories(by_category: dict, settings: dict) -> str:
+    """種類ごとの数 (多い順。同じ数なら設定の順・未分類は後ろ。多すぎる分は「ほか N通」)."""
+    order = {name: i for i, name in enumerate(category_list(settings))}
+    items = sorted(by_category.items(),
+                   key=lambda kv: (-kv[1], kv[0] == "", order.get(kv[0], len(order)), kv[0]))
+    text = _count_list((_remind_part(name, CATEGORY_NAME_MAX_CHARS) or "未分類", n)
+                       for name, n in items[:REPORT_CATEGORY_MAX])
+    rest = sum(n for _, n in items[REPORT_CATEGORY_MAX:])
+    return text + (f"／ほか {rest}通" if rest else "")
+
+
+def _sender_label(s: dict) -> str:
+    """よく届いた差出人の1人分 (名前があれば名前と、縮めたアドレス)."""
+    name = _remind_part(s["name"], REPORT_NAME_MAX_CHARS)
+    addr = short_address(s["addr"])
+    return f"{name}（{addr}）" if name and addr else (name or addr)
+
+
+def weekly_report_message(stats: dict, settings: dict, day: date,
+                          sent_by: str | None = None) -> tuple[str, str]:
+    """週ごとのまとめの (件名, 本文) を作る (Slack でもメールでも、そのまま読める文).
+
+    day は送る日 (その前の7日間をまとめる)。sent_by を渡すと「今すぐ送る」で送ったことを
+    書き添え、渡さなければ、いつ送っているかを書き添える (送る設定がオンのときだけ)。
+    外から来た文字 (差出人など) は _remind_part で無害な1行にする。
+    """
+    first, last = day - timedelta(days=REPORT_DAYS), day - timedelta(days=1)
+    lines = [f"📊 メールの週ごとのまとめ（{day_label(first)}〜{day_label(last)}）", "",
+             f"■ 届いたメール: {stats['received']}通"]
+    if stats["received"]:
+        lines.append("・優先度: " + _count_list(
+            (label, stats["by_priority"][p]) for p, label in PRIORITY_LABELS.items()))
+        lines.append("・種類: " + _report_categories(stats["by_category"], settings))
+        if stats["top_senders"]:
+            lines.append("・よく届いた差出人: " + "／".join(
+                f"{_sender_label(s)} {s['count']}通" for s in stats["top_senders"]))
+    replied = f"・返信した: {stats['replied']}通"
+    if stats["reply_median_sec"] is not None:
+        replied += ("（返信までの時間: 半分のメールは"
+                    f"{_duration_text(stats['reply_median_sec'])}以内、"
+                    f"平均は{_duration_text(stats['reply_average_sec'])}）")
+    lines += ["", "■ この7日間に対応したメール", replied,
+              f"・対応不要にした: {stats['archived']}通", ""]
+    if stats["unhandled"]:
+        high = (f"うち優先度[高] {stats['unhandled_high']}通。"
+                if stats["unhandled_high"] else "")
+        lines.append(f"■ いま未対応のメール: {stats['unhandled']}通（{high}"
+                     f"一番長く待っているメールは、届いてから{wait_text(stats['oldest_wait_sec'])}）")
+    else:
+        lines.append("■ いま未対応のメールはありません")
+    ai = []
+    if stats["ai_classified"]:
+        ai.append(f"AI が優先度と種類を判定したメール {stats['ai_classified']}通")
+    if stats["ai_drafted"]:
+        ai.append(f"返信したメールのうち AI の下書きがあったもの {stats['ai_drafted']}通")
+    if ai:
+        lines += ["", "■ AI の利用: " + "／".join(ai)]
+    lines.append("")
+    url = mail_page_url(settings)
+    if url:
+        lines.append(f"受信箱を開く: {url}")
+    if sent_by is not None:
+        who = _remind_part(sent_by, REMIND_NAME_MAX_CHARS)
+        lines.append(f"（{who}が設定画面の「今すぐ送る」で送りました）")
+    elif settings.get("mail_report_enabled"):
+        weekday = _report_setting(settings, "mail_report_weekday", *REPORT_WEEKDAY_RANGE)
+        hour = _report_setting(settings, "mail_report_hour", *REPORT_HOUR_RANGE)
+        lines.append(f"（毎週{WEEKDAY_NAMES[weekday]}曜の{hour}時に、"
+                     "その前の7日間の分をお送りしています）")
+    subject = (f"メールの週ごとのまとめ"
+               f"（{first.month}/{first.day}〜{last.month}/{last.day}）")
+    return subject, "\n".join(lines).strip()
+
+
+def weekly_report(conn, settings: dict, now: datetime, day: date | None = None,
+                  sent_by: str | None = None) -> tuple[str, str]:
+    """週ごとのまとめの (件名, 本文) (読むだけ).
+
+    day は送る日 (省略すると今日 = 昨日までの7日間。見本・「今すぐ送る」用)。
+    """
+    day = day or now.astimezone(tz.TZ).date()
+    start, end = report_period(day)
+    stats = weekly_stats(conn, start, end, now)
+    return weekly_report_message(stats, settings, day, sent_by)
+
+
+def _report_setting(settings: dict, key: str, lo: int, hi: int) -> int:
+    """送る曜日・時刻の設定 (手で DB を書き換えたなどで範囲の外なら、既定の値)."""
+    try:
+        value = int(settings.get(key))
+    except (TypeError, ValueError):
+        return db.INT_SETTINGS[key]
+    return value if lo <= value <= hi else db.INT_SETTINGS[key]
+
+
+def report_slot(settings: dict, now: datetime) -> datetime:
+    """いま (ちょうども含む) までで一番近い、送る曜日・時刻 (集計のタイムゾーン)."""
+    weekday = _report_setting(settings, "mail_report_weekday", *REPORT_WEEKDAY_RANGE)
+    hour = _report_setting(settings, "mail_report_hour", *REPORT_HOUR_RANGE)
+    today = now.astimezone(tz.TZ).date()
+    day = today - timedelta(days=(today.weekday() - weekday) % 7)
+    slot = _at_hour(day, hour)
+    if slot > now:   # 今日が送る曜日で、まだその時刻の前
+        slot = _at_hour(day - timedelta(days=7), hour)
+    return slot
+
+
+def _report_gap_ok(day: date, last_sent: str) -> bool:
+    """前に送った日 (last_sent) から REPORT_MIN_GAP_DAYS 日以上あいているか (まだ無ければ True)."""
+    try:
+        last = date.fromisoformat(str(last_sent or ""))
+    except ValueError:
+        return True
+    return day >= last + timedelta(days=REPORT_MIN_GAP_DAYS)
+
+
+def report_due(settings: dict, now: datetime, last_sent: str) -> date | None:
+    """いま送るべき週のまとめの「送る日」(送らなくてよければ None).
+
+    送る曜日・時刻を過ぎていて、その日のまとめをまだ送っていなければ送る。サーバが止まって
+    いた (更新・再起動) などでその時刻に送れなかったときは、同じ日のうちなら後から送る
+    (翌日になったら、その週は送らない。古いまとめを急に送らない)。前に送った日から
+    REPORT_MIN_GAP_DAYS 日たっていなければ送らない (曜日を変えた直後に続けて送らない)。
+    """
+    if not settings.get("mail_report_enabled"):
+        return None
+    slot = report_slot(settings, now)
+    if slot.date() != now.astimezone(tz.TZ).date():
+        return None
+    return slot.date() if _report_gap_ok(slot.date(), last_sent) else None
+
+
+def next_report_at(settings: dict, now: datetime, last_sent: str) -> datetime | None:
+    """次に週のまとめを送る日時 (設定画面に出す用。送る設定がオフなら None).
+
+    まだ送っていない今日の分があれば、その時刻 (このあとの自動受信の回で送る)。
+    """
+    if not settings.get("mail_report_enabled"):
+        return None
+    slot = report_slot(settings, now)
+    if report_due(settings, now, last_sent):
+        return slot
+    hour = _report_setting(settings, "mail_report_hour", *REPORT_HOUR_RANGE)
+    for weeks in range(1, 4):   # 前に送った日の近くは飛ばす (3週先までには必ずある)
+        day = slot.date() + timedelta(days=7 * weeks)
+        if _report_gap_ok(day, last_sent):
+            break
+    return _at_hour(day, hour)
+
+
+def report_last_sent(conn) -> str:
+    """最後に送った週のまとめの「送る日」(YYYY-MM-DD。まだ送っていなければ "")."""
+    return _get_state(conn, REPORT_SENT_KEY)
+
+
+def send_weekly_report(conn, notifier=None, now: datetime | None = None) -> bool:
+    """週ごとのまとめを、決めた曜日・時刻に1回だけ送る (定期受信の回ごとに呼ぶ).
+
+    送る設定がオフ・送り先 (Slack・通知先メール) が無い・まだ時刻の前・その週の分は送った、
+    のときは何もしない。どこにも送れなかったときは送ったことにせず、次の回にもう一度送る
+    (同じ日のうち)。送ったら送る日を覚える (再起動しても二度送らない)。
+    送ったら True (notifier はテスト用に差し替えられる。notify.deliver と同じ形)。
+    """
+    from . import notify  # 循環を避けるため遅延インポート
+
+    s = db.get_settings(conn)
+    if not s.get("mail_report_enabled") or not notify.channels(s):
+        return False
+    now = now or datetime.now(timezone.utc)
+    day = report_due(s, now, report_last_sent(conn))
+    if day is None:
+        return False
+    subject, text = weekly_report(conn, s, now, day)
+    conn.commit()   # 念のため、書き込みのロックを持ったまま送らない
+    sent = (notifier or notify.deliver)(s, text, subject)
+    if not sent:
+        print("週ごとのまとめを送れませんでした (次の回にもう一度送ります)")
+        return False
+    _set_state(conn, REPORT_SENT_KEY, day.isoformat())
+    conn.commit()
+    return True
 
 
 def remove_orphan_attachment_dirs(conn, attachment_dir) -> int:

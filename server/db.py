@@ -1,5 +1,6 @@
 """SQLite helpers for the zatsumu server."""
 import os
+import re
 import sqlite3
 import secrets
 from contextlib import contextmanager
@@ -115,7 +116,9 @@ CREATE TABLE IF NOT EXISTS mails (
     -- 送った返信の Message-ID (相手がその返信に返事をくれたとき、同じやり取りだと分かるように)
     reply_message_id TEXT NOT NULL DEFAULT '',
     -- 「返事をしていないメール」としてお知らせした時刻 (NULL=まだ。1通につき1回だけ知らせる)
-    reminded_at TEXT
+    reminded_at TEXT,
+    -- 最後に「対応不要」にした時刻 (週ごとのまとめで数える用。今も対応不要かは status で見る)
+    archived_at TEXT
 );
 -- 届いたメールが「どのメールへの返事か」を示す Message-ID (In-Reply-To・References の中身)。
 -- 返信画面の「この相手とのやり取り」で、同じ話のメールを探すのに使う (server/mail.py)。
@@ -225,6 +228,10 @@ INT_SETTINGS = {
     "mail_remind_enabled": 1,
     "mail_remind_hours_high": 2,     # 優先度[高]は、届いてから何時間でお知らせするか (0=しない)
     "mail_remind_hours_normal": 24,  # 優先度[中]・[低]は、何時間でお知らせするか (0=しない)
+    # メールの週ごとのまとめを Slack/メールで送るか (server/mail.py)。使い始めるまでは送らない
+    "mail_report_enabled": 0,
+    "mail_report_weekday": 0,      # 送る曜日 (0=月曜 … 6=日曜)
+    "mail_report_hour": 9,         # 送る時刻 (時。集計と同じタイムゾーン=既定は日本時間)
 }
 
 # 全社設定の既定値 (文字列)
@@ -416,6 +423,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 古いものをまとめて知らせないよう、知らせるかどうかは取り込んだ時刻で決める (server/mail.py)
     if "reminded_at" not in mcols:
         conn.execute("ALTER TABLE mails ADD COLUMN reminded_at TEXT")
+    # 週ごとのまとめの「対応不要にした」の数。前から対応不要のメールは、操作の記録から時刻を入れる
+    if "archived_at" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN archived_at TEXT")
+        _fill_archived_at(conn)
     # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
     # 送った返信への返事を探す用 (この列も後から足したので、ここで作る)
@@ -423,6 +434,35 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
     _seed_mail_templates(conn)
+
+
+# 操作の記録 (audit_log) の「メールを変えた」の書き方 (server/app.py の mail_patch)。
+# 例: "mail=12 priority=1, status=archived"
+_AUDIT_MAIL_RE = re.compile(r"mail=(\d+) ")
+_AUDIT_ARCHIVED_RE = re.compile(r"(?:^| |, )status=archived(?:,|$)")
+
+
+def _fill_archived_at(conn: sqlite3.Connection) -> None:
+    """前から「対応不要」のメールに、対応不要にした時刻 (archived_at) を入れる (列を足したときだけ).
+
+    時刻は操作の記録 (audit_log) の、そのメールを最後に対応不要にした時刻。記録が無いもの
+    (デモで入れたもの等) は空のまま (週ごとのまとめの「対応不要にした」に数えないだけ)。
+    記録を1回だけ順に読む (メールごとに記録全体を探すと、記録が多いときに起動が遅くなる)。
+    """
+    last: dict[int, str] = {}
+    for r in conn.execute(
+            "SELECT detail, at FROM audit_log WHERE action = 'mail_update'"
+            " AND detail LIKE '%status=archived%'"):
+        mt = _AUDIT_MAIL_RE.match(r["detail"] or "")
+        if mt and _AUDIT_ARCHIVED_RE.search(r["detail"][mt.end():]):
+            mail_id = int(mt.group(1))
+            last[mail_id] = max(last.get(mail_id, ""), r["at"] or "")
+    conn.executemany(
+        "UPDATE mails SET archived_at = ? WHERE id = ? AND status = 'archived'"
+        " AND archived_at IS NULL",
+        [(at, mail_id) for mail_id, at in last.items() if at])
+    # すぐ確定する (この後の起動の処理の間、書き込みのロックを持ち越さない)
+    conn.commit()
 
 
 def _seed_mail_templates(conn: sqlite3.Connection) -> None:
