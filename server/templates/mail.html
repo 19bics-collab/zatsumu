@@ -238,6 +238,36 @@
   .cal-btns { display: flex; flex-wrap: wrap; gap: .4rem; }
   .cal-btns button { white-space: nowrap; padding: .45rem .8rem; }
   .cal-help { color: #4b5563; line-height: 1.5; }
+  /* Notionに登録 (返信モーダル)。登録したら「Notionで開く」(リンク) と「もう一度登録」を出す */
+  .ntn-box { margin-top: .7rem; display: flex; flex-direction: column; gap: .35rem; }
+  .ntn-box[hidden], .ntn-link[hidden] { display: none; }
+  .ntn-btns { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .ntn-btns button { padding: .45rem .9rem; white-space: nowrap; }
+  .ntn-link { display: inline-block; padding: .45rem .9rem; border-radius: 6px; background: #16a34a;
+              color: #fff; text-decoration: none; font-size: .9rem; white-space: nowrap; }
+  .ntn-msg { font-size: .85rem; color: #374151; white-space: pre-wrap; overflow-wrap: anywhere;
+             line-height: 1.5; }
+  .ntn-msg:empty { display: none; }
+  .ntn-msg.ok { color: #0a7d32; }
+  .ntn-msg.warn { color: #b45309; }
+  .ntn-msg.err { color: var(--hi); }
+  /* Notion (設定)。始め方の手順・データベースの URL・接続テストで分かった列の一覧 */
+  .ntn-steps { margin: .2rem 0 .8rem; padding-left: 1.3rem; color: #4b5563; line-height: 1.55;
+               font-size: .85rem; }
+  .ntn-steps li { margin-bottom: .3rem; overflow-wrap: anywhere; }
+  #set-notion-db { width: 100%; box-sizing: border-box; padding: .45rem; border: 1px solid #ccc;
+                   border-radius: 6px; font-size: 1rem; }
+  #test-notion-msg { font-size: .85rem; margin-top: .4rem; overflow-wrap: anywhere;
+                     white-space: pre-wrap; }
+  .ntn-cols { margin-top: .5rem; font-size: .85rem; border: 1px solid var(--line); border-radius: 6px;
+              background: #f9fafb; padding: .5rem .7rem; }
+  .ntn-cols[hidden] { display: none; }
+  .ntn-col { display: flex; flex-wrap: wrap; gap: .1rem .5rem; padding: .3rem 0;
+             border-bottom: 1px solid #eef0f3; }
+  .ntn-col:last-child { border-bottom: none; }
+  .ntn-col b { overflow-wrap: anywhere; min-width: 0; }
+  .ntn-col small { color: #6b7280; }
+  .ntn-col span { margin-left: auto; color: #374151; overflow-wrap: anywhere; min-width: 0; }
   /* 添付の画像を大きく見る */
   #att-viewer { z-index: 20; cursor: zoom-out; flex-direction: column; gap: .6rem; }
   #att-viewer img { max-width: 94vw; max-height: 84vh; object-fit: contain;
@@ -530,6 +560,51 @@
       この機能を入れる前に届いたメールは「未分類」と出ます。
       変えた内容は下の「保存」を押すと保存され、これから届くメールから使われます。</small></p>
     </div>
+    <div class="set-card" id="notion-card">
+      <h3>Notion（案件DB）</h3>
+      <p class="set-help"><small>返信画面の「Notionに登録」を押すと、問い合わせのメールを Notion の
+      データベース（運営代行 案件DB など）に1件＝1行で登録します。メールの本文と添付ファイル
+      （図面・写真など）も、そのページに入ります。使い始めるときは、次の4つをしてください。</small></p>
+      <ol class="ntn-steps">
+        <li>パソコンで <b>notion.so/my-integrations</b> を開き、「新しいインテグレーション」（連携）を
+        作ります（種類は「内部」、名前は「メール画面」など。「機能」は「コンテンツを読み取る」
+        「コンテンツを更新」「コンテンツを挿入」にチェック）。</li>
+        <li>作った連携の「シークレット」を「表示」→「コピー」し、下の「Notionのシークレット」に
+        貼り付けます。<b>シークレットはパスワードと同じです。チャットやメールには貼り付けないで
+        ください</b>（もれたときは、同じ画面でシークレットを作り直してください）。</li>
+        <li>Notion で案件DBを開き、右上の「…」→「接続」から、作った連携を選んで追加します
+        （これをしないと「連携が招待されていません」と出ます）。</li>
+        <li>案件DBのURL（ブラウザのアドレス欄の文字。「…」→「リンクをコピー」でも取れます）を
+        下の「データベースのURL」に貼り付けて「保存」を押し、「Notion接続テスト」で確かめます。</li>
+      </ol>
+      <label class="set-row"><span>Notionのシークレット</span>
+        <input type="password" id="set-notion-token" placeholder="(未設定)" autocomplete="off"></label>
+      <button class="ghost" id="set-notion-token-clear" hidden>シークレットを消す（Notionに登録しない）</button>
+      <label style="display:block;margin:.6rem 0 .2rem;font-size:.9rem" for="set-notion-db">データベースのURL</label>
+      <input type="text" id="set-notion-db" inputmode="url" autocomplete="off" autocapitalize="off"
+        spellcheck="false" placeholder="https://www.notion.so/…">
+      <p class="set-help" style="margin-top:.3rem"><small>保存すると、URLの中のデータベースの番号（ID）だけが残ります。</small></p>
+      <label class="set-row"><span>AIに案件名とほかの列も入れてもらう</span>
+        <input type="checkbox" id="set-notion-ai"></label>
+      <p class="set-help"><small>「AI返信（Claude）」のキーがあるときだけ使います。AI がメールを読んで、
+      案件名と、所在地・間取りなどメールに書いてある列を入れます（選択の列は Notion にある選択肢だけ。
+      メールに書いていないことは入れず、空のままにします）。1回あたり 1 円未満が目安です。</small></p>
+      <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="set-notion-map">列に入れるもの（1行に「Notionの列の名前 = 入れるもの」）</label>
+      <textarea id="set-notion-map" rows="6" placeholder="案件名 = 件名"></textarea>
+      <p class="set-help"><small>右側に書けるもの: 件名・差出人・差出人の名前・差出人のメール・電話番号・
+      受信日・受信日時・本文・種類・担当。「」で囲むと、その文字をそのまま入れます
+      （例: ステータス = 「問い合わせ受付」。選択の列は、Notion にある選択肢と同じ文字にしてください）。
+      「」だけにすると、その列は空のままにします（AI も入れません）。
+      AI を使うときは、件名・差出人・電話番号などメールの文から読む列は、AI が読み取った値を優先します
+      （ホームページのフォームから届いたメールでも、お客様の名前と連絡先が入るように）。
+      ここに書いていない列も、メールに書いてあれば AI が入れます。</small></p>
+      <button class="ghost" id="set-test-notion">Notion接続テスト</button>
+      <div id="test-notion-msg"></div>
+      <div id="notion-cols" class="ntn-cols" hidden></div>
+      <p><small>登録した内容（メールの本文・添付ファイル）は、そのデータベースを見られる人
+      （共有している提携先なども）みんなが見られます。Notion に送るのは「Notionに登録」を押したメールだけです。
+      シークレット・URL・列に入れるものは、下の「保存」で保存されます。</small></p>
+    </div>
     <div class="set-card" id="tpl-card">
       <h3>定型文（よく使う返信文）</h3>
       <div id="tpl-list"></div>
@@ -590,6 +665,14 @@
       iPhone のカレンダーや Outlook に入れるときは「予定ファイル(.ics)を保存」を押し、出てきた画面（または「ファイル」アプリの「ダウンロード」）から追加してください。
       この画面の内容は、押したときにだけ Google やファイルに渡ります。</small>
     </div>
+    <div class="ntn-box" id="m-ntn" hidden>
+      <div class="ntn-btns">
+        <button id="m-ntn-reg" class="ghost">🗂 Notionに登録</button>
+        <a id="m-ntn-open" class="ntn-link" target="_blank" rel="noopener noreferrer" hidden>Notionで開く ↗</a>
+        <button id="m-ntn-again" class="ghost" hidden>もう一度登録</button>
+      </div>
+      <div id="m-ntn-msg" class="ntn-msg"></div>
+    </div>
     <div style="display:flex;gap:.6rem;align-items:center;margin-top:.8rem;flex-wrap:wrap">
       <label class="m-field">優先度
         <select id="m-priority">
@@ -647,9 +730,10 @@ const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応�
 // autoSel: 画面が返信文を入れ替えた直後のカーソルの位置 (ここから動いていれば人が動かした)
 // ccCandidates: 全員に返信の CC 候補 / ccSaved: 「CCの人にも送る」を外す前の CC の欄
 // category / assigneeId / assigneeName: 保存済みの種類と担当 (変えられなかったときに選択欄を戻す用)
+// notion: Notion に登録したページ (notion_page_url・登録した時刻・人。まだなら URL が空)
 const EMPTY_MODAL = { id: null, savedDraft: "", cursorSet: false, autoSel: null,
                       ccCandidates: "", ccSaved: "",
-                      category: "", assigneeId: null, assigneeName: "" };
+                      category: "", assigneeId: null, assigneeName: "", notion: {} };
 let modal = { ...EMPTY_MODAL };
 let viewName = "inbox";
 
@@ -1028,7 +1112,7 @@ async function openMail(id) {
   }
   const replied = m.status === "replied";
   modal = { ...EMPTY_MODAL, id, savedDraft: m.draft_reply || "",
-            ccCandidates: (m.reply_cc_candidates || []).join(", ") };
+            ccCandidates: (m.reply_cc_candidates || []).join(", "), notion: notionOf(m) };
   // 宛先は元メールの差出人。CC は最初は空にしておき、「CCの人にも送る」を選んだときだけ
   // 候補を入れる (元メールの To・Cc は送り主が自由に書けるので、知らない人を黙って CC に
   // 入れて、鍵の番号などを送ってしまわないように)。
@@ -1051,6 +1135,8 @@ async function openMail(id) {
   renderAttachments(id, m);
   renderThread(m);
   clearCalendar();   // 前のメールの予定の候補は出さない
+  ntnSeq++;          // 前のメールの Notion の登録結果は出さない
+  renderNotion(modal.notion);
   $("m-priority").value = m.priority;
   modal.category = m.category || "";
   modal.assigneeId = m.assignee_user_id || null;
@@ -1271,6 +1357,7 @@ async function closeModal() {
   clearAttachments();
   clearThread();
   clearCalendar();
+  ntnSeq++;
   $("mail-modal").hidden = true;
   // 開いている間に新着などで受信箱が変わっていたら、ここで取り直す
   if (inboxStale && viewName === "inbox") showInbox({ auto: true });
@@ -1718,6 +1805,95 @@ $("m-cal-list").onclick = e => {
   } catch (err) { alert(err.message); }
 };
 
+/* ---------- Notionに登録 (問い合わせのメールを案件DBに1行で入れる) ----------
+   サーバが Notion のデータベースに1行 (ページ) を作り、本文と添付ファイルも入れる。
+   登録したページはサーバが覚えていて、次からは「Notionで開く」を出す (二重に登録しない)。
+   「もう一度登録」は確かめてから、Notion にもう1行作る */
+let ntnSeq = 0;   // メールを開き直したら増やす (前のメールの登録結果をこの画面に出さない用)
+// Notion に登録できる設定があるか (保存済みのシークレットとデータベース)
+const notionReady = () => !!(appSettings.notion_token_set && appSettings.notion_database_id);
+// Notion のページの URL だけをリンクにする (サーバも確かめている)
+const notionUrl = u =>
+  /^https:\/\/([a-z0-9-]+\.)*notion\.(so|site|com)\/[^\s"'<>]*$/i.test(String(u || "")) ? String(u) : "";
+const notionOf = m => ({ notion_page_url: m.notion_page_url || "",
+                         notion_registered_at: m.notion_registered_at || "",
+                         notion_registered_by: m.notion_registered_by || "" });
+function ntnMsg(text, kind) {
+  $("m-ntn-msg").className = "ntn-msg" + (kind ? " " + kind : "");
+  $("m-ntn-msg").textContent = text;   // サーバの文 (列の名前など) は textContent で入れる
+}
+// 登録済みならリンクと「もう一度登録」、まだなら「Notionに登録」を出す。
+// 設定が無く、登録もしていないメールでは何も出さない (Notion を使わない人の画面を増やさない)
+function renderNotion(n, keepMsg) {
+  const url = notionUrl(n.notion_page_url);
+  $("m-ntn").hidden = !url && !notionReady();
+  $("m-ntn-reg").hidden = !!url;
+  $("m-ntn-reg").disabled = false;
+  $("m-ntn-reg").textContent = "🗂 Notionに登録";
+  $("m-ntn-open").hidden = !url;
+  if (url) $("m-ntn-open").href = url; else $("m-ntn-open").removeAttribute("href");
+  $("m-ntn-again").hidden = !url || !notionReady();
+  $("m-ntn-again").disabled = false;
+  $("m-ntn-again").textContent = "もう一度登録";
+  if (keepMsg) return;
+  const who = [n.notion_registered_at ? fmtDate(n.notion_registered_at) : "",
+               n.notion_registered_by || ""].filter(Boolean).join("・");
+  ntnMsg(url ? "Notionに登録済みです" + (who ? `（${who}）` : "") : "", "");
+}
+async function registerNotion(again) {
+  const id = modal.id;
+  if (!id) return;
+  if (again && !confirm("もう一度登録すると、Notionに同じ問い合わせの行がもう1つできます。登録しますか？\n\n" +
+      "（前に登録した行は消えません。要らなければ Notion で消してください）")) return;
+  if (modal.id !== id) return;
+  const seq = ++ntnSeq, b = again ? $("m-ntn-again") : $("m-ntn-reg");
+  $("m-ntn-reg").disabled = $("m-ntn-again").disabled = true;
+  b.textContent = "登録しています…";
+  ntnMsg("Notionに登録しています…（添付ファイルがあると1分ほどかかることがあります。" +
+         "この画面を閉じても、登録は続きます）", "");
+  let r, e;
+  try {
+    r = await api(`/api/mail/${id}/notion`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ again }),
+    });
+    e = await r.json().catch(() => ({}));
+  } catch (err) {
+    if (err.message === "auth" || seq !== ntnSeq || modal.id !== id) return;
+    renderNotion(modal.notion, true);
+    ntnMsg("通信に失敗しました。Notionに登録できている場合があるので、Notionで確かめてから" +
+           "もう一度押してください", "err");
+    return;
+  }
+  if (seq !== ntnSeq || modal.id !== id) return;   // 待っている間に別のメールを開いた・閉じた
+  if (r.ok) {
+    modal.notion = notionOf(e);
+    renderNotion(modal.notion, true);
+    const notes = [...(e.attachment_notes || []).map(x => "📎 " + x),
+                   ...(e.warnings || []).map(x => "⚠ " + x)];
+    if (e.ai_error) notes.push("⚠ AIを使えなかったため、決めた列だけを入れました（理由: " + e.ai_error + "）");
+    ntnMsg("Notionに登録しました ✓" + (e.database_title ? `（${e.database_title}）` : "") +
+           (e.attachments_uploaded ? `　添付ファイル ${e.attachments_uploaded}件も載せました。` : "") +
+           (notes.length ? "\n" + notes.join("\n") : ""), notes.length ? "warn" : "ok");
+    return;
+  }
+  if (r.status === 409) {
+    // ほかの画面 (人) が先に登録した・今登録しているところ。登録したページがあれば出す
+    try {
+      const r2 = await api(`/api/mail/${id}?thread=false`);
+      if (r2.ok) modal.notion = notionOf(await r2.json());
+    } catch {}
+    if (seq !== ntnSeq || modal.id !== id) return;
+    renderNotion(modal.notion, true);
+    ntnMsg(e.detail || "このメールはもうNotionに登録しています", "warn");
+    return;
+  }
+  renderNotion(modal.notion, true);
+  ntnMsg(e.detail || "Notionに登録できませんでした", "err");
+}
+$("m-ntn-reg").onclick = () => registerNotion(false);
+$("m-ntn-again").onclick = () => registerNotion(true);
+
 /* 定型文を入れる。差し込み ({相手の名前} など) はサーバがこのメール用に置き換え済み */
 let modalTemplates = [];
 async function loadModalTemplates(id) {
@@ -1855,6 +2031,7 @@ function fillSettings(s) {
   $("set-mail-from").value = s.mail_from;
   fillRemindSettings(s);
   fillReportSettings(s);
+  fillNotionSettings(s);
   $("set-msg").textContent = "";
   $("test-imap-msg").textContent = "";
   $("test-ai-msg").textContent = "";
@@ -2073,6 +2250,73 @@ $("set-report-send").onclick = async () => {
   b.disabled = false;
 };
 
+/* ---------- Notion（案件DB）(設定) ---------- */
+function fillNotionSettings(s) {
+  // シークレットは表示しない (サーバも返さない)。変えるときだけ入れる
+  $("set-notion-token").value = "";
+  $("set-notion-token").placeholder = s.notion_token_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-notion-token-clear").hidden = !s.notion_token_set;
+  $("set-notion-db").value = s.notion_database_id || "";
+  $("set-notion-ai").checked = !!s.notion_ai_fill;
+  $("set-notion-map").value = s.notion_property_map || "";
+  $("test-notion-msg").textContent = "";
+  $("notion-cols").hidden = true;   // 設定を変えたら列の一覧も変わるので、テストで取り直す
+}
+// シークレットを消す (保存では空の欄は送らないため、消すときはこのボタンで消す)
+$("set-notion-token-clear").onclick = async () => {
+  if (!confirm("Notionのシークレットを消しますか？\n\n消すと、返信画面の「Notionに登録」が出なくなります" +
+      "（登録済みの行は Notion に残ります）。\nもう一度使うときは、シークレットを入れて保存してください。")) return;
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notion_token: "" }),
+  });
+  // シークレットのところだけ表示を直す (ほかの欄の、まだ保存していない入力は消さない)
+  $("set-notion-token").value = "";
+  $("set-notion-token").placeholder = "(未設定)";
+  $("set-notion-token-clear").hidden = true;
+  $("test-notion-msg").style.color = "#0a7d32";
+  $("test-notion-msg").textContent = "シークレットを消しました ✓";
+  $("notion-cols").hidden = true;
+};
+$("set-test-notion").onclick = async () => {
+  const b = $("set-test-notion"), msg = $("test-notion-msg"), cols = $("notion-cols");
+  // 試すのは保存済みの設定。入れただけのシークレットや URL は先に保存してもらう
+  if ($("set-notion-token").value || $("set-notion-db").value.trim() !== (loaded.notion_database_id || "") ||
+      $("set-notion-map").value !== (loaded.notion_property_map || "") ||
+      $("set-notion-ai").checked !== !!loaded.notion_ai_fill) {
+    msg.style.color = "#c62828";
+    msg.textContent = "変更がまだ保存されていません。先に下の「保存」を押してから試してください";
+    return;
+  }
+  b.disabled = true;
+  cols.hidden = true;
+  msg.style.color = "#475569";
+  msg.textContent = "確認中...";
+  try {
+    const r = await api("/api/settings/test-notion", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      const probs = e.problems || [], list = e.properties || [];
+      msg.style.color = probs.length ? "#b45309" : "#0a7d32";
+      msg.textContent = `つながりました ✓ データベース「${e.title || "（名前なし）"}」（列 ${list.length}個）` +
+        (probs.length ? "\n⚠ 列に入れるもののうち、このデータベースでは使えない行があります" +
+                        "（直して「保存」してください）:\n" + probs.map(p => "・" + p).join("\n") : "");
+      // 列の名前などは Notion から来た文字なので esc() を通す
+      cols.innerHTML = "<small>登録するときに入れるもの</small>" + list.map(p => `
+        <div class="ntn-col"><b>${esc(p.name)}</b><small>${esc(p.label)}</small>
+          <span>← ${esc(p.fill)}</span></div>`).join("");
+      cols.hidden = !list.length;
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "Notionにつながりませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+};
+
 /* AI のモデルの選び方。値はモデル名、表示は分かりやすい言葉にする。
    既定 (おすすめ) はサーバ側の設定の既定値 (server/db.py) と同じにしておく */
 const AI_MODELS = [
@@ -2166,6 +2410,9 @@ $("set-save").onclick = async () => {
     mail_report_enabled: $("set-report-enabled").checked,
     mail_report_weekday: +$("set-report-weekday").value,
     mail_report_hour: +$("set-report-hour").value,
+    notion_database_id: $("set-notion-db").value,
+    notion_property_map: $("set-notion-map").value,
+    notion_ai_fill: $("set-notion-ai").checked,
   };
   // 空の欄は 0 (お知らせしない) と区別がつかないので、入れてもらう
   for (const id of ["set-remind-high", "set-remind-normal"]) {
@@ -2189,6 +2436,7 @@ $("set-save").onclick = async () => {
   if ($("set-anthropic-key").value) body.anthropic_api_key = $("set-anthropic-key").value;
   if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
   if ($("set-slack").value.trim()) body.slack_webhook_url = $("set-slack").value.trim();
+  if ($("set-notion-token").value.trim()) body.notion_token = $("set-notion-token").value.trim();
   appSettings = await apiJson("/api/settings", {
     method: "PATCH", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

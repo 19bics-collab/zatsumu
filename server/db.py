@@ -118,7 +118,13 @@ CREATE TABLE IF NOT EXISTS mails (
     -- 「返事をしていないメール」としてお知らせした時刻 (NULL=まだ。1通につき1回だけ知らせる)
     reminded_at TEXT,
     -- 最後に「対応不要」にした時刻 (週ごとのまとめで数える用。今も対応不要かは status で見る)
-    archived_at TEXT
+    archived_at TEXT,
+    -- Notion のデータベース (案件DB) に登録したページ (空=まだ。二重に登録しないように残す。
+    -- 「もう一度登録」したら新しいページの方にする) と、登録した時刻・人 (server/notion.py)
+    notion_page_id TEXT NOT NULL DEFAULT '',
+    notion_page_url TEXT NOT NULL DEFAULT '',
+    notion_registered_at TEXT,
+    notion_registered_by TEXT NOT NULL DEFAULT ''
 );
 -- 届いたメールが「どのメールへの返事か」を示す Message-ID (In-Reply-To・References の中身)。
 -- 返信画面の「この相手とのやり取り」で、同じ話のメールを探すのに使う (server/mail.py)。
@@ -232,6 +238,8 @@ INT_SETTINGS = {
     "mail_report_enabled": 0,
     "mail_report_weekday": 0,      # 送る曜日 (0=月曜 … 6=日曜)
     "mail_report_hour": 9,         # 送る時刻 (時。集計と同じタイムゾーン=既定は日本時間)
+    # Notion に登録するとき、AI に案件名とほかの列も入れてもらうか (AI のキーがあるときだけ)
+    "notion_ai_fill": 1,
 }
 
 # 全社設定の既定値 (文字列)
@@ -290,6 +298,19 @@ STR_SETTINGS = {
     "mail_remind_quiet": "21-8",
     # お知らせに載せるメール画面のアドレス (空ならサーバの設定 ZATSUMU_MAIL_DOMAIN などから作る)
     "mail_page_url": "",
+    # Notion の連携 (インテグレーション) のシークレット (空なら「Notionに登録」は使わない)
+    "notion_token": "",
+    # 登録する Notion のデータベースの番号 (32文字。画面で URL を貼っても番号にそろえる)
+    "notion_database_id": "",
+    # Notion の列に入れるもの (1行に「列の名前 = 件名」。「」で囲むと決まった文字)。
+    # 既定は「運営代行 案件DB」の列に合わせてある。無い列は登録のときに飛ばして知らせるだけ
+    "notion_property_map": "\n".join([
+        "案件名 = 件名",
+        "問い合わせ日 = 受信日",
+        "問い合わせ元 = 差出人",
+        "ステータス = 「問い合わせ受付」",
+        "ボール = 「インビックス」",
+    ]),
 }
 
 # 後方互換: 旧名を参照しているコード向け
@@ -427,6 +448,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "archived_at" not in mcols:
         conn.execute("ALTER TABLE mails ADD COLUMN archived_at TEXT")
         _fill_archived_at(conn)
+    # Notion に登録したページ。以前に取り込んだメールは「まだ登録していない」
+    for col in ("notion_page_id", "notion_page_url", "notion_registered_by"):
+        if col not in mcols:
+            conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    if "notion_registered_at" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN notion_registered_at TEXT")
     # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
     # 送った返信への返事を探す用 (この列も後から足したので、ここで作る)

@@ -195,6 +195,12 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   名前・日時・場所・メモは画面で直せ、「Googleカレンダーで開く」で内容の入った Google カレンダーの
   登録画面を新しいタブで開くか、「予定ファイル(.ics)を保存」で iPhone のカレンダー・Outlook などに入れる。
   サーバに Google のログインは不要で、サーバから Google へは何も送らない）。
+  返信画面の**Notionに登録**で、問い合わせのメールを Notion のデータベース（運営代行 案件DB など）に
+  1件＝1行で登録できます（列には「列に入れるもの」の設定と、AI を使うときは AI がメールから読み取った
+  案件名・所在地などを、列の種類と選択肢に合うものだけ入れる。ページの中に差出人・受信日時・本文、
+  添付ファイルは Notion にアップロードして並べる。登録したら「Notionで開く」になり二重には登録しない。
+  設定は画面の「Notion（案件DB）」。手順は [DEPLOY.md](DEPLOY.md) の「問い合わせを Notion の案件DBに
+  登録できるようにする」）。
   勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
   **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
   メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
@@ -269,6 +275,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/mail/status` | admin | 受信の様子（未対応の数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗）。メール画面が 1 分ごとに呼ぶ |
 | POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
 | POST | `/api/mail/{id}/events` | admin | このメールの日付から予定の候補を作る（`events`: 名前・日付・開始/終了・終日・場所・メモ。AI / ルール。DB には書かない。Google への登録は画面がする） |
+| POST | `/api/mail/{id}/notion` | admin | このメールを Notion のデータベースに1行で登録（本文・添付ファイル付き。登録済みなら 409、`{"again": true}` でもう1行作る） |
 | PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更 |
 | GET | `/api/mail/assignees` | admin | 担当に選べる人（有効な人の番号と名前） |
 | POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る） |
@@ -277,6 +284,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/mail/{id}/templates` | admin | このメール用に差し込みを置き換えた定型文 |
 | POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認 |
 | POST | `/api/settings/test-email` | admin | 指定アドレスへメールのテスト送信 |
+| POST | `/api/settings/test-notion` | admin | Notion のデータベースを読めるか確かめ、列の一覧と何を入れるかを返す（Notion には書き込まない） |
 | GET | `/api/mail/report/preview` | admin | 週ごとのまとめの見本（昨日までの7日間の分の件名・本文、期間、次に送る日時、いまの送り先。送ったことにはしない） |
 | POST | `/api/mail/report/send-now` | admin | 週ごとのまとめ（昨日までの7日間の分）を、保存済みの送り先へすぐ送る（試す用。決まった曜日に送る分はそのまま） |
 | POST | `/api/settings/test-remind` | admin | 返事をしていないメールのお知らせを、保存済みの送り先（Slack・通知先メール）へ試しに送る（今の未対応のメールを見本に並べる。お知らせ済みにはしない） |

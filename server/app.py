@@ -16,7 +16,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import db, devices, imaging, mail, mail_events, notify, reports, retention, tz
+from . import db, devices, imaging, mail, mail_events, notify, notion, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
@@ -429,6 +429,10 @@ class SettingsPatch(BaseModel):
     mail_categories: str | None = None
     mail_category_keywords: str | None = None
     mail_category_assignees: str | None = None
+    notion_token: str | None = None
+    notion_database_id: str | None = None
+    notion_property_map: str | None = None
+    notion_ai_fill: bool | None = None
 
 
 class MailPatch(BaseModel):
@@ -448,6 +452,10 @@ class MailSendBody(BaseModel):
     subject: str | None = None  # 省略時は「Re: 元の件名」
     cc: list[str] | None = None   # CC のアドレス (全員に返信。省略時は CC なし)
     bcc: list[str] | None = None  # BCC のアドレス (ヘッダには出ない)
+
+
+class MailNotionBody(BaseModel):
+    again: bool = False   # 登録済みでも、もう一度登録する (Notion に同じ問い合わせの行がもう1つできる)
 
 
 class MailTemplateBody(BaseModel):
@@ -848,7 +856,7 @@ def _monthly_detail(conn, user, month: str) -> dict:
 
 
 def _mask_settings(s: dict, conn) -> dict:
-    """秘密情報 (パスワード・APIキー) はレスポンスに含めない(設定済みかだけ返す).
+    """秘密情報 (パスワード・APIキー・Notion のシークレット) はレスポンスに含めない(設定済みかだけ返す).
 
     あわせて、AI の直近の失敗 (読み取り専用・設定画面と受信箱の注意書き用) と、
     次に週ごとのまとめを送る日時 (読み取り専用) を添える。
@@ -865,7 +873,7 @@ def _mask_settings(s: dict, conn) -> dict:
     # 次に週ごとのまとめを送る日時 (UTC ISO。送る設定がオフなら null)
     nxt = mail.next_report_at(s, datetime.now(timezone.utc), mail.report_last_sent(conn))
     s["mail_report_next_at"] = tz.utc_iso(nxt) if nxt else None
-    for key in ("smtp_pass", "imap_pass", "anthropic_api_key"):
+    for key in ("smtp_pass", "imap_pass", "anthropic_api_key", "notion_token"):
         s[f"{key}_set"] = bool(s.get(key))
         s[key] = ""
     return s
@@ -934,6 +942,7 @@ def patch_settings(
         "mail_report_enabled": (0, 1),
         "mail_report_weekday": mail.REPORT_WEEKDAY_RANGE,
         "mail_report_hour": mail.REPORT_HOUR_RANGE,
+        "notion_ai_fill": (0, 1),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -981,8 +990,13 @@ def patch_settings(
                     400, "モデル名の形式が正しくありません（例: claude-opus-5-5）")
     # 返事をしていないメールのお知らせ: 止めておく時間帯 ("21-8" の形にそろえる) と、
     # お知らせに載せるメール画面のアドレス
+    # Notion: シークレット (形だけ確かめる)・データベース (URL を貼っても番号にそろえる)・
+    # 列に入れるもの (書き方を確かめる。列が本当にあるかは「Notion接続テスト」で分かる)
     for key, clean in (("mail_remind_quiet", mail.clean_quiet_hours),
-                       ("mail_page_url", mail.clean_page_url)):
+                       ("mail_page_url", mail.clean_page_url),
+                       ("notion_token", notion.clean_token),
+                       ("notion_database_id", notion.clean_database_id),
+                       ("notion_property_map", notion.clean_property_map)):
         if key in changes:
             try:
                 changes[key] = clean(changes[key])
@@ -1022,7 +1036,7 @@ def patch_settings(
     for key, val in changes.items():
         db.set_setting(conn, key, val)
     secret = {"slack_webhook_url", "smtp_pass", "smtp_user",
-              "imap_pass", "imap_user", "anthropic_api_key"}
+              "imap_pass", "imap_user", "anthropic_api_key", "notion_token"}
     _audit(conn, admin, "settings_update", detail=", ".join(
         f"{k}=***" if k in secret else f"{k}={v}" for k, v in changes.items()))
     return _mask_settings(db.get_settings(conn), conn)
@@ -1122,6 +1136,30 @@ def test_ai(_admin=Depends(require_admin), conn=Depends(get_conn)):
         result = mail.test_ai(s)
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
         raise HTTPException(502, f"AIを使えませんでした: {notify.safe_error(e, s)}")
+    return {"ok": True, **result}
+
+
+@app.post("/api/settings/test-notion")
+def test_notion(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """保存済みのシークレットで Notion のデータベースを読めるか確かめる (メール画面の設定用).
+
+    データベースの名前と列の一覧 (種類と、登録するときに何を入れるか) を返す。
+    「列に入れるもの」に、このデータベースで使えない行があれば problems に理由を入れる。
+    Notion には何も書き込まない。
+    """
+    s = db.get_settings(conn)
+    if not str(s.get("notion_token") or "").strip():
+        raise HTTPException(
+            400, "Notionのシークレットが未設定です。シークレットを入れて「保存」してからお試しください")
+    if not str(s.get("notion_database_id") or "").strip():
+        raise HTTPException(
+            400, "NotionのデータベースのURLが未設定です。URLを入れて「保存」してからお試しください")
+    conn.commit()   # Notion とのやりとり (時間がかかる) の間、DB の書き込みロックを持たない
+    try:
+        result = notion.test_connection(s)
+    except notion.NotionError as e:
+        raise HTTPException(502, f"Notionのデータベースを読めませんでした: {notify.safe_error(e, s)}")
+    result["problems"] = [notify.safe_error(RuntimeError(p), s) for p in result["problems"]]
     return {"ok": True, **result}
 
 
@@ -2203,6 +2241,7 @@ def audit_csv(
         "mail_send_refused": "メール返信送信（宛先に届かず）",
         "mail_update": "メール状態変更",
         "mail_report_send": "メールの週ごとのまとめを送信",
+        "mail_notion": "メールをNotionに登録",
         "device_code_sent": "端末確認コード送信",
         "device_code_send_fail": "端末確認コード送信失敗",
         "device_verify_ok": "端末確認成功",
@@ -2650,6 +2689,10 @@ def mail_detail(
         "attachments": [mail.attachment_info(a) for a in atts if not a["skip_reason"]],
         "skipped_attachments": [mail.skipped_attachment_info(a)
                                 for a in atts if a["skip_reason"]],
+        # Notion に登録したページ (空=まだ) と、登録した時刻・人
+        "notion_page_url": r["notion_page_url"],
+        "notion_registered_at": r["notion_registered_at"],
+        "notion_registered_by": r["notion_registered_by"],
         **history,
     }
 
@@ -2735,6 +2778,88 @@ def mail_find_events(
     if out["ai_error"]:
         out["ai_error"] = notify.safe_error(RuntimeError(out["ai_error"]), s)
     return out
+
+
+@app.post("/api/mail/{mail_id}/notion")
+def mail_to_notion(
+    mail_id: int, body: MailNotionBody | None = None, admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """このメールを Notion のデータベース (案件DB) に1行で登録する (返信画面の「Notionに登録」).
+
+    列には「列に入れるもの」(設定) と、AI を使うときは AI がメールから読み取った値を入れ、
+    ページの中には差出人・受信日時・本文を、添付ファイルは Notion に送って並べる。
+    登録済みのメールは、again (もう一度登録) が無ければ 409 (二重に登録しない)。
+    同じメールを今ほかの画面が登録しているときも 409。
+    ページを作れたら、添付ファイルを載せる前に「登録した」ことを記録して確定する
+    (添付で失敗・時間切れになっても、押し直して二重に登録しないように)。
+    """
+    again = bool(body and body.again)
+    _mail_or_404(conn, mail_id)
+    s = db.get_settings(conn)
+    if not notion.configured(s):
+        raise HTTPException(
+            400, "Notionの設定がまだです。「設定」の「Notion（案件DB）」でシークレットと"
+                 "データベースのURLを保存してください")
+    try:
+        with notion.registering(mail_id):
+            # 待っている間に、ほかの画面が登録を終えていることもあるので、ここで読み直す
+            r = conn.execute(_MAIL_SELECT + " WHERE m.id = ?", (mail_id,)).fetchone()
+            if not r:
+                raise HTTPException(404, "Not found")
+            if r["notion_page_url"] and not again:
+                when = (tz.local(r["notion_registered_at"]).strftime("%Y-%m-%d %H:%M")
+                        if r["notion_registered_at"] else "")
+                who = "・".join(x for x in (when, r["notion_registered_by"]) if x)
+                raise HTTPException(
+                    409, "このメールはもうNotionに登録しています" + (f"（{who}）" if who else "")
+                         + "。「Notionで開く」から開けます")
+            atts = [dict(a) for a in conn.execute(
+                "SELECT * FROM mail_attachments WHERE mail_id = ? ORDER BY id", (mail_id,))]
+            conn.commit()   # Notion とのやりとり (時間がかかる) の間、DB の書き込みロックを持たない
+            recorded = {}
+
+            def record(page_id: str, url: str) -> None:
+                # ページを作れたら、添付ファイルを載せる前に記録して確定する
+                at = now_iso()
+                try:
+                    conn.execute(
+                        "UPDATE mails SET notion_page_id = ?, notion_page_url = ?,"
+                        " notion_registered_at = ?, notion_registered_by = ? WHERE id = ?",
+                        (page_id, url, at, admin["name"], mail_id))
+                    _audit(conn, admin, "mail_notion",
+                           detail=f"mail={mail_id} page={page_id}" + (" again=1" if again else "")
+                                  + f" attachments={len(atts)}")
+                    conn.commit()
+                    recorded.update(at=at)
+                except Exception as e:  # noqa: BLE001  ページはできているので、登録は止めない
+                    conn.rollback()
+                    print(f"Notionに登録したことを記録できませんでした (mail={mail_id}): {e}")
+
+            try:
+                out = notion.register(s, dict(r), atts, MAIL_ATTACHMENT_DIR, on_created=record)
+            except notion.NotionError as e:
+                raise HTTPException(502, f"Notionに登録できませんでした: {notify.safe_error(e, s)}")
+            except ValueError as e:   # 「列に入れるもの」の書き方の間違い
+                raise HTTPException(400, f"設定の「列に入れるもの」を直してください: {e}")
+    except notion.NotionBusy as e:
+        raise HTTPException(409, str(e))
+    warnings = [notify.safe_error(RuntimeError(w), s) for w in out["warnings"]]
+    if not recorded:
+        warnings.append("登録したことを、このメールに記録できませんでした"
+                        "（もう一度押すと、Notionに同じ行がもう1つできます）")
+    return {
+        "notion_page_url": out["url"],
+        "notion_registered_at": recorded.get("at"),
+        "notion_registered_by": admin["name"],
+        "database_title": out["database_title"],
+        "warnings": warnings,
+        "attachments_uploaded": out["attachments_uploaded"],
+        "attachment_notes": [notify.safe_error(RuntimeError(n), s)
+                             for n in out["attachment_notes"]],
+        "ai_used": out["ai_used"],
+        "ai_error": notify.safe_error(RuntimeError(out["ai_error"]), s) if out["ai_error"] else "",
+    }
 
 
 @app.patch("/api/mail/{mail_id}")

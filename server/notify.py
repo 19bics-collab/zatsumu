@@ -21,8 +21,8 @@ class InsecureConnectionError(RuntimeError):
     """暗号化できない接続でパスワードを送りそうになったので中止した."""
 
 
-# 画面やログに出すエラー文から伏せる設定 (パスワード・API キー)
-SECRET_SETTING_KEYS = ("smtp_pass", "imap_pass", "anthropic_api_key")
+# 画面やログに出すエラー文から伏せる設定 (パスワード・API キー・Notion のシークレット)
+SECRET_SETTING_KEYS = ("smtp_pass", "imap_pass", "anthropic_api_key", "notion_token")
 
 
 def safe_error(e: BaseException, settings: dict) -> str:
