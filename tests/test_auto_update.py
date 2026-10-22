@@ -153,6 +153,12 @@ def world(tmp_path, monkeypatch):
     for k in ("GIT_AUTHOR", "GIT_COMMITTER"):
         monkeypatch.setenv(f"{k}_NAME", "t")
         monkeypatch.setenv(f"{k}_EMAIL", "t@example.com")
+    # このマシンの git の設定 (~/.gitconfig のコミットへの署名など、外のプログラムを呼ぶもの) に
+    # 左右されないよう、空の設定で動かす。テストの git も自動更新係の git も同じ設定になる
+    empty_config = tmp_path / "gitconfig"
+    empty_config.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     origin = tmp_path / "origin"
     origin.mkdir()
     _git(origin, "init", "-q", "-b", "main")
@@ -410,6 +416,18 @@ def test_rolls_back_when_new_version_is_unhealthy(world):
 
 
 @needs_bash
+def test_health_is_checked_even_after_the_deadline(world):
+    """待つ時間が (マシンが混んでいて) 様子を見る前に過ぎても、一度は見てから決める."""
+    world["env"]["HEALTH_TIMEOUT"] = "0"  # 最初に見る前に時間切れになった状態
+    new = _push(world, "v2\n")
+    r = _update(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _head(world) == new
+    assert "compose ps -q app" in _docker_calls(world)
+    assert _state(world, "bad") is None
+
+
+@needs_bash
 def test_rollback_continues_when_state_cannot_be_written(world):
     """記録 (bad) が書けなくても、元の版に戻すことは最後までやる."""
     old = _head(world)
@@ -601,6 +619,10 @@ def _install_old_script(world):
     # 本番の場所 (/etc/default, /usr/local/sbin) には触らせない
     old_script = old_script.replace("CONF=/etc/default/zatsumu-auto-update", "CONF=/dev/null")
     old_script = old_script.replace("/usr/local/sbin/zatsumu-auto-update", str(world["bin"]))
+    # 古い係は、待つ時間を先に確かめてから様子を見る。1秒だと、マシンが混んでいるときに
+    # 一度も見ないまま時間切れになることがある。ここでは偽の docker がすぐ healthy と答えるので、
+    # 長めにしても待つことはない (新しい係もこの値で動くが、同じくすぐ終わる)
+    world["env"]["HEALTH_TIMEOUT"] = "60"
     # GitHub 役の最初の版を「古い係が入っている版」にする
     auto = world["origin"] / "deploy" / "auto-update"
     (auto / "zatsumu-auto-update.sh").write_text(old_script)

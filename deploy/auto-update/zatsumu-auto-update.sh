@@ -88,15 +88,18 @@ validate_caddy() {
   fi
 }
 
+# アプリが healthy になるまで、HEALTH_TIMEOUT 秒を目安に待つ。
+# 先に様子を見てから時間を確かめるので、少なくとも1回は必ず見て、時間切れの後にも最後に1回見る
+# (サーバが混んでいてこの処理が待たされても、一度も見ないまま「だめ」と決めつけないように)
 wait_healthy() {
   local deadline=$((SECONDS + HEALTH_TIMEOUT)) cid status
-  while [ "$SECONDS" -lt "$deadline" ]; do
+  while :; do
     cid=$(dc 30 ps -q app || true)
     status=$(timeout 30 docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || echo missing)
     [ "$status" = healthy ] && return 0
+    [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep "$HEALTH_INTERVAL"
   done
-  return 1
 }
 
 # 外から見えるドメイン (localhost のままなら空)。$1 = Caddy のコンテナ。
