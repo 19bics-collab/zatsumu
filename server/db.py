@@ -196,7 +196,10 @@ STR_SETTINGS = {
     "imap_folder": "INBOX",
     "imap_sent_folder": "",        # 返信の控えを保存するフォルダ (空なら自動で探す)
     "anthropic_api_key": "",       # Claude APIキー (空ならルール分類+定型文で動作)
-    "anthropic_model": "claude-opus-5",
+    # 返信文の下書きに使うモデル (品質重視。空なら既定値)
+    "anthropic_model": "claude-opus-5-5",
+    # 優先度の判定に使うモデル。受信したメール全部に走るので安くて速いものを既定にする
+    "anthropic_classify_model": "claude-haiku-5-5",
     "mail_signature": "",          # 返信メール末尾に付ける署名
     "mail_reply_instructions": "", # AI返信文生成時の追加指示 (社の文体・注意事項など)
     "mail_vip_addresses": "",      # 常に優先度[高]にする差出人 (カンマ区切り)

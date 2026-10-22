@@ -3,6 +3,8 @@
 IMAP で受信箱を取り込み、優先度 (1=高 2=中 3=低) に自動分類し、
 Claude API で返信の下書きを生成する。API キー未設定でも動くように、
 分類はキーワードルール、下書きは定型文へフォールバックする。
+分類は受信した全メールに走るため、下書きとは別の (安くて速い) モデルを使う。
+AI が失敗した理由は用途ごとに記録し、設定画面・受信箱で管理者に見せる。
 返信の送信は SMTP (notify.py と同じ設定・同じ接続処理) を使い、スレッドが
 繋がるよう In-Reply-To / References ヘッダを付ける。SMTP で送っただけでは
 メールサーバの「送信済み」フォルダに残らないため、送信後に同じメールを
@@ -18,6 +20,7 @@ import imaplib
 import json
 import re
 import ssl
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -145,24 +148,210 @@ def rule_priority(settings: dict, mail: dict) -> tuple[int, str]:
     return 2, "通常"
 
 
+# ---------- AI (Claude API) の呼び出し ----------
+
+# 1回の呼び出しで待つ上限 (秒) と、混雑・通信エラー時に SDK が自動でやり直す回数。
+# SDK の既定 (10分 × やり直し2回) のままだと、返事が来ないときに受信処理や
+# 画面の操作が何十分も止まるため、用途ごとに短くする
+AI_CLASSIFY_TIMEOUT, AI_CLASSIFY_RETRIES = 30, 2   # 受信処理の中 (裏で動く)
+AI_DRAFT_TIMEOUT, AI_DRAFT_RETRIES = 120, 1        # 画面で「返信文を生成」を押して待つ
+AI_TEST_TIMEOUT, AI_TEST_RETRIES = 30, 0           # 接続テスト (すぐ結果を見せる)
+
+# 出力の上限トークン数。考える過程 (思考) もこの枠を使うので小さくしすぎない
+# (使った分だけの課金なので、枠を大きくしても費用は増えない)
+AI_CLASSIFY_MAX_TOKENS = 2048
+AI_DRAFT_MAX_TOKENS = 8000
+AI_TEST_MAX_TOKENS = 256
+
+# 1回の受信で AI がこの回数続けて失敗したら、その回の残りのメールには AI を使わない
+AI_MAX_CONSECUTIVE_FAILURES = 3
+
+AI_PURPOSES = {"draft": "返信文の作成", "classify": "優先度の判定"}
+
+# 「考える深さ」(effort) を指定できるモデル。古い世代のモデルに送ると
+# 依頼ごと断られる (400) ので、分かっている世代にだけ付ける
+_EFFORT_MODEL_PREFIXES = (
+    "claude-opus-5", "claude-sonnet-5", "claude-haiku-5", "claude-fable-5",
+    "claude-mythos-5", "claude-opus-4-5", "claude-opus-4-6", "claude-opus-4-7",
+    "claude-opus-4-8", "claude-sonnet-4-6",
+)
+
+# モデル名として受け付ける形 (英数字と . _ : @ / - だけ。設定の打ち間違い・改行混入を防ぐ)
+_MODEL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{0,99}")
+
+
+class AIError(RuntimeError):
+    """AI を使えなかった。文面は管理者にそのまま見せられる日本語 (秘密値は含めない)."""
+
+
+def valid_model_name(name: str) -> bool:
+    return bool(_MODEL_NAME_RE.fullmatch(name))
+
+
+def ai_model(settings: dict) -> str:
+    """返信文の作成に使うモデル (設定が空なら既定値)."""
+    return (str(settings.get("anthropic_model") or "").strip()
+            or db.STR_SETTINGS["anthropic_model"])
+
+
+def ai_classify_model(settings: dict) -> str:
+    """優先度の判定に使うモデル (設定が空なら既定値)."""
+    return (str(settings.get("anthropic_classify_model") or "").strip()
+            or db.STR_SETTINGS["anthropic_classify_model"])
+
+
 def _ai_ready(settings: dict) -> bool:
     return bool(anthropic and str(settings.get("anthropic_api_key", "")).strip())
 
 
-def _call_claude(settings: dict, system: str, user_text: str,
-                 max_tokens: int) -> str:
-    client = anthropic.Anthropic(
-        api_key=str(settings["anthropic_api_key"]).strip()
-    )
-    resp = client.messages.create(
-        model=str(settings.get("anthropic_model") or "claude-opus-5").strip(),
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user_text}],
-    )
-    if getattr(resp, "stop_reason", None) == "refusal":
-        raise RuntimeError("モデルが応答を拒否しました")
-    return "".join(b.text for b in resp.content if b.type == "text")
+# 直近の AI の失敗 (用途ごと)。設定画面と受信箱に「AIが使えていない」と出すため。
+# 同じ用途で成功したら消す。サーバを再起動すると消える (次に失敗したらまた記録される)
+_ai_errors: dict[str, dict] = {}
+_ai_errors_lock = threading.Lock()
+
+
+def _record_ai_error(purpose: str, model: str, message: str) -> None:
+    with _ai_errors_lock:
+        _ai_errors[purpose] = {
+            "purpose": purpose, "label": AI_PURPOSES.get(purpose, purpose),
+            "model": model, "message": message,
+            "at": tz.utc_iso(datetime.now(timezone.utc)),
+        }
+
+
+def _clear_ai_error(purpose: str) -> None:
+    with _ai_errors_lock:
+        _ai_errors.pop(purpose, None)
+
+
+def clear_ai_errors() -> None:
+    """記録した失敗をすべて消す (APIキーやモデルを変えたとき)."""
+    with _ai_errors_lock:
+        _ai_errors.clear()
+
+
+def ai_errors() -> list[dict]:
+    """直近の AI の失敗の一覧 (返信文の作成 → 優先度の判定 の順)."""
+    with _ai_errors_lock:
+        return [dict(_ai_errors[p]) for p in AI_PURPOSES if p in _ai_errors]
+
+
+def last_ai_error(purpose: str) -> str:
+    with _ai_errors_lock:
+        return (_ai_errors.get(purpose) or {}).get("message", "")
+
+
+def _ai_error_text(e: Exception, model: str) -> str:
+    """SDK の例外を、管理者が次に何をすればよいか分かる日本語にする."""
+    if anthropic is None:  # pragma: no cover
+        return str(e)
+    # 細かい種類から順に判定する (時間切れは通信エラーの一種なので先に見る)
+    if isinstance(e, anthropic.AuthenticationError):
+        return ("APIキーが正しくありません（打ち間違いか、削除されたキーの可能性があります）。"
+                "console.anthropic.com でキーを確かめて、設定し直してください")
+    if isinstance(e, anthropic.PermissionDeniedError):
+        return f"このAPIキーではモデル「{model}」を使う権限がありません"
+    if isinstance(e, anthropic.NotFoundError):
+        return (f"モデル「{model}」が見つかりません（名前の間違いか、提供が終わったモデルです）。"
+                "設定の「モデル」を選び直して保存してください")
+    if isinstance(e, anthropic.RateLimitError):
+        return "AIの利用回数の上限に達しました。しばらく待ってからもう一度お試しください"
+    if isinstance(e, anthropic.BadRequestError):
+        msg = str(getattr(e, "message", "") or e)
+        if "credit balance" in msg.lower():
+            return ("Claude API の残高（前払いのクレジット）が足りません。"
+                    "console.anthropic.com の「Billing」で追加してください")
+        return f"AIへの依頼が受け付けられませんでした（モデル「{model}」）: {msg}"
+    if isinstance(e, anthropic.APITimeoutError):
+        return "AIの返事が時間内に届きませんでした。しばらく待ってからもう一度お試しください"
+    if isinstance(e, anthropic.APIConnectionError):
+        return "AIのサーバにつながりませんでした（サーバのインターネット接続を確認してください）"
+    if isinstance(e, anthropic.APIStatusError):
+        if e.status_code >= 500:
+            return (f"AIのサーバが混み合っているか、一時的に止まっています（{e.status_code}）。"
+                    "しばらく待ってからもう一度お試しください")
+        msg = str(getattr(e, "message", "") or e)
+        return f"AIへの依頼が受け付けられませんでした（{e.status_code}）: {msg}"
+    return str(e) or e.__class__.__name__
+
+
+def _ai_request(settings: dict, *, model: str, user_text: str, max_tokens: int,
+                effort: str, timeout: float, max_retries: int, system: str = ""):
+    """Claude API を1回呼んで応答を返す。失敗は分かりやすい日本語の AIError にする."""
+    if anthropic is None:
+        raise AIError("AI用の部品（anthropic）がサーバに入っていません。"
+                      "requirements.txt の内容をインストールしてください")
+    params: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": user_text}],
+    }
+    if system:
+        params["system"] = system
+    if model.startswith(_EFFORT_MODEL_PREFIXES):
+        params["output_config"] = {"effort": effort}
+    try:
+        with anthropic.Anthropic(
+            api_key=str(settings.get("anthropic_api_key") or "").strip(),
+            timeout=timeout, max_retries=max_retries,
+        ) as client:
+            return client.messages.create(**params)
+    except Exception as e:  # noqa: BLE001  SDK の例外を日本語の説明に置き換える
+        raise AIError(_ai_error_text(e, model)) from e
+
+
+def _call_claude(settings: dict, system: str, user_text: str, *, model: str,
+                 max_tokens: int, effort: str, timeout: float,
+                 max_retries: int) -> str:
+    """Claude に文章を作らせて本文 (テキスト部分) を返す (失敗時は AIError)."""
+    resp = _ai_request(settings, model=model, system=system, user_text=user_text,
+                       max_tokens=max_tokens, effort=effort, timeout=timeout,
+                       max_retries=max_retries)
+    stop = getattr(resp, "stop_reason", None)
+    if stop == "refusal":
+        raise AIError("AIがこの依頼への回答を断りました（メールの内容によって起きることがあります）")
+    # 応答には考える過程 (thinking) の部品も入りうるので、文章 (text) だけを繋ぐ
+    text = "".join(b.text for b in resp.content if b.type == "text").strip()
+    if stop == "max_tokens":
+        raise AIError("AIの返事が長すぎて途中で切れました")
+    if not text:
+        raise AIError("AIから文章が返ってきませんでした")
+    return text
+
+
+def test_ai(settings: dict) -> dict:
+    """保存済みの APIキー・モデルで Claude API を実際に呼べるか確かめる (失敗時は AIError).
+
+    返信文用と優先度判定用のモデルを、ごく短い依頼でそれぞれ1回ずつ試す
+    (片方のモデル名だけが古い・間違っている場合も分かるように)。
+    応答の中身は見ない (受け付けられれば、キー・残高・モデル名が正しいと分かる)。
+    """
+    if not str(settings.get("anthropic_api_key") or "").strip():
+        raise AIError("APIキーが未設定です。キーを入力して保存してからお試しください")
+    models = {"draft": ai_model(settings), "classify": ai_classify_model(settings)}
+    tried: dict[str, str] = {}   # モデル名 → 結果 ("" なら成功・それ以外は失敗の文面)
+    for purpose, model in models.items():
+        if model not in tried:
+            try:
+                _ai_request(settings, model=model, max_tokens=AI_TEST_MAX_TOKENS,
+                            user_text="接続テストです。「OK」とだけ返してください。",
+                            effort="low", timeout=AI_TEST_TIMEOUT,
+                            max_retries=AI_TEST_RETRIES)
+                tried[model] = ""
+            except AIError as e:
+                tried[model] = str(e)
+        if tried[model]:
+            _record_ai_error(purpose, model, tried[model])
+        else:
+            _clear_ai_error(purpose)
+    failed = [(p, m) for p, m in models.items() if tried[m]]
+    if failed:
+        texts = {tried[m] for _p, m in failed}
+        if len(failed) == len(models) and len(texts) == 1:
+            raise AIError(texts.pop())   # キーの間違いなど、どちらも同じ理由
+        raise AIError(" ／ ".join(f"{AI_PURPOSES[p]}（{m}）: {tried[m]}"
+                                  for p, m in failed))
+    return {"model": models["draft"], "classify_model": models["classify"]}
 
 
 def _mail_for_prompt(mail: dict) -> str:
@@ -185,13 +374,24 @@ def classify_priority(settings: dict, mail: dict) -> tuple[int, str, str]:
             f"優先度[高]のキーワード: {settings.get('mail_urgent_keywords', '')}\n"
             f"VIP差出人: {settings.get('mail_vip_addresses', '')}"
         )
+        # 受信したメール全部に走るので、安くて速い判定用のモデルを使う
+        model = ai_classify_model(settings)
         try:
-            out = _call_claude(settings, system, _mail_for_prompt(mail), 256)
-            data = json.loads(out[out.index("{"): out.rindex("}") + 1])
-            p = int(data.get("priority"))
-            if p in (1, 2, 3):
-                return p, str(data.get("reason", ""))[:200], "ai"
+            out = _call_claude(settings, system, _mail_for_prompt(mail),
+                               model=model, max_tokens=AI_CLASSIFY_MAX_TOKENS,
+                               effort="low", timeout=AI_CLASSIFY_TIMEOUT,
+                               max_retries=AI_CLASSIFY_RETRIES)
+            try:
+                data = json.loads(out[out.index("{"): out.rindex("}") + 1])
+                p = int(data.get("priority"))
+            except (ValueError, TypeError, AttributeError):
+                raise AIError("AIの判定結果を読み取れませんでした") from None
+            if p not in (1, 2, 3):
+                raise AIError("AIの判定結果を読み取れませんでした")
+            _clear_ai_error("classify")
+            return p, str(data.get("reason", ""))[:200], "ai"
         except Exception as e:  # noqa: BLE001  API/パース失敗はルールで代替
+            _record_ai_error("classify", model, str(e))
             print(f"AI優先度判定に失敗 (ルール判定に切替): {e}")
     p, reason = rule_priority(settings, mail)
     return p, reason, "rule"
@@ -240,11 +440,17 @@ def generate_reply(settings: dict, mail: dict,
             + "\n\n上記のメールへの返信本文を作成してください。"
             + (f"\n返信の方針: {instructions}" if instructions.strip() else "")
         )
+        model = ai_model(settings)
         try:
-            body = _call_claude(settings, system, user, 2048).strip()
-            if body:
-                return _append_signature(settings, body), "ai"
+            body = _call_claude(settings, system, user, model=model,
+                                max_tokens=AI_DRAFT_MAX_TOKENS, effort="medium",
+                                timeout=AI_DRAFT_TIMEOUT,
+                                max_retries=AI_DRAFT_RETRIES)
+            _clear_ai_error("draft")
+            return _append_signature(settings, body), "ai"
         except Exception as e:  # noqa: BLE001  API失敗は定型文で代替
+            # 理由は last_ai_error("draft") で画面に出せるよう記録しておく
+            _record_ai_error("draft", model, str(e))
             print(f"AI返信文生成に失敗 (定型文に切替): {e}")
     return _append_signature(settings, template_reply(settings, mail)), "template"
 
@@ -660,12 +866,24 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
     # 書き込み (打刻・スクショ等) が database is locked で失敗するため。
     now = tz.utc_iso(datetime.now(timezone.utc))
     rows: list[tuple] = []
+    # AI が続けて失敗したら (障害・時間切れ・キーの間違いなど)、この回の残りは AI を
+    # 使わずルール判定・定型文にする。1通ごとに待ち時間の上限まで待つと、
+    # 新着が多いときに受信処理が何時間も止まるため (失敗の理由は記録済み)
+    ai_settings, ai_failures = settings, 0
     for uid, p in parsed:
-        prio, reason, source = classify_priority(settings, p)
+        ai_on = _ai_ready(ai_settings)
+        prio, reason, source = classify_priority(ai_settings, p)
         draft, draft_source, drafted_at = "", "", None
         if settings.get("mail_auto_draft"):
-            draft, draft_source = generate_reply(settings, p)
+            draft, draft_source = generate_reply(ai_settings, p)
             drafted_at = now
+        if ai_on:
+            failed = source != "ai" or (drafted_at is not None and draft_source != "ai")
+            ai_failures = ai_failures + 1 if failed else 0
+            if ai_failures >= AI_MAX_CONSECUTIVE_FAILURES:
+                print("AIが続けて失敗したため、今回の残りのメールは"
+                      "ルール判定・定型文で処理します")
+                ai_settings = {**settings, "anthropic_api_key": ""}
         rows.append((uid, p, prio, reason, source, draft, draft_source,
                      drafted_at))
 

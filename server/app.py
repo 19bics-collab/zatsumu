@@ -344,6 +344,7 @@ class SettingsPatch(BaseModel):
     notify_mail_high: bool | None = None
     anthropic_api_key: str | None = None
     anthropic_model: str | None = None
+    anthropic_classify_model: str | None = None
     mail_signature: str | None = None
     mail_reply_instructions: str | None = None
     mail_vip_addresses: str | None = None
@@ -752,7 +753,14 @@ def _monthly_detail(conn, user, month: str) -> dict:
 
 
 def _mask_settings(s: dict) -> dict:
-    """秘密情報 (パスワード・APIキー) はレスポンスに含めない(設定済みかだけ返す)."""
+    """秘密情報 (パスワード・APIキー) はレスポンスに含めない(設定済みかだけ返す).
+
+    あわせて、AI の直近の失敗 (読み取り専用・設定画面と受信箱の注意書き用) を添える。
+    """
+    s["ai_errors"] = [
+        {**e, "message": notify.safe_error(RuntimeError(e["message"]), s)}
+        for e in mail.ai_errors()
+    ] if str(s.get("anthropic_api_key") or "").strip() else []
     for key in ("smtp_pass", "imap_pass", "anthropic_api_key"):
         s[f"{key}_set"] = bool(s.get(key))
         s[key] = ""
@@ -829,7 +837,20 @@ def patch_settings(
         if not cats:
             raise HTTPException(400, "作業区分を1つ以上入力してください")
         changes["work_categories"] = ",".join(cats)
+    for key in ("anthropic_model", "anthropic_classify_model"):
+        # 空なら既定のモデルを使う。それ以外はモデル名の形だけ確かめる
+        # (新しいモデルも選べるよう一覧とは照合しない。使えない名前は AI 接続テスト等で分かる)
+        if key in changes:
+            changes[key] = str(changes[key]).strip()
+            if changes[key] and not mail.valid_model_name(changes[key]):
+                raise HTTPException(
+                    400, "モデル名の形式が正しくありません（例: claude-opus-5-5）")
 
+    current = db.get_settings(conn)
+    if any(k in changes and str(changes[k]) != str(current.get(k, ""))
+           for k in ("anthropic_api_key", "anthropic_model", "anthropic_classify_model")):
+        # キーやモデルを変えたら、前の設定での AI の失敗の記録は当てにならないので消す
+        mail.clear_ai_errors()
     for key, val in changes.items():
         db.set_setting(conn, key, val)
     secret = {"slack_webhook_url", "smtp_pass", "smtp_user",
@@ -893,6 +914,25 @@ def test_imap(_admin=Depends(require_admin), conn=Depends(get_conn)):
             "sent_folder_error": notify.safe_error(
                 RuntimeError(result["sent_folder_error"]), s)
             if result["sent_folder_error"] else ""}
+
+
+@app.post("/api/settings/test-ai")
+def test_ai(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """保存済みの Claude APIキー・モデルで、AI を実際に呼べるか確かめる.
+
+    返信文用・優先度判定用のモデルに、ごく短い依頼を1回ずつ送る (費用はごくわずか)。
+    入力欄に入れただけで保存していないキーは試さない (画面で先に保存を促す)。
+    """
+    s = db.get_settings(conn)
+    if not str(s.get("anthropic_api_key") or "").strip():
+        raise HTTPException(
+            400, "Claude APIキーが未設定です。キーを入力して保存してからお試しください")
+    conn.commit()   # AI の呼び出し (時間がかかる) の間、DB の書き込みロックを持たない
+    try:
+        result = mail.test_ai(s)
+    except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+        raise HTTPException(502, f"AIを使えませんでした: {notify.safe_error(e, s)}")
+    return {"ok": True, **result}
 
 
 # ---------- 新しい端末のメール確認 (ZATSUMU_LOGIN_VERIFY_EMAIL 設定時のみ) ----------
@@ -2092,17 +2132,24 @@ def mail_generate_draft(
     _admin=Depends(require_admin),
     conn=Depends(get_conn),
 ):
-    """返信の下書きを(再)生成する。APIキー未設定時は定型文になる."""
+    """返信の下書きを(再)生成する。APIキー未設定時は定型文になる.
+
+    APIキーがあるのに AI で作れなかった場合は、定型文と一緒に理由 (ai_error) を返す。
+    """
     r = _mail_or_404(conn, mail_id)
-    text, source = mail.generate_reply(
-        db.get_settings(conn), dict(r), body.instructions
-    )
+    s = db.get_settings(conn)
+    conn.commit()   # AI の呼び出し (時間がかかる) の間、DB の書き込みロックを持たない
+    text, source = mail.generate_reply(s, dict(r), body.instructions)
+    ai_error = ""
+    if source != "ai" and str(s.get("anthropic_api_key") or "").strip():
+        ai_error = notify.safe_error(RuntimeError(
+            mail.last_ai_error("draft") or "AIで返信文を作れませんでした"), s)
     conn.execute(
         "UPDATE mails SET draft_reply = ?, draft_source = ?,"
         " draft_generated_at = ? WHERE id = ?",
         (text, source, now_iso(), mail_id),
     )
-    return {"draft_reply": text, "draft_source": source}
+    return {"draft_reply": text, "draft_source": source, "ai_error": ai_error}
 
 
 @app.patch("/api/mail/{mail_id}")

@@ -2174,7 +2174,8 @@ def test_mail_generate_draft_endpoint(client, users, tmp_path, monkeypatch):
     r = client.post(f"/api/mail/{mid}/draft", headers=auth(admin),
                     json={"instructions": "丁寧に断る"})
     assert r.status_code == 200
-    assert r.json() == {"draft_reply": "生成した返信文", "draft_source": "ai"}
+    assert r.json() == {"draft_reply": "生成した返信文", "draft_source": "ai",
+                        "ai_error": ""}
     assert calls == ["丁寧に断る"]
     d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
     assert d["draft_reply"] == "生成した返信文" and d["draft_source"] == "ai"

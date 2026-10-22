@@ -67,6 +67,11 @@
   .set-row input[type=text], .set-row input[type=password] { width: 9rem; padding: .45rem;
                                 border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
   .set-row input[type=checkbox] { width: 1.3rem; height: 1.3rem; }
+  .set-row select { width: 11rem; flex-shrink: 0; padding: .45rem; border: 1px solid #ccc;
+                    border-radius: 6px; font-size: 1rem; background: #fff; }
+  .set-help { margin: -.3rem 0 .7rem; color: #4b5563; line-height: 1.5; }
+  #ai-status { white-space: pre-wrap; font-size: .85rem; overflow-wrap: anywhere; }
+  #test-ai-msg { font-size: .85rem; margin-top: .4rem; overflow-wrap: anywhere; }
   .set-card textarea { width: 100%; box-sizing: border-box; min-height: 3.6rem;
                        padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
                        font-size: .9rem; font-family: inherit; }
@@ -163,6 +168,8 @@
   <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
   受信サーバ（IMAP）とAIの設定は「設定」画面で行ってください。</small></p>
+  <p id="ai-warn" class="error" hidden><small>⚠ AIを使えていないため、キーワードでの判定と定型文の下書きで動いています。
+  理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
   <div class="table-wrap"><table id="mail-table">
     <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>下書き</th></tr></thead>
     <tbody></tbody>
@@ -218,9 +225,23 @@
       <label class="set-row"><span>受信時に下書きを自動生成</span>
         <input type="checkbox" id="set-mail-auto-draft"></label>
       <label class="set-row"><span>Claude APIキー</span>
-        <input type="password" id="set-anthropic-key" placeholder="(変更時のみ入力)"></label>
-      <label class="set-row"><span>モデル</span>
-        <input type="text" id="set-anthropic-model" placeholder="claude-opus-5"></label>
+        <input type="password" id="set-anthropic-key" placeholder="(変更時のみ入力)"
+          autocomplete="off"></label>
+      <p class="set-help"><small>キーは Anthropic 社の管理画面
+      <b>console.anthropic.com</b> の「API Keys」で作れます。
+      AIを使った分だけ料金がかかります（Anthropic 社からの請求です）。
+      キーはパスワードと同じです。<b>チャットやメールに貼り付けたり、人に教えたりしないでください</b>
+      （もれたときは管理画面でそのキーを削除し、作り直してください）。</small></p>
+      <label class="set-row"><span>返信文の作成に使うモデル</span>
+        <select id="set-anthropic-model"></select></label>
+      <label class="set-row"><span>優先度の判定に使うモデル</span>
+        <select id="set-anthropic-classify-model"></select></label>
+      <p class="set-help"><small>優先度の判定は届いたメール全部に使うので、安くて速い「低価格」がおすすめです。
+      「受信時に下書きを自動生成」がONだと、メール1通ごとに返信文用のモデルも使います
+      （費用を抑えたいときはOFFにして、必要なメールだけ「返信文を生成」を押してください）。</small></p>
+      <button class="ghost" id="set-test-ai">AI接続テスト</button>
+      <div id="test-ai-msg"></div>
+      <p id="ai-status" class="error" hidden></p>
       <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem">返信の署名（本文の末尾に付加）</label>
       <textarea id="set-mail-signature" placeholder="――――――――&#10;株式会社◯◯ 総務部"></textarea>
       <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem">生成時の追加指示（文体・注意事項など）</label>
@@ -231,6 +252,9 @@
         <input type="text" id="set-mail-keywords"></label>
       <p><small>APIキーを設定すると、優先度の判定と返信文の下書きをAI（Claude）が行います。
       未設定でもキーワードによる分類と定型文の下書きで動作します。
+      キーの間違いや残高不足などでAIを使えないときも、自動でキーワード判定・定型文に切り替わり、
+      理由をこのカードと受信箱に表示します。キーやモデルを変えたら「保存」→「AI接続テスト」で
+      確かめてください。
       <b style="color:#c62828">返信は必ず内容を確認してから送信してください。</b></small></p>
     </div>
     <div class="set-card">
@@ -284,6 +308,7 @@
       <input type="text" id="m-inst" placeholder="生成の方針（任意。例：金曜までに対応すると伝える）">
       <button id="m-gen" class="ghost">返信文を生成</button>
     </div>
+    <div id="m-ai-error" class="error" style="font-size:.8rem;margin-top:.3rem;overflow-wrap:anywhere" hidden></div>
     <div class="bar" style="margin-top:.8rem">
       <button id="m-archive" class="ghost">対応不要にする</button>
       <span id="m-status"></span>
@@ -450,6 +475,7 @@ async function openMail(id) {
     : m.draft_source === "ai" ? "（AI生成の下書き）"
     : m.draft_source === "template" ? "（定型文の下書き）" : "";
   $("m-status").textContent = "";
+  $("m-ai-error").hidden = true;
   $("m-inst").value = "";
   $("m-send").disabled = m.status === "replied";
   $("m-send").textContent = m.status === "replied" ? "返信済み" : "返信を送信";
@@ -481,7 +507,13 @@ $("m-gen").onclick = async () => {
     $("m-draft").value = r.draft_reply;
     modal.savedDraft = r.draft_reply;
     $("m-draft-src").textContent =
-      r.draft_source === "ai" ? "（AI生成の下書き）" : "（定型文の下書き・APIキー未設定）";
+      r.draft_source === "ai" ? "（AI生成の下書き）"
+      : r.ai_error ? "（定型文の下書き・AIで作れませんでした）"
+      : "（定型文の下書き・APIキー未設定）";
+    // APIキーはあるのに AI で作れなかったときは理由を見せる (キーの間違い・残高不足など)
+    $("m-ai-error").textContent = r.ai_error ? "AIを使えなかった理由: " + r.ai_error : "";
+    $("m-ai-error").hidden = !r.ai_error;
+    refreshAiStatus();
   } catch { /* apiJson が原因をアラート表示済み */ }
   b.disabled = false; b.textContent = "返信文を生成";
 };
@@ -573,7 +605,10 @@ function fillSettings(s) {
   $("set-mail-auto-draft").checked = !!s.mail_auto_draft;
   $("set-anthropic-key").value = "";
   $("set-anthropic-key").placeholder = s.anthropic_api_key_set ? "設定済み（変更時のみ入力）" : "(未設定)";
-  $("set-anthropic-model").value = s.anthropic_model;
+  fillModelSelect("set-anthropic-model", s.anthropic_model, AI_DEFAULT_MODEL);
+  fillModelSelect("set-anthropic-classify-model", s.anthropic_classify_model,
+                  AI_DEFAULT_CLASSIFY_MODEL);
+  renderAiStatus(s);
   $("set-mail-signature").value = s.mail_signature;
   $("set-mail-instructions").value = s.mail_reply_instructions;
   $("set-mail-vip").value = s.mail_vip_addresses;
@@ -586,8 +621,55 @@ function fillSettings(s) {
   $("set-mail-from").value = s.mail_from;
   $("set-msg").textContent = "";
   $("test-imap-msg").textContent = "";
+  $("test-ai-msg").textContent = "";
   $("test-email-msg").textContent = "";
 }
+
+/* AI のモデルの選び方。値はモデル名、表示は分かりやすい言葉にする。
+   既定 (おすすめ) はサーバ側の設定の既定値 (server/db.py) と同じにしておく */
+const AI_MODELS = [
+  ["claude-opus-5-5", "高品質"],
+  ["claude-sonnet-5-5", "標準"],
+  ["claude-haiku-5-5", "低価格"],
+];
+const AI_DEFAULT_MODEL = "claude-opus-5-5";            // 返信文の作成
+const AI_DEFAULT_CLASSIFY_MODEL = "claude-haiku-5-5";  // 優先度の判定
+function fillModelSelect(id, value, recommended) {
+  const sel = $(id);
+  const opts = AI_MODELS.map(([v, label]) =>
+    [v, label + (v === recommended ? "（おすすめ）" : "")]);
+  // 一覧に無いモデル (以前の既定値や手で入れた名前) も「今の設定」として残す
+  if (value && !AI_MODELS.some(([v]) => v === value)) opts.push([value, value + "（今の設定）"]);
+  sel.textContent = "";
+  for (const [v, label] of opts) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.value = value || recommended;
+  sel.dataset.saved = sel.value;   // 「保存していない変更」の判定用
+}
+
+// AI の直近の失敗を、設定のカード (理由) と受信箱 (注意書き) に出す
+function renderAiStatus(s) {
+  const errs = (s && s.ai_errors) || [];
+  $("ai-status").textContent = errs.length
+    ? "⚠ AIを使えていません（代わりにキーワード判定・定型文で動いています）\n" +
+      errs.map(e => `・${e.label}（${new Date(e.at).toLocaleString("ja-JP")}）: ${e.message}`).join("\n")
+    : "";
+  $("ai-status").hidden = !errs.length;
+  $("ai-warn").hidden = !errs.length;
+}
+async function refreshAiStatus() {
+  try {
+    const r = await api("/api/settings");
+    if (!r.ok) return;                 // 失敗時は静かに諦める(アラートは出さない)
+    appSettings.ai_errors = (await r.json()).ai_errors;
+    renderAiStatus(appSettings);
+  } catch {}
+}
+$("ai-warn-link").onclick = e => { e.preventDefault(); openSettings(); };
 
 $("set-save").onclick = async () => {
   // メール関連のキーだけ送る。PATCH は部分更新なので勤怠側の設定は変わらない
@@ -605,6 +687,7 @@ $("set-save").onclick = async () => {
     notify_mail_high: $("set-notify-mail-high").checked,
     mail_auto_draft: $("set-mail-auto-draft").checked,
     anthropic_model: $("set-anthropic-model").value,
+    anthropic_classify_model: $("set-anthropic-classify-model").value,
     mail_signature: $("set-mail-signature").value,
     mail_reply_instructions: $("set-mail-instructions").value,
     mail_vip_addresses: $("set-mail-vip").value,
@@ -644,6 +727,37 @@ $("set-test-imap").onclick = async () => {
     $("test-imap-msg").style.color = "#c62828";
     $("test-imap-msg").textContent = "接続できませんでした（設定を保存後にお試しください）";
   }
+};
+
+$("set-test-ai").onclick = async () => {
+  const b = $("set-test-ai"), msg = $("test-ai-msg");
+  // 試すのは保存済みの設定。入力しただけのキーや選び直したモデルは先に保存してもらう
+  if ($("set-anthropic-key").value ||
+      $("set-anthropic-model").value !== $("set-anthropic-model").dataset.saved ||
+      $("set-anthropic-classify-model").value !== $("set-anthropic-classify-model").dataset.saved) {
+    msg.style.color = "#c62828";
+    msg.textContent = "変更がまだ保存されていません。先に下の「保存」を押してから試してください";
+    return;
+  }
+  b.disabled = true;
+  msg.style.color = "#475569";
+  msg.textContent = "確認中...（30秒ほどかかることがあります）";
+  try {
+    const r = await api("/api/settings/test-ai", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      msg.style.color = "#0a7d32";
+      msg.textContent = `AIを使えます ✓（返信文の作成: ${e.model}／優先度の判定: ${e.classify_model}）`;
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "AIを使えませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+  refreshAiStatus();
 };
 
 $("set-test-email").onclick = async () => {
