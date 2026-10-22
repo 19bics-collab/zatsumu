@@ -241,7 +241,13 @@ def test_mail_opens_on_the_same_domain_as_attendance(client):
 def test_healthz(client):
     r = client.get("/healthz")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    assert r.json()["status"] == "ok"
+
+
+def test_healthz_reports_version(client, monkeypatch):
+    # 自動更新のあと、どの版が動いているかを外から確かめられること
+    monkeypatch.setenv("ZATSUMU_VERSION", "cb4251b")
+    assert client.get("/healthz").json() == {"status": "ok", "version": "cb4251b"}
 
 
 def test_root_redirects_to_admin(client):

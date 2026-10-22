@@ -93,6 +93,30 @@ sudo docker compose up -d --force-recreate caddy
 （`caddy reload` や設定の再読み込みでは足りません。`git pull` でファイルが別物に置き換わり、
 動いている Caddy は古いファイルを見続けるためです。作り直しても証明書は消えません）
 
+### 6. 自動で更新する（任意）
+
+GitHub に新しい版が届き、**GitHub のテストがすべて通ったら、5分以内に自動で反映**する係を
+登録できます。リポジトリの置き場所で、root で1回だけ実行します:
+
+```bash
+git pull
+bash deploy/auto-update/install.sh
+```
+
+- 5分おきに、いま使っているブランチの最新を確認します（`git pull` と同じ相手）
+- テストが走っている途中・失敗した版は反映しません
+- 反映後にアプリが起動しない（healthy にならない）ときは、**自動で元の版に戻し**、
+  その版には次の版が来るまで再挑戦しません
+- `Caddyfile*` が変わったときは Caddy も作り直します（上の2行目と同じ）
+- サーバ上で手で書き換えたファイルがあるときは何もしません。`.env` には触りません
+- 動いている版は `https://<ドメイン>/healthz` の `version` で確かめられます
+
+> ⚠️ **このブランチに届いた変更は、テストに通れば人の確認なしに本番へ出ます。**
+> GitHub のアカウントは2段階認証で守ってください。
+
+動きの記録は `journalctl -u zatsumu-auto-update`、やめるときは
+`systemctl disable --now zatsumu-auto-update.timer` です。
+
 ---
 
 ## パターンB: Linux（Docker なし）

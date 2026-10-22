@@ -1722,7 +1722,8 @@ def root():
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok"}
+    # version: 動いている版 (git のコミット)。公開リポジトリの値なので出しても差し支えない
+    return {"status": "ok", "version": os.environ.get("ZATSUMU_VERSION", "")}
 
 
 @app.get("/admin", response_class=HTMLResponse)
