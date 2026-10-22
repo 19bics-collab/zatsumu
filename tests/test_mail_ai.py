@@ -548,3 +548,34 @@ def test_mail_page_ai_settings(client):
     # 外から来た文字 (モデル名・失敗の理由) は innerHTML に入れない
     assert "o.textContent = label" in page
     assert '$("ai-status").textContent' in page
+
+
+def test_mail_page_ai_warning_fresh_and_per_use(client):
+    """受信箱の「AIを使えていません」: 受信のたびに取り直し、使えなかった用途だけを書く.
+
+    以前は起動時・設定・返信文の生成のときしか取り直さず、自動受信や「今すぐ受信」の
+    判定で失敗しても出ない・直っても消えないことがあった。文言も全部止まっているように読めた。
+    """
+    import re
+    from server import mail
+    page = client.get("/mail").text
+
+    def block(start, end):
+        i = page.index(start)
+        return page[i:page.index(end, i)]
+
+    # 受信箱を出すたび・「今すぐ受信」のあと (受信箱以外を見ていても) に取り直す
+    assert "refreshAiStatus();" in block("async function showInbox()", "\n}\n")
+    fetch_now = block('$("fetch-now").onclick', "\n};\n")
+    assert "showInbox();" in fetch_now and "refreshAiStatus();" in fetch_now
+    # 用途ごとの文言。用途の名前はサーバ (mail.AI_PURPOSES) とそろえる
+    fallback = block("const AI_FALLBACK = {", "};")
+    assert set(re.findall(r"^\s*(\w+):", fallback, re.M)) == set(mail.AI_PURPOSES)
+    for label in mail.AI_PURPOSES.values():
+        assert f"{label}にAIを使えていない" in fallback
+    # 全部止まっているように読める以前の文言は使わない
+    assert "キーワードでの判定と定型文の下書きで動いています" not in page
+    assert "代わりにキーワード判定・定型文で動いています" not in page
+    # 注意書きの文は textContent で入れる
+    assert '<span id="ai-warn-text"></span>' in page
+    assert '$("ai-warn-text").textContent = aiWarnText(errs);' in page

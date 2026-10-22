@@ -332,3 +332,109 @@ def test_mail_page_has_template_ui(client):
     assert "insertAtCursor(ta, t.body)" in page
     # 送信後は選べない
     assert '$("m-tpl").disabled = true;' in page
+
+
+# ---------- 定型文を続けて選んだとき (カーソルの位置の扱い) ----------
+# 以前は返信文の欄の focus で「カーソルの位置を選んだ」としていたため、丸ごと入れた直後の
+# ta.focus() でそうなってしまい、2つ目の定型文が「置き換えますか？」を聞かずに先頭へ入っていた
+
+def _js_block(page: str, start: str, end: str) -> str:
+    i = page.index(start)
+    return page[i:page.index(end, i)]
+
+
+def test_template_cursor_only_from_user_actions(client):
+    """カーソルの位置を選んだとみなすのは、人がタップ・キー操作したときだけ."""
+    import re
+    page = client.get("/mail").text
+    m = re.search(r'for \(const ev of \[([^\]]*)\]\) \{\s*'
+                  r'\$\("m-draft"\)\.addEventListener\(ev, \(\) => \{ modal\.cursorSet = true; \}\);',
+                  page)
+    assert m, "返信文の欄で cursorSet を立てるイベントの一覧が見つからない"
+    events = set(re.findall(r'"(\w+)"', m.group(1)))
+    assert {"pointerdown", "keydown"} <= events
+    # focus は ta.focus() でも、select は setSelectionRange でも起きる (人の操作ではない)。
+    # keyup は確認を Enter で閉じたときのキーが届くことがある
+    assert not events & {"focus", "select", "keyup"}
+    assert '$("m-draft").addEventListener("focus"' not in page
+    # 丸ごと入れ替えた後は、もう一度選んでもらう
+    handler = _js_block(page, '$("m-tpl").onchange = () => {', "\n};\n")
+    tail = handler[handler.index("ta.value = t.body_with_signature"):]
+    assert tail.index("ta.setSelectionRange(0, 0);") < tail.index("modal.cursorSet = false;")
+
+
+# ブラウザの代わりの最小限の部品。focus はその場で起き、select は後から起きる (Chrome と同じ)
+_NODE_HARNESS = r"""
+const listeners = {}, later = [];
+const fire = ev => (listeners[ev] || []).forEach(fn => fn());
+const els = {
+  "m-draft": {
+    value: "", readOnly: false, selectionStart: 0, selectionEnd: 0,
+    addEventListener(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); },
+    focus() { fire("focus"); },
+    setSelectionRange(s, e) { this.selectionStart = s; this.selectionEnd = e; later.push("select"); },
+  },
+  "m-tpl": { value: "" },
+  "m-draft-src": { textContent: "" },
+};
+const $ = id => els[id];
+let modal = { cursorSet: false };
+const modalTemplates = [
+  { id: 1, name: "お礼", body: "A定型", body_with_signature: "A定型\n--署名" },
+  { id: 2, name: "日程", body: "B定型", body_with_signature: "B定型\n--署名" },
+];
+const asked = [];
+const confirm = msg => { asked.push(msg); return true; };
+"""
+
+_NODE_SCENARIO = r"""
+const ta = $("m-draft");
+const pick = id => {
+  $("m-tpl").value = String(id);
+  $("m-tpl").onchange();
+  while (later.length) fire(later.shift());
+};
+const out = {};
+// 1. 空の返信文に1つ目 → 2つ目
+pick(1); pick(2);
+out.second = { asked: asked.length, value: ta.value };
+out.secondMsg = asked.join("");
+// 2. 人が末尾をタップしてから選ぶ
+asked.length = 0;
+ta.selectionStart = ta.selectionEnd = ta.value.length;
+fire("pointerdown"); pick(1);
+out.tapped = { asked: asked.length, value: ta.value };
+// 3. 空の欄をタップしてから1つ目 → 2つ目
+asked.length = 0; ta.value = ""; modal.cursorSet = false;
+fire("pointerdown"); pick(1); pick(2);
+out.tapThenTwo = { asked: asked.length, value: ta.value };
+console.log(JSON.stringify(out));
+"""
+
+
+def test_second_template_asks_before_replacing(client, tmp_path):
+    """定型文を続けて選ぶと、2つ目は「置き換えますか？」と聞く (先頭に黙って入れない).
+
+    画面の JavaScript (定型文を入れる部分) を node で動かす。node が無い環境では飛ばす。
+    """
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node が無い")
+    page = client.get("/mail").text
+    block = _js_block(page, "// テキスト欄のカーソルの位置に文字を入れる",
+                      "/* ---------- 設定 ---------- */")
+    script = tmp_path / "tpl_check.js"
+    script.write_text(_NODE_HARNESS + block + _NODE_SCENARIO, encoding="utf-8")
+    r = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    # 2つ目は聞いてから置き換える (1つ目の前に足さない)
+    assert out["second"] == {"asked": 1, "value": "B定型\n--署名"}
+    assert "定型文「日程」に置き換えますか" in out["secondMsg"]
+    # 人が位置を選んだら、聞かずにその位置へ入れる
+    assert out["tapped"] == {"asked": 0, "value": "B定型\n--署名A定型"}
+    # 空の欄をタップしてから丸ごと入れても、次はまた聞く
+    assert out["tapThenTwo"] == {"asked": 1, "value": "B定型\n--署名"}
