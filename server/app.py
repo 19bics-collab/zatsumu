@@ -16,7 +16,7 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import db, devices, imaging, mail, notify, reports, retention, tz
+from . import db, devices, imaging, mail, mail_events, notify, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
@@ -2715,6 +2715,26 @@ def mail_generate_draft(
         (text, source, now_iso(), mail_id),
     )
     return {"draft_reply": text, "draft_source": source, "ai_error": ai_error}
+
+
+@app.post("/api/mail/{mail_id}/events")
+def mail_find_events(
+    mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """このメールに書かれた日付から、カレンダーに入れる予定の候補を作る (返信画面用).
+
+    APIキーがあれば AI に読み取らせ、無い・失敗したときは文中の日付をルールで探す。
+    DB には何も書かない。Google などへもサーバからは何も送らない (登録は画面が、
+    担当者の確かめた内容で Google カレンダーの登録画面を開くか、予定ファイルを作る)。
+    APIキーがあるのに AI で読み取れなかったときは、理由 (ai_error) も返す。
+    """
+    r = dict(_mail_or_404(conn, mail_id))
+    s = db.get_settings(conn)
+    conn.commit()   # AI の呼び出し (時間がかかる) の間、DB の書き込みロックを持たない
+    out = mail_events.find_events(s, r)
+    if out["ai_error"]:
+        out["ai_error"] = notify.safe_error(RuntimeError(out["ai_error"]), s)
+    return out
 
 
 @app.patch("/api/mail/{mail_id}")

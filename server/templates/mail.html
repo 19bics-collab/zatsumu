@@ -210,6 +210,34 @@
   .thr-full button { align-self: flex-start; padding: .4rem .8rem; }
   #m-back { align-self: flex-start; padding: .35rem .8rem; margin-bottom: .4rem; }
   #m-back[hidden] { display: none; }
+  /* カレンダーに登録 (返信モーダル)。予定の候補を1つずつカードにして、その場で直せる */
+  .cal-open { margin-top: .7rem; }
+  .cal-open[hidden], .cal-panel[hidden], .cal-times[hidden], .ev-warn[hidden] { display: none; }
+  #m-cal { padding: .45rem .9rem; }
+  .cal-panel { margin-top: .7rem; border: 1px solid #bbf7d0; border-radius: 6px;
+               background: #f0fdf4; padding: .7rem; display: flex; flex-direction: column;
+               gap: .6rem; font-size: .88rem; color: #374151; }
+  .cal-panel > * { min-width: 0; overflow-wrap: anywhere; }
+  .cal-head { font-weight: 600; }
+  .cal-ev { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: .6rem;
+            display: flex; flex-direction: column; gap: .45rem; }
+  .cal-ev label { display: flex; flex-direction: column; gap: .15rem; font-size: .8rem;
+                  color: #6b7280; min-width: 0; }
+  .cal-ev input[type=text], .cal-ev input[type=date], .cal-ev input[type=time], .cal-ev textarea {
+    padding: .4rem; border: 1px solid #ccc; border-radius: 6px; font-size: .95rem;
+    font-family: inherit; color: #111827; background: #fff; box-sizing: border-box;
+    max-width: 100%; min-width: 0; min-height: 2.3rem; }
+  .cal-ev input[type=date] { width: 11rem; }
+  .cal-ev input[type=time] { width: 8rem; }
+  .cal-ev textarea { min-height: 4.6rem; resize: vertical; }
+  .cal-line { display: flex; flex-wrap: wrap; gap: .5rem .9rem; align-items: flex-end; }
+  .cal-ev label.cal-chk { flex-direction: row; align-items: center; gap: .35rem; font-size: .9rem;
+                          color: #374151; padding-bottom: .5rem; }
+  .cal-chk input { width: 1.2rem; height: 1.2rem; margin: 0; }
+  .ev-warn { color: #b45309; font-size: .82rem; overflow-wrap: anywhere; }
+  .cal-btns { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .cal-btns button { white-space: nowrap; padding: .45rem .8rem; }
+  .cal-help { color: #4b5563; line-height: 1.5; }
   /* 添付の画像を大きく見る */
   #att-viewer { z-index: 20; cursor: zoom-out; flex-direction: column; gap: .6rem; }
   #att-viewer img { max-width: 94vw; max-height: 84vh; object-fit: contain;
@@ -377,6 +405,7 @@
         <select id="set-anthropic-classify-model"></select></label>
       <p class="set-help"><small>優先度の判定は届いたメール全部に使うので、安くて速い「低価格」がおすすめです
       （問い合わせの種類も、このとき一緒に選びます）。
+      返信画面の「カレンダーに登録」でメールから日付を読み取るときも、このモデルを使います。
       「受信時に下書きを自動生成」がONだと、メール1通ごとに返信文用のモデルも使います
       （費用を抑えたいときはOFFにして、必要なメールだけ「返信文を生成」を押してください）。</small></p>
       <button class="ghost" id="set-test-ai">AI接続テスト</button>
@@ -546,6 +575,21 @@
       <summary id="m-thread-title">この相手とのやり取り</summary>
       <div class="thr-list" id="m-thread-list"></div>
     </details>
+    <div class="cal-open" id="m-cal-open"><button id="m-cal" class="ghost">📅 カレンダーに登録</button></div>
+    <div class="cal-panel" id="m-cal-panel" hidden>
+      <div class="cal-head">📅 カレンダーに登録</div>
+      <div id="m-cal-src"></div>
+      <div id="m-cal-err" class="error" style="font-size:.8rem" hidden></div>
+      <div id="m-cal-list" style="display:flex;flex-direction:column;gap:.6rem"></div>
+      <div class="cal-btns">
+        <button id="m-cal-add" class="ghost">＋ 予定を追加</button>
+        <button id="m-cal-close" class="ghost">閉じる</button>
+      </div>
+      <small class="cal-help">「Googleカレンダーで開く」を押すと、新しいタブにこの内容が入ったGoogleカレンダーの画面が出ます。
+      そこで「保存」を押すと登録されます（Googleにログインしている必要があります）。
+      iPhone のカレンダーや Outlook に入れるときは「予定ファイル(.ics)を保存」を押し、出てきた画面（または「ファイル」アプリの「ダウンロード」）から追加してください。
+      この画面の内容は、押したときにだけ Google やファイルに渡ります。</small>
+    </div>
     <div style="display:flex;gap:.6rem;align-items:center;margin-top:.8rem;flex-wrap:wrap">
       <label class="m-field">優先度
         <select id="m-priority">
@@ -1006,6 +1050,7 @@ async function openMail(id) {
   $("m-body").textContent = m.body || "（本文なし）";
   renderAttachments(id, m);
   renderThread(m);
+  clearCalendar();   // 前のメールの予定の候補は出さない
   $("m-priority").value = m.priority;
   modal.category = m.category || "";
   modal.assigneeId = m.assignee_user_id || null;
@@ -1225,6 +1270,7 @@ async function closeModal() {
   modalHistory = [];
   clearAttachments();
   clearThread();
+  clearCalendar();
   $("mail-modal").hidden = true;
   // 開いている間に新着などで受信箱が変わっていたら、ここで取り直す
   if (inboxStale && viewName === "inbox") showInbox({ auto: true });
@@ -1441,6 +1487,236 @@ function closeViewer() {
   $("att-viewer-img").removeAttribute("src");
 }
 $("att-viewer").onclick = () => closeViewer();
+
+/* ---------- カレンダーに登録 (メールの日付から予定を作る) ----------
+   サーバがメールから予定の候補 (日付・時刻・場所など) を探し、ここで直してから
+   Google カレンダーの登録画面を新しいタブで開くか、予定ファイル (.ics) を保存する。
+   Google へはこの画面 (ブラウザ) が、担当者が確かめた欄の内容だけを渡す (サーバからは送らない) */
+
+// カレンダー: 日時の形を決め、Google カレンダーの URL と予定ファイルを作る (画面の部品は使わない)
+// ev = { title, date: "YYYY-MM-DD", start: "HH:MM", end: "HH:MM", all_day, location, note }
+const calYmd = t => t.toISOString().slice(0, 10).replace(/-/g, "");
+const calHm = v => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(v || "");
+  return m && +m[1] < 24 && +m[2] < 60 ? +m[1] * 60 + +m[2] : null;
+};
+// 予定の始まりと終わり。終日なら "YYYYMMDD" (終わりは次の日。カレンダーの決まり)、
+// 時刻ありならその場所の時刻 "YYYYMMDDTHHMMSS"。終わりが空なら1時間、開始より前なら
+// 次の日 (夜をまたぐ)。おかしな欄があれば Error (文はそのまま画面に出す)
+function calRange(ev) {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ev.date || "");
+  if (!d) throw new Error("日付を入れてください");
+  const day = new Date(Date.UTC(+d[1], +d[2] - 1, +d[3]));
+  if (day.getUTCFullYear() !== +d[1] || day.getUTCMonth() !== +d[2] - 1 || day.getUTCDate() !== +d[3])
+    throw new Error("日付が正しくありません");
+  if (ev.all_day)
+    return { allDay: true, start: calYmd(day), end: calYmd(new Date(day.getTime() + 864e5)) };
+  const s = calHm(ev.start);
+  if (s === null)
+    throw new Error("開始の時刻を入れてください（時刻が決まっていないときは「終日」にチェックを付けてください）");
+  let e = calHm(ev.end);
+  if (e === null || e === s) e = s + 60;
+  else if (e < s) e += 24 * 60;
+  const at = mins => {
+    const t = new Date(day.getTime() + mins * 60000);   // 世界標準時の時計で日付と時刻を数える
+    return calYmd(t) + "T" + t.toISOString().slice(11, 16).replace(":", "") + "00";
+  };
+  return { allDay: false, start: at(s), end: at(e) };
+}
+// その場所の時刻 "YYYYMMDDTHHMMSS" を、世界標準時 "YYYYMMDDTHHMMSSZ" にする (予定ファイル用)。
+// 夏時間のある場所でも合うよう、ブラウザのタイムゾーンの知識で確かめながら直す
+function calUtc(local, tzName) {
+  const p = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/.exec(local);
+  const want = Date.UTC(+p[1], +p[2] - 1, +p[3], +p[4], +p[5]);
+  let t = want;
+  try {
+    const f = new Intl.DateTimeFormat("en-US", {
+      timeZone: tzName || "Asia/Tokyo", hourCycle: "h23", year: "numeric", month: "numeric",
+      day: "numeric", hour: "numeric", minute: "numeric" });
+    for (let i = 0; i < 3; i++) {
+      const v = {};
+      for (const x of f.formatToParts(new Date(t))) v[x.type] = +x.value;
+      const seen = Date.UTC(v.year, v.month - 1, v.day, v.hour % 24, v.minute);
+      if (seen === want) break;
+      t += want - seen;
+    }
+  } catch { t = want - 9 * 3600e3; }   // タイムゾーンが分からないブラウザでは日本時間
+  return new Date(t).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+}
+// Google カレンダーの登録画面の URL (開くと内容が入った状態で出る。保存は担当者が押す)。
+// 文字は URL 用に変換する (「/」はそのままでよいので読みやすく残す)
+function calGoogleUrl(ev, tzName) {
+  const r = calRange(ev);
+  const q = [["action", "TEMPLATE"], ["text", ev.title || "予定"], ["dates", r.start + "/" + r.end]];
+  if (ev.note) q.push(["details", ev.note]);
+  if (ev.location) q.push(["location", ev.location]);
+  q.push(["ctz", tzName || "Asia/Tokyo"]);
+  return "https://calendar.google.com/calendar/render?" +
+    q.map(([k, v]) => k + "=" + encodeURIComponent(v).replace(/%2F/g, "/")).join("&");
+}
+// 予定ファイル (.ics) の文字の欄: \ ; , と改行を決まりどおりに書き換え、ほかの制御文字は除く
+const icsText = s => String(s ?? "").replace(/\r\n?/g, "\n")
+  .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+  .replace(/[\\;,]/g, c => "\\" + c).replace(/\n/g, "\\n");
+// 1行が75バイト (UTF-8) を超えないよう折り返す (続きの行は空白で始める。文字の途中では切らない)
+function icsFold(line) {
+  const enc = new TextEncoder(), out = [];
+  let cur = "", bytes = 0;
+  for (const ch of line) {
+    const n = enc.encode(ch).length;
+    if (bytes + n > (out.length ? 74 : 75)) { out.push(cur); cur = ""; bytes = 0; }
+    cur += ch; bytes += n;
+  }
+  out.push(cur);
+  return out.join("\r\n ");
+}
+// 予定ファイル (.ics・RFC 5545) の中身。時刻は世界標準時で書く (どの端末でも同じ時刻になる)
+function calIcs(ev, tzName, now, uid) {
+  const r = calRange(ev);
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//zatsumu//mail//JA",
+    "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "BEGIN:VEVENT", "UID:" + uid,
+    "DTSTAMP:" + new Date(now).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z",
+    ...(r.allDay ? ["DTSTART;VALUE=DATE:" + r.start, "DTEND;VALUE=DATE:" + r.end]
+                 : ["DTSTART:" + calUtc(r.start, tzName), "DTEND:" + calUtc(r.end, tzName)]),
+    "SUMMARY:" + icsText(ev.title || "予定")];
+  if (ev.location) lines.push("LOCATION:" + icsText(ev.location));
+  if (ev.note) lines.push("DESCRIPTION:" + icsText(ev.note));
+  lines.push("END:VEVENT", "END:VCALENDAR");
+  return lines.map(icsFold).join("\r\n") + "\r\n";
+}
+// カレンダー: ここまで
+
+let calTz = "Asia/Tokyo";   // 予定の時刻のタイムゾーン (サーバの設定。既定は日本時間)
+let calBlank = {};          // 「＋ 予定を追加」で出す、日付の入っていない予定 (件名・差出人入り)
+let calSeq = 0;             // メールを開き直したら増やす (前のメールの読み取り結果を捨てる用)
+
+function clearCalendar() {
+  calSeq++;
+  $("m-cal-list").innerHTML = "";
+  $("m-cal-panel").hidden = true;
+  $("m-cal-open").hidden = false;
+  $("m-cal").disabled = false;
+  $("m-cal").textContent = "📅 カレンダーに登録";
+}
+
+// 予定の候補1つ分のカード。値は外から来た文字 (件名・本文から読み取ったもの) なので、
+// 枠を作ってから value / textContent で入れる
+function calCard(ev) {
+  const div = document.createElement("div");
+  div.className = "cal-ev";
+  div.innerHTML = `
+    <label>予定の名前<input type="text" class="ev-title" maxlength="100"></label>
+    <div class="cal-line">
+      <label>日付<input type="date" class="ev-date"></label>
+      <label class="cal-chk"><input type="checkbox" class="ev-allday">終日</label>
+    </div>
+    <div class="cal-line cal-times">
+      <label>開始<input type="time" class="ev-start"></label>
+      <label>終了（空なら1時間）<input type="time" class="ev-end"></label>
+    </div>
+    <label>場所<input type="text" class="ev-loc" maxlength="100" placeholder="任意"></label>
+    <label>メモ<textarea class="ev-note" maxlength="500"></textarea></label>
+    <div class="ev-warn" hidden></div>
+    <div class="cal-btns">
+      <button class="ev-google">Googleカレンダーで開く</button>
+      <button class="ghost ev-ics">予定ファイル(.ics)を保存</button>
+    </div>`;
+  const q = c => div.querySelector(c);
+  q(".ev-title").value = ev.title || "";
+  q(".ev-date").value = ev.date || "";
+  q(".ev-allday").checked = !!ev.all_day;
+  q(".ev-start").value = ev.start || "";
+  q(".ev-end").value = ev.end || "";
+  q(".ev-loc").value = ev.location || "";
+  q(".ev-note").value = ev.note || "";
+  q(".cal-times").hidden = !!ev.all_day;
+  if (ev.warning) {
+    q(".ev-warn").textContent = "⚠ " + ev.warning;
+    q(".ev-warn").hidden = false;
+  }
+  return div;
+}
+
+function calRead(div) {
+  const q = c => div.querySelector(c);
+  return { title: q(".ev-title").value.trim(), date: q(".ev-date").value,
+           all_day: q(".ev-allday").checked, start: q(".ev-start").value, end: q(".ev-end").value,
+           location: q(".ev-loc").value.trim(), note: q(".ev-note").value.trim() };
+}
+
+function renderCalendar(r) {
+  calTz = r.tz || "Asia/Tokyo";
+  calBlank = r.blank || {};
+  const list = r.events || [];
+  const how = r.source === "ai" ? "AIがメールから読み取った予定です。"
+    : r.ai_error ? "AIで読み取れなかったため、メールの中の日付から探しました。"
+    : r.ai_used ? "AIは予定を見つけられなかったため、メールの中の日付から探しました。"
+    : "メールの中の日付から探した予定です。";
+  $("m-cal-src").textContent = list.length
+    ? how + "日時・場所が合っているか確かめてから登録してください。"
+    : "メールの中に日付が見つかりませんでした。日付と時刻を入れると登録できます。";
+  $("m-cal-err").textContent = r.ai_error ? "AIを使えなかった理由: " + r.ai_error : "";
+  $("m-cal-err").hidden = !r.ai_error;
+  $("m-cal-list").innerHTML = "";
+  for (const ev of (list.length ? list : [calBlank])) $("m-cal-list").appendChild(calCard(ev));
+  $("m-cal-open").hidden = true;
+  $("m-cal-panel").hidden = false;
+}
+
+$("m-cal").onclick = async () => {
+  const id = modal.id, seq = ++calSeq, b = $("m-cal");
+  if (!id) return;
+  b.disabled = true; b.textContent = "日付を探しています…";
+  try {
+    const r = await apiJson(`/api/mail/${id}/events`, { method: "POST" });
+    if (seq !== calSeq || modal.id !== id) return;   // 待っている間に別のメールを開いた・閉じた
+    renderCalendar(r);
+  } catch { /* apiJson が原因をアラート表示済み */ }
+  if (seq !== calSeq) return;
+  b.disabled = false; b.textContent = "📅 カレンダーに登録";
+};
+$("m-cal-add").onclick = () => {
+  const card = calCard(calBlank);
+  $("m-cal-list").appendChild(card);
+  card.querySelector(".ev-date").focus();
+};
+$("m-cal-close").onclick = () => clearCalendar();
+// 「終日」にしたら時刻の欄を隠す (外したら出す)
+$("m-cal-list").addEventListener("change", e => {
+  if (e.target.matches(".ev-allday"))
+    e.target.closest(".cal-ev").querySelector(".cal-times").hidden = e.target.checked;
+});
+$("m-cal-list").onclick = e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const ev = calRead(b.closest(".cal-ev"));
+  try {
+    if (b.classList.contains("ev-google")) {
+      // 新しいタブで開く (この画面の URL は Google に渡さない)。押したその場で開くので
+      // スマホでもポップアップとして止められない
+      const link = document.createElement("a");
+      link.href = calGoogleUrl(ev, calTz);
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } else if (b.classList.contains("ev-ics")) {
+      const uid = (self.crypto && crypto.randomUUID ? crypto.randomUUID()
+        : Date.now().toString(36) + Math.random().toString(36).slice(2)) + "@zatsumu";
+      const url = URL.createObjectURL(new Blob([calIcs(ev, calTz, Date.now(), uid)],
+                                                { type: "text/calendar;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `予定_${ev.date}.ics`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // すぐ消すと保存が始まる前に消えてしまうブラウザがあるので、少し待ってから消す
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+  } catch (err) { alert(err.message); }
+};
 
 /* 定型文を入れる。差し込み ({相手の名前} など) はサーバがこのメール用に置き換え済み */
 let modalTemplates = [];

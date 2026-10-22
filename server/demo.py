@@ -255,6 +255,14 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              reply=("山本 商事 様\n\nお世話になっております。\n"
                     "納品は今週金曜日を予定しております。\nよろしくお願いいたします。",
                     2880, "管理者", ""))
+    # 「カレンダーに登録」の確認用: 清掃の日時と物件が書いてあるご依頼 (日付は3日後)
+    day = (now_utc - timedelta(minutes=45)).astimezone(tz.TZ).date() + timedelta(days=3)
+    md = f"{day.month}月{day.day}日（{'月火水木金土日'[day.weekday()]}）"
+    add_mail(45, "鈴木 ホスト", "suzuki-host@example.com", f"清掃のご依頼（{md}）",
+             "いつもお世話になっております。\n下記の日程で清掃をお願いできますでしょうか。\n\n"
+             f"日時：{md}\n時間：１０：００～１３：００\n物件名：ビックス渋谷 201号室\n"
+             "住所：東京都渋谷区神南1-2-3\n\nよろしくお願いいたします。",
+             2, "通常", category="清掃のご依頼")
     add_mail(240, "業界ニュース配信", "no-reply@newsletter.example.com",
              "【メルマガ】今週の業界トピックス",
              "今週の業界ニュースをお届けします。配信停止はこちら。",
