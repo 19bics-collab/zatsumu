@@ -5,6 +5,7 @@
 SMTP の送り先にだけ入れる。送信済みフォルダの控えは相手に届いたものと同じにする。
 """
 import email
+import email.policy
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -466,6 +467,21 @@ def test_reply_all_cc_is_off_until_chosen(client):
     assert "CC・BCC の人にも同じ文が届きます" in page
 
 
+def test_mail_page_send_result_layout(client):
+    """送信結果の文はボタンとは別の行に出し、ボタンは折り返さない (iPhone 幅で崩れない).
+
+    0件の CC・BCC は書かない。BCC 欄の案内は iPhone 幅でも切れない短さにする。
+    """
+    page = client.get("/mail").text
+    assert ".modal .bar button { white-space: nowrap; }" in page
+    assert "#m-status { order: -1; flex-basis: 100%;" in page
+    assert "#m-status:empty { display: none; }" in page
+    assert "flex-wrap: wrap" in page[page.index(".modal .bar {"):page.index("}", page.index(".modal .bar {"))]
+    assert "BCC ${sentBcc.length}件` : \"\"" in page
+    assert "（CC ${sentCc.length}件・BCC ${sentBcc.length}件）" not in page
+    assert 'placeholder="任意（ほかの人には見えません）"' in page
+
+
 def _split_addrs(page: str, values: list[str]) -> list[list[str]]:
     """画面の splitAddrs を node で動かす (node が無ければ飛ばす)."""
     import json
@@ -475,7 +491,7 @@ def _split_addrs(page: str, values: list[str]) -> list[list[str]]:
     if not node:
         pytest.skip("node が無い")
     i = page.index("const splitAddrs = ")
-    code = page[i:page.index(".filter(Boolean);", i) + len(".filter(Boolean);")]
+    code = page[i:page.index("\n};\n", i) + len("\n};\n")]
     script = code + f"\nconsole.log(JSON.stringify({json.dumps(values)}.map(splitAddrs)));"
     r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
@@ -499,6 +515,29 @@ def test_split_addrs_keeps_display_names(client):
         ["e@x.com", "f@y.com"],
         [],
     ]
+
+
+def test_split_addrs_keeps_commas_inside_names(client):
+    """名前の中の「,」(「"姓, 名" <アドレス>」や Outlook の「姓, 名 <アドレス>」) では分けない."""
+    page = client.get("/mail").text
+    out = _split_addrs(page, [
+        '"Yamada, Taro" <taro@example.com>, b@y.com',
+        "Yamada, Taro <taro@example.com>; Sato, Hanako <hanako@example.com>",
+        "a@x.com, Yamada, Taro <taro@example.com>",
+        "Yamada, a@x.com",              # 名前の後が <…> でなければつながない
+        '"a,b" <x@y.com>、<c@d.com>',
+    ])
+    assert out == [
+        ['"Yamada, Taro" <taro@example.com>', "b@y.com"],
+        ["Yamada, Taro <taro@example.com>", "Sato, Hanako <hanako@example.com>"],
+        ["a@x.com", "Yamada, Taro <taro@example.com>"],
+        ["Yamada", "a@x.com"],
+        ['"a,b" <x@y.com>', "<c@d.com>"],
+    ]
+    # サーバもそのまま受け付け、アドレスだけで送る
+    from server import mail
+    cc, _ = mail.check_reply_recipients("z@z.com", out[0] + out[1], [])
+    assert cc == ["taro@example.com", "b@y.com", "hanako@example.com"]
 
 
 def test_send_accepts_display_name_from_screen():
@@ -553,13 +592,20 @@ def _audit_csv(client, admin):
 
 def test_send_to_refused_but_cc_delivered_is_not_marked_replied(
         client, users, tmp_path, monkeypatch):
-    """宛先 (お客様) が断られ CC にだけ届いたら、未対応に戻して知らせる."""
-    from server import notify
+    """宛先 (お客様) が断られ CC にだけ届いたら、未対応に戻して知らせる.
+
+    CC の人には届いているので、送った文の控えは送信済みフォルダに残す。
+    """
+    from server import mail, notify
     _, admin = users
     _setup(client, admin)
     mid = _add_mail(tmp_path)
     monkeypatch.setattr(notify, "smtp_send",
                         lambda s, sender, rcpts, message: {"taro@example.com": (550, b"no")})
+    saved = []
+    monkeypatch.setattr(mail, "should_save_sent", lambda s: True)
+    monkeypatch.setattr(mail, "save_to_sent",
+                        lambda s, raw: saved.append(raw) or "Sent")
     r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
                     json={"body": "本文", "cc": ["sato@x.com"]})
     assert r.status_code == 502
@@ -569,8 +615,30 @@ def test_send_to_refused_but_cc_delivered_is_not_marked_replied(
     d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
     assert d["status"] == "unhandled" and d["reply_cc"] == []
     csv_text = _audit_csv(client, admin)
-    assert "mail_send_refused" in csv_text
     assert "refused=taro@example.com" in csv_text and "delivered=sato@x.com" in csv_text
+    assert "saved=Sent" in csv_text
+    assert "メール返信送信（宛先に届かず）" in csv_text   # 修正履歴では日本語で出す
+    assert len(saved) == 1 and b"Cc: sato@x.com" in saved[0]
+    copy = email.message_from_bytes(saved[0], policy=email.policy.default)
+    assert "本文" in copy.get_body(("plain",)).get_content()
+
+
+def test_send_to_refused_and_nobody_delivered_saves_no_copy(
+        client, users, tmp_path, monkeypatch):
+    """誰にも届いていなければ、送信済みフォルダに控えを残さない."""
+    from server import mail, notify
+    _, admin = users
+    _setup(client, admin)
+    mid = _add_mail(tmp_path)
+    monkeypatch.setattr(notify, "smtp_send",
+                        lambda s, sender, rcpts, message: {"taro@example.com": (550, b"no")})
+    saved = []
+    monkeypatch.setattr(mail, "should_save_sent", lambda s: True)
+    monkeypatch.setattr(mail, "save_to_sent",
+                        lambda s, raw: saved.append(raw) or "Sent")
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin), json={"body": "本文"})
+    assert r.status_code == 502
+    assert saved == []
 
 
 def test_send_with_some_cc_refused_reports_them(client, users, tmp_path, monkeypatch):

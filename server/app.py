@@ -205,6 +205,10 @@ def auth_user(
     if user["is_admin"] and devices.enabled():
         if not devices.check_device(conn, user["id"], x_device_token):
             raise HTTPException(401, devices.REQUIRED_DETAIL)
+        # check_device は使った時刻を書き込むことがある。ここで確定させないと、
+        # その後の受信 (IMAP・AI で数分かかることがある) の間ずっと DB の書き込みロックを
+        # 持ったままになり、ほかの人の打刻・設定の保存・返信の送信が失敗する
+        conn.commit()
     return user
 
 
@@ -2053,6 +2057,7 @@ def audit_csv(
         "correction_approved": "修正申請を承認",
         "correction_rejected": "修正申請を却下",
         "mail_send": "メール返信送信",
+        "mail_send_refused": "メール返信送信（宛先に届かず）",
         "mail_update": "メール状態変更",
         "device_code_sent": "端末確認コード送信",
         "device_code_send_fail": "端末確認コード送信失敗",
@@ -2185,6 +2190,7 @@ def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
     s = db.get_settings(conn)
     if not str(s.get("imap_host", "")).strip():
         raise HTTPException(400, "IMAPが未設定です。設定画面で受信サーバを保存してください")
+    conn.commit()   # 受信 (時間がかかる) の間、DB の書き込みロックを持たない
     try:
         added = mail.fetch_new_mail(conn, s, attachment_dir=MAIL_ATTACHMENT_DIR)
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
@@ -2589,10 +2595,21 @@ def mail_send(
         # 肝心の相手 (元メールの差出人) に届いていない。CC・BCC の人には届いているが、
         # 「返信済み」にすると対応が終わったと思われてしまうので、未対応に戻して知らせる
         delivered = [a for a in (*cc, *bcc) if a.lower() not in refused_keys]
+        # CC・BCC の人には届いているので、何を送ったかが分かるよう控えは残す
+        # (未対応に戻すと返信文は消え、宛先は画面で直せないので、送り直さずに
+        # 閉じたときに、届いた文がどこにも残らなくなる)。
+        # 控えの保存 (IMAP) は、DB に書く前にする (書き込みロックを持ったまま待たない)
+        saved = ""
+        if delivered and raw and mail.should_save_sent(s):
+            try:
+                sent_folder = mail.save_to_sent(s, raw)
+                saved = f" saved={sent_folder}" if sent_folder else ""
+            except Exception:  # noqa: BLE001  控えの失敗で知らせ方は変えない
+                saved = " saved=failed"
         back_to_unhandled()
         _audit(conn, admin, "mail_send_refused",
                detail=f"to={r['from_addr']} refused={','.join(refused)}"
-                      f" delivered={','.join(delivered)} subject={subject}")
+                      f" delivered={','.join(delivered)} subject={subject}{saved}")
         conn.commit()
         raise HTTPException(
             502, f"送信できませんでした: 宛先（{r['from_addr']}）は相手のメールサーバに"

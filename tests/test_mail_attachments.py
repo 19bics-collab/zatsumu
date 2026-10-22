@@ -443,6 +443,25 @@ def test_low_disk_space_keeps_the_mail_without_files(client, tmp_path, monkeypat
     assert mail.skip_reason_text("disk_low") == "サーバの空きが少ないため保存していません"
 
 
+@pytest.mark.parametrize("free_mb,expected", [(800, ""), (50, "disk_low")])
+def test_small_disk_still_saves_attachments(client, tmp_path, monkeypatch, free_mb, expected):
+    """1GB のディスク (Render) でも、空きがディスクの1割より多ければ保存する.
+
+    以前は残す空きが 2GB 固定で、2GB より小さいディスクでは何も保存されなかった。
+    """
+    import collections
+    from server import mail
+    usage = collections.namedtuple("usage", "total used free")
+    monkeypatch.setattr(mail.shutil, "disk_usage", lambda path: usage(
+        mail._GB, mail._GB - free_mb * mail._MB, free_mb * mail._MB))
+    att_dir = tmp_path / "mail_attachments"
+    fetch(tmp_path, monkeypatch, {5: mail_with_files()}, att_dir)
+    assert [r["skip_reason"] for r in att_rows(tmp_path)] == [expected] * 2
+    # 大きいディスクでは今までどおり 2GB を残す
+    assert mail.min_free_bytes(100 * mail._GB) == 2 * mail._GB
+    assert mail.min_free_bytes(mail._GB) == mail._GB // 10
+
+
 def test_total_size_limit(client, users, tmp_path, monkeypatch):
     """保存している添付の合計が上限に達したら、それ以上は保存しない."""
     from server import mail
@@ -654,6 +673,41 @@ def test_purge_when_files_are_already_gone(client, tmp_path):
     with db.get_db(tmp_path / "zatsumu.db") as conn:
         assert mail.purge_old_mails(conn, 180, att_dir) == 1
         assert conn.execute("SELECT COUNT(*) FROM mail_attachments").fetchone()[0] == 0
+
+
+def test_purge_removes_folders_left_without_mail_rows(client, tmp_path):
+    """前の版に戻した間にメールの行だけ消えたら、残った添付のフォルダも消す.
+
+    取り込み中 (まだ番号が確定していない) のメールのフォルダは消さない。
+    """
+    from datetime import datetime, timezone
+    from server import db, mail
+    att_dir = tmp_path / "mail_attachments"
+    now = datetime.now(timezone.utc).isoformat()
+    gone, (gone_att,) = add_mail_with_atts(
+        tmp_path, [item("gone.pdf", PDF, "application/pdf")], n=1,
+        received_at=now, fetched_at=now)
+    kept, (kept_att,) = add_mail_with_atts(
+        tmp_path, [item("kept.pdf", PDF, "application/pdf")], n=2,
+        received_at=now, fetched_at=now)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        # 前の版の消し方 (メールの行だけ消す。添付の行は外部キーで一緒に消える)
+        conn.execute("DELETE FROM mails WHERE id = ?", (gone,))
+    in_flight = att_dir / str(kept + 1)       # まだ確定していない次のメールの番号
+    in_flight.mkdir()
+    (in_flight / "1").write_bytes(PDF)
+    (att_dir / ".staging-x").mkdir()
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert mail.purge_old_mails(conn, 180, att_dir) == 0
+    assert not (att_dir / str(gone)).exists()
+    assert (att_dir / str(kept) / str(kept_att)).read_bytes() == PDF
+    assert in_flight.exists() and (att_dir / ".staging-x").exists()
+    # 保存日数を決めていない (0 = ずっと残す) ときも片付ける
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("DELETE FROM mails WHERE id = ?", (kept,))
+        assert mail.purge_old_mails(conn, 0, att_dir) == 0
+    assert not (att_dir / str(kept)).exists()
+    assert in_flight.exists()
 
 
 def test_background_tick_saves_and_purges_attachments(client, users, tmp_path, monkeypatch):

@@ -359,6 +359,8 @@ def test_template_cursor_only_from_user_actions(client):
     handler = _js_block(page, '$("m-tpl").onchange = () => {', "\n};\n")
     tail = handler[handler.index("ta.value = t.body_with_signature"):]
     assert tail.index("ta.setSelectionRange(0, 0);") < tail.index("cursorByProgram(ta);")
+    # 入れ替えた後は欄の先頭 (宛名) を見せる (下までスクロールしたまま残ることがある)
+    assert tail.index("ta.setSelectionRange(0, 0);") < tail.index("ta.scrollTop = 0;")
 
 
 # ブラウザの代わりの最小限の部品。focus はその場で起き、select は後から起きる (Chrome と同じ)

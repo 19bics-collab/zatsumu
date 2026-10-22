@@ -496,6 +496,36 @@ def test_ai_errors_hidden_without_key(client, users):
     assert client.get("/api/settings", headers=auth(admin)).json()["ai_errors"] == []
 
 
+def test_clearing_the_key_stops_ai_and_its_warning(client, users):
+    """画面の「キーを消す」: 空のキーを保存すると AI を使わなくなり、注意書きも消える.
+
+    保存ボタンは空のキー欄を送らない (「変更時のみ入力」) ので、以前は画面から
+    キーを消せず、間違ったキーを入れると受信箱の注意が消せなかった。
+    """
+    from server import mail
+    _, admin = users
+    client.patch("/api/settings", headers=auth(admin), json={"anthropic_api_key": KEY})
+    mail._record_ai_error("classify", "claude-haiku-5-5", "キーが正しくありません")
+    assert client.get("/api/settings", headers=auth(admin)).json()["ai_errors"]
+    s = client.patch("/api/settings", headers=auth(admin),
+                     json={"anthropic_api_key": ""}).json()
+    assert s["anthropic_api_key_set"] is False and s["ai_errors"] == []
+    assert mail.ai_errors() == []
+    # 画面: キーがあるときだけ出るボタンで、空のキーを送る
+    page = client.get("/mail").text
+    assert 'id="set-anthropic-key-clear" hidden' in page
+    assert '$("set-anthropic-key-clear").hidden = !s.anthropic_api_key_set;' in page
+    i = page.index('$("set-anthropic-key-clear").onclick')
+    handler = page[i:page.index("\n};\n", i)]
+    assert 'JSON.stringify({ anthropic_api_key: "" })' in handler
+    assert "confirm(" in handler and "renderAiStatus(appSettings);" in handler
+    # 受信箱の注意のリンクは、設定画面の AI のカードまで動かす
+    assert 'id="ai-card"' in page
+    i = page.index('$("ai-warn-link").onclick')
+    link = page[i:page.index("\n};\n", i)]
+    assert "await openSettings();" in link and '$("ai-card").scrollIntoView' in link
+
+
 # ---------- 下書きの生成 (画面) ----------
 
 def test_draft_endpoint_reports_ai_failure(fake_ai, client, users, tmp_path):

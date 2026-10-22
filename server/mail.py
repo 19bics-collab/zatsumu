@@ -158,8 +158,11 @@ ATTACHMENT_MAX_COUNT = 50
 _GB = 1024 * _MB
 # 1通ごとの上限とは別の、サーバ全体の歯止め。外から大きなメールを続けて送られても、
 # DB (同じデータフォルダにある) や勤怠のスクショが書けなくならないようにする。
-# 保存すると空きがこれより少なくなるなら保存しない
+# 保存すると空きがこれより少なくなるなら保存しない。
+# 小さいディスク (Render の 1GB など) では 2GB の空きは最初から無いので、
+# ディスク全体の 1割 (ATTACHMENT_MIN_FREE_RATIO) の方が小さければ、そちらを使う
 ATTACHMENT_MIN_FREE_BYTES = 2 * _GB
+ATTACHMENT_MIN_FREE_RATIO = 0.1
 # 保存しておく添付ファイル全体の合計の上限 (保存日数を過ぎたメールが消えると、また保存できる)
 ATTACHMENT_STORE_MAX_BYTES = 10 * _GB
 # 取り込み中に添付ファイルを先に書いておく一時フォルダの名前 (添付の保存先の中に作る)
@@ -330,15 +333,20 @@ def stored_attachment_bytes(conn) -> int:
                         " WHERE path != ''").fetchone()[0]
 
 
+def min_free_bytes(total: int) -> int:
+    """添付を保存した後にも残しておく空きの大きさ (ディスク全体の大きさで決める)."""
+    return min(ATTACHMENT_MIN_FREE_BYTES, int(total * ATTACHMENT_MIN_FREE_RATIO))
+
+
 def _space_skip(attachment_dir, size: int, stored: int) -> str:
     """この大きさのファイルを今保存してよいか (だめなら理由のコード、よければ "")."""
     if stored + size > ATTACHMENT_STORE_MAX_BYTES:
         return "store_full"
     try:
-        free = shutil.disk_usage(attachment_dir).free
+        usage = shutil.disk_usage(attachment_dir)
     except OSError:
         return ""   # 調べられないときは書いてみる (書けなければ「保存できませんでした」)
-    if free - size < ATTACHMENT_MIN_FREE_BYTES:
+    if usage.free - size < min_free_bytes(usage.total):
         return "disk_low"
     return ""
 
@@ -1782,6 +1790,36 @@ def _notify_text(s) -> str:
     return str(s or "").replace("<", "＜").replace(">", "＞").strip()
 
 
+def remove_orphan_attachment_dirs(conn, attachment_dir) -> int:
+    """メールの行が無くなった添付のフォルダを消し、消した数を返す.
+
+    添付を保存しない前の版に戻したとき (自動更新の切り戻し)、その版が保存日数で
+    メールを消すと、DB の行だけ消えてファイルが残る。メールの番号は使い回されないので、
+    放っておくと誰にも見えないまま保存日数を過ぎても残り続ける。
+    取り込み中のメール (まだ DB に確定していない) のフォルダを消さないよう、
+    これまでに確定した一番大きい番号 (sqlite_sequence) 以下のフォルダだけを対象にする
+    (新しいメールの番号は、それより必ず大きい)。番号を先に読み、その後でメールの一覧を
+    読むので、間に確定したメールを「行が無い」と見誤ることはない。
+    """
+    base = Path(attachment_dir)
+    try:
+        names = [p.name for p in base.iterdir() if p.is_dir()]
+    except OSError:
+        return 0
+    folder_ids = {int(n) for n in names if n.isdigit()}
+    if not folder_ids:
+        return 0
+    row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'mails'").fetchone()
+    newest = int(row[0]) if row else 0
+    ids = {r[0] for r in conn.execute("SELECT id FROM mails")}
+    removed = 0
+    for mail_id in sorted(folder_ids):
+        if mail_id <= newest and mail_id not in ids:
+            remove_attachment_files(attachment_dir, mail_id)
+            removed += 1
+    return removed
+
+
 def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
     """保存日数を過ぎた受信メールを、添付ファイルごと削除する (days<=0 なら何もしない).
 
@@ -1790,6 +1828,8 @@ def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
     ファイルを先に消してから DB の行を消す (途中で止まっても、次の回にもう一度
     同じメールが対象になり、残りが消える。消えているファイルは飛ばす)。
     """
+    if attachment_dir is not None:
+        remove_orphan_attachment_dirs(conn, attachment_dir)
     if days <= 0:
         return 0
     cutoff = tz.utc_iso(datetime.now(timezone.utc) - timedelta(days=days))

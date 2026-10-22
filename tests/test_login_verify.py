@@ -342,6 +342,56 @@ def test_device_expires_after_90_days_unused(client, users, enabled, smtp, db_pa
     assert r.status_code == 401 and r.json()["detail"] == DETAIL
 
 
+def test_device_touch_does_not_hold_db_lock_during_fetch(
+        client, users, enabled, smtp, db_path, monkeypatch):
+    """端末の使った時刻を更新した回の「今すぐ受信」でも、受信の間 DB をロックしない.
+
+    以前は時刻の更新が確定しないまま IMAP の受信・AI の判定に進み、その間ずっと
+    書き込みロックを持っていた (ほかの人の打刻・設定の保存・返信の送信が失敗する)。
+    """
+    import sqlite3
+    from server import db, mail
+    _, admin, _ = users
+    device = verify_new_device(client, admin, smtp)
+    with db.get_db(db_path) as conn:
+        db.set_setting(conn, "imap_host", "imap.example.com")
+        db.set_setting(conn, "mail_auto_draft", 0)
+    # 10分より前に使った端末 (この回で使った時刻を書き込む)
+    backdate(db_path, "UPDATE device_tokens SET last_used_at = ?", (ago(minutes=20),))
+    seen = {}
+
+    class FakeIMAP:
+        def select(self, folder, readonly=False):
+            return ("OK", [b"0"])
+
+        def response(self, key):
+            return ("UIDVALIDITY", [b"1"])
+
+        def uid(self, cmd, *args):
+            # 受信の途中に、別の接続ですぐ書き込めるか
+            other = sqlite3.connect(db_path, timeout=0)
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                other.rollback()
+                seen["write"] = "ok"
+            except sqlite3.OperationalError as e:
+                seen["write"] = str(e)
+            finally:
+                other.close()
+            return ("OK", [b""])
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(mail, "_imap_connect", lambda s: FakeIMAP())
+    r = client.post("/api/mail/fetch", headers=auth(admin, device))
+    assert r.status_code == 200, r.text
+    assert seen["write"] == "ok"
+    with db.get_db(db_path) as conn:
+        last = conn.execute("SELECT last_used_at FROM device_tokens").fetchone()[0]
+    assert datetime.fromisoformat(last) > datetime.now(timezone.utc) - timedelta(minutes=1)
+
+
 def test_smtp_not_configured_returns_503(client, users, enabled, smtp, db_path):
     _, admin, _ = users
     from server import db

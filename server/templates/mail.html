@@ -108,8 +108,14 @@
   /* 中身が画面より長いとき (スマホ・添付ファイルが多いとき) は、本文の欄を
      縮めずに、返信画面ごとスクロールさせる */
   .modal .box > * { flex-shrink: 0; }
-  .modal .bar { display: flex; gap: .6rem; align-items: center; }
+  .modal .bar { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
   .modal .bar span { flex: 1; color: #374151; font-size: .9rem; }
+  /* 送信結果の文はボタンの列とは別の行 (上) に出す。同じ行だと、スマホでは
+     文が長いときにボタンが「返/信/済/み」と縦に1文字ずつ折り返して崩れる */
+  .modal .bar button { white-space: nowrap; }
+  #m-status { order: -1; flex-basis: 100%; overflow-wrap: anywhere; }
+  #m-status:empty { display: none; }
+  #m-send { margin-left: auto; }
   .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; }
   .mail-body { white-space: pre-wrap; background: #f9fafb; border: 1px solid var(--line);
                border-radius: 6px; padding: .7rem; max-height: 12rem; overflow: auto;
@@ -285,13 +291,14 @@
       <button class="ghost" id="set-test-imap">IMAP接続テスト</button>
       <span id="test-imap-msg" style="margin-left:.6rem;font-size:.85rem"></span>
     </div>
-    <div class="set-card">
+    <div class="set-card" id="ai-card">
       <h3>AI返信（Claude）</h3>
       <label class="set-row"><span>受信時に下書きを自動生成</span>
         <input type="checkbox" id="set-mail-auto-draft"></label>
       <label class="set-row"><span>Claude APIキー</span>
         <input type="password" id="set-anthropic-key" placeholder="(変更時のみ入力)"
           autocomplete="off"></label>
+      <button class="ghost" id="set-anthropic-key-clear" hidden>キーを消す（AIを使わない）</button>
       <p class="set-help"><small>キーは Anthropic 社の管理画面
       <b>console.anthropic.com</b> の「API Keys」で作れます。
       AIを使った分だけ料金がかかります（Anthropic 社からの請求です）。
@@ -429,7 +436,7 @@
           spellcheck="false" placeholder="なし（追加するときは「,」で区切って入力）"></label>
       <label class="rcpt-row"><span>BCC</span>
         <input type="text" id="m-bcc" inputmode="email" autocomplete="off" autocapitalize="off"
-          spellcheck="false" placeholder="任意（ここに入れた人は、ほかの人には見えません）"></label>
+          spellcheck="false" placeholder="任意（ほかの人には見えません）"></label>
     </div>
     <div style="display:flex;gap:.5rem;align-items:center;justify-content:space-between;margin-top:.8rem;flex-wrap:wrap">
       <label for="m-draft" style="font-size:.85rem;color:#374151">返信文（編集できます）
@@ -797,10 +804,32 @@ $("m-cc").addEventListener("input", () => { $("m-cc-all").checked = !!$("m-cc").
 // CC・BCC の欄をアドレスの一覧にする。「,」「、」「;」・改行で区切る
 // (日本語入力の全角の英数字・記号は半角に直す)。メールソフトからコピーした
 // 「山田 太郎 <yamada@example.com>」は名前に空白があっても1件のまま送り、
-// 「<…>」の無いものだけ空白でも区切る。正しい形かはサーバが確かめる
-const splitAddrs = v => v.normalize("NFKC").split(/[,、;\n]+/)
-  .flatMap(x => x.includes("<") ? [x.trim()] : x.split(/\s+/))
-  .filter(Boolean);
+// 「<…>」の無いものだけ空白でも区切る。正しい形かはサーバが確かめる。
+// 「"Yamada, Taro" <taro@example.com>」のように "…" や <…> の中にある「,」では区切らない。
+// Outlook の「Yamada, Taro <taro@example.com>」(名前を "…" で囲まない形) も、
+// アドレスの無い名前だけの部分を、次の <…> 付きの部分とつないで1件にする
+const splitAddrs = v => {
+  const parts = [];
+  let cur = "", quoted = false, angle = false;
+  for (const ch of v.normalize("NFKC")) {
+    if (ch === '"' && !angle) quoted = !quoted;
+    else if (ch === "<" && !quoted) angle = true;
+    else if (ch === ">" && !quoted) angle = false;
+    if (!quoted && !angle && /[,、;\n]/.test(ch)) { parts.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  parts.push(cur);
+  for (let i = 0; i < parts.length - 1; i++) {
+    const x = parts[i].trim(), next = parts[i + 1];
+    if (x && !x.includes("@") && !x.includes("<") &&
+        next.includes("<") && !next.slice(0, next.indexOf("<")).includes("@")) {
+      parts[i + 1] = x + ", " + next.trim();
+      parts[i] = "";
+    }
+  }
+  return parts.flatMap(x => x.includes("<") ? [x.trim()] : x.trim().split(/\s+/))
+    .filter(Boolean);
+};
 
 $("m-send").onclick = async () => {
   const text = $("m-draft").value.trim();
@@ -821,8 +850,11 @@ $("m-send").onclick = async () => {
     });
     modal.savedDraft = text;
     const sentCc = r.cc || [], sentBcc = r.bcc || [];
+    // 0件の方は書かない (CC だけ送ったのに「BCC 0件」と出ると、文が長く分かりにくい)
+    const counts = [sentCc.length ? `CC ${sentCc.length}件` : "",
+                    sentBcc.length ? `BCC ${sentBcc.length}件` : ""].filter(Boolean);
     $("m-status").textContent = `${r.sent} へ送信しました ✓` +
-      (sentCc.length || sentBcc.length ? `（CC ${sentCc.length}件・BCC ${sentBcc.length}件）` : "");
+      (counts.length ? `（${counts.join("・")}）` : "");
     if ((r.refused || []).length) {
       // CC・BCC の一部が相手のメールサーバに断られた (宛先の人には届いている)
       $("m-status").textContent += `（次のアドレスには届きませんでした: ${r.refused.join(", ")}）`;
@@ -1064,6 +1096,7 @@ $("m-tpl").onchange = () => {
   $("m-draft-src").textContent = "（定型文から作成）";
   ta.focus();
   ta.setSelectionRange(0, 0);
+  ta.scrollTop = 0;   // 欄が下までスクロールしたままだと、先頭 (宛名) が見えない
   // 丸ごと入れ替えた文のどこに次の定型文を入れるかは、もう一度選んでもらう
   // (カーソルは先頭に置いただけなので、続けて選ぶと置き換えてよいか聞く)
   cursorByProgram(ta);
@@ -1102,6 +1135,7 @@ function fillSettings(s) {
   $("set-mail-auto-draft").checked = !!s.mail_auto_draft;
   $("set-anthropic-key").value = "";
   $("set-anthropic-key").placeholder = s.anthropic_api_key_set ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-anthropic-key-clear").hidden = !s.anthropic_api_key_set;
   fillModelSelect("set-anthropic-model", s.anthropic_model, AI_DEFAULT_MODEL);
   fillModelSelect("set-anthropic-classify-model", s.anthropic_classify_model,
                   AI_DEFAULT_CLASSIFY_MODEL);
@@ -1178,7 +1212,13 @@ async function refreshAiStatus() {
     renderAiStatus(appSettings);
   } catch {}
 }
-$("ai-warn-link").onclick = e => { e.preventDefault(); openSettings(); };
+// 設定画面を開いて AI のカードまで動かす (スマホではカードが縦に並び、
+// 一番上の受信のカードしか見えないため)
+$("ai-warn-link").onclick = async e => {
+  e.preventDefault();
+  await openSettings();
+  $("ai-card").scrollIntoView({ block: "start" });
+};
 
 $("set-save").onclick = async () => {
   // メール関連のキーだけ送る。PATCH は部分更新なので勤怠側の設定は変わらない
@@ -1224,6 +1264,25 @@ $("set-save").onclick = async () => {
   fillSettings(appSettings);
   $("set-msg").textContent = "保存しました ✓";
   setTimeout(() => $("set-msg").textContent = "", 2500);
+};
+
+// 保存では空のキー欄は送らない (「変更時のみ入力」のため) ので、消すときはこのボタンで消す。
+// 間違ったキーを入れたままだと、AI を使えないという注意が受信箱に出続ける
+$("set-anthropic-key-clear").onclick = async () => {
+  if (!confirm("Claude APIキーを消しますか？\n\n消すと、返信文は定型文で下書きし、" +
+      "優先度と種類はキーワードで判定します（AIの料金はかかりません）。" +
+      "\nもう一度使うときは、キーを入れて保存してください。")) return;
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ anthropic_api_key: "" }),
+  });
+  // キーのところだけ表示を直す (ほかの欄の、まだ保存していない入力は消さない)
+  $("set-anthropic-key").value = "";
+  $("set-anthropic-key").placeholder = "(未設定)";
+  $("set-anthropic-key-clear").hidden = true;
+  renderAiStatus(appSettings);         // 受信箱の注意書きも消える
+  $("test-ai-msg").style.color = "#0a7d32";
+  $("test-ai-msg").textContent = "APIキーを消しました ✓";
 };
 
 $("set-test-imap").onclick = async () => {
