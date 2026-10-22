@@ -172,20 +172,47 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
     db.set_setting(conn, "mail_category_assignees", "運営代行のご相談: 管理者")
 
     def add_mail(mins_ago, from_name, from_addr, subject, body, prio, reason,
-                 draft="", status="unhandled", cc="", category="", assignee=None):
+                 draft="", status="unhandled", cc="", category="", assignee=None,
+                 in_reply_to="", reply=None):
+        # reply: こちらが送った返信 (本文, 何分前に送ったか, 送った人, CC)。
+        # 返信画面の「この相手とのやり取り」の確認用
         received = (now_utc - timedelta(minutes=mins_ago)).isoformat()
-        return conn.execute(
+        reply_body, reply_mins, replied_by, reply_cc = reply or ("", None, "", "")
+        mail_id = conn.execute(
             "INSERT INTO mails (message_id, from_addr, from_name, to_addr,"
             " cc_addr, subject, body, received_at, fetched_at, priority,"
             " priority_reason, priority_source, status, draft_reply,"
-            " draft_source, draft_generated_at, category, assignee_user_id)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " draft_source, draft_generated_at, category, assignee_user_id,"
+            " references_hdr, reply_subject, reply_body, reply_cc, replied_at,"
+            " replied_by, reply_message_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (f"<demo-{mins_ago}@example.com>", from_addr, from_name,
              "info@example.com", cc, subject, body, received,
              now_utc.isoformat(), prio, reason, "rule", status, draft,
              "template" if draft else "",
-             now_utc.isoformat() if draft else None, category, assignee),
+             now_utc.isoformat() if draft else None, category, assignee,
+             in_reply_to, mail.reply_subject(subject) if reply else "", reply_body,
+             reply_cc,
+             (now_utc - timedelta(minutes=reply_mins)).isoformat() if reply else None,
+             replied_by, f"<demo-reply-{mins_ago}@example.com>" if reply else ""),
         ).lastrowid
+        mail.save_refs(conn, mail_id, in_reply_to, in_reply_to)
+        return mail_id
+
+    # 「この相手とのやり取り」の確認用: 佐々木さんとの前のやり取り (返信済み) と、
+    # その返信に別のアドレス (佐々木 部長) から届いた返事 (ヘッダでつながる)
+    add_mail(4400, "佐々木", "Sasaki@Example.com", "物件の下見について",
+             "来週、物件の下見をお願いできますでしょうか。\n"
+             "火曜か水曜の午後ですと助かります。", 2, "通常",
+             status="replied", category="運営代行のご相談", assignee=ids["管理者"],
+             reply=("佐々木 様\n\nお世話になっております。\n"
+                    "下見の件、承知いたしました。水曜日の14時はいかがでしょうか。\n"
+                    "よろしくお願いいたします。", 4300, "管理者",
+                    "佐々木 部長 <sasaki-bucho@example.com>"))
+    add_mail(4200, "佐々木 部長", "sasaki-bucho@example.com", "Re: 物件の下見について",
+             "水曜日14時で問題ございません。\n当日は私も同席いたします。", 2, "通常",
+             status="archived", category="運営代行のご相談",
+             in_reply_to="<demo-reply-4400@example.com>")
 
     # 種類を入れていないメール (この機能より前に取り込んだメール =「未分類」の表示の確認用)
     add_mail(20, "山本 商事", "yamamoto@example.com",
@@ -217,6 +244,12 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
             {"filename": "物件の動画.mov", "content_type": "video/quicktime",
              "size": 52 * 1024 * 1024, "data": None, "skip": "too_large"},
         ], now_utc.isoformat())
+    add_mail(2900, "山本 商事", "yamamoto@example.com", "納品日程のご確認",
+             "先日ご依頼した件の納品日程を教えてください。", 2, "通常",
+             status="replied",
+             reply=("山本 商事 様\n\nお世話になっております。\n"
+                    "納品は今週金曜日を予定しております。\nよろしくお願いいたします。",
+                    2880, "管理者", ""))
     add_mail(240, "業界ニュース配信", "no-reply@newsletter.example.com",
              "【メルマガ】今週の業界トピックス",
              "今週の業界ニュースをお届けします。配信停止はこちら。",

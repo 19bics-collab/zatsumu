@@ -20,6 +20,9 @@ IMAP・SMTP ともサーバ証明書を検証し、暗号化できない接続�
 (設定) があれば、その人を担当にする。
 受信 (定期受信・「今すぐ受信」) はサーバの中で同時に1つだけ行い、最後に受信できた時刻と
 直近の失敗の理由を記録する (メール画面が1分ごとに聞いて、開いたままでも新着を出す)。
+返信画面には、同じ相手 (差出人のアドレス) から届いたほかのメールと、Message-ID・
+In-Reply-To・References でつながるメール (別のアドレスからの同じ話の返事など) を、
+こちらが送った返信と一緒に「この相手とのやり取り」として出す (mail_thread)。
 """
 import base64
 import email
@@ -146,6 +149,8 @@ def parse_message(raw: bytes) -> dict:
         "body": _extract_body(msg)[:BODY_MAX_CHARS],
         "received_at": tz.utc_iso(received),
         "references_hdr": str(msg.get("References", "")).strip(),
+        # どのメールへの返事か (同じやり取りのメールを探すのに使う。mail_refs に覚える)
+        "in_reply_to": str(msg.get("In-Reply-To", "")).strip(),
     }
 
 
@@ -1748,6 +1753,8 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
         )
         if not cur.rowcount:
             continue  # 同じメールが既にある (添付も保存しない)
+        # どのメールへの返事か (返信画面の「この相手とのやり取り」で使う)
+        save_refs(conn, cur.lastrowid, p.get("in_reply_to", ""), p["references_hdr"])
         items = attachments[i] if attachment_dir is not None else []
         if items:
             # メールの行が入って番号が決まってから移す (一時フォルダからの名前の変更だけ)
@@ -1968,6 +1975,206 @@ def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
         for (mail_id,) in ids:
             remove_attachment_files(attachment_dir, mail_id)
     conn.executemany("DELETE FROM mail_attachments WHERE mail_id = ?", ids)
+    conn.executemany("DELETE FROM mail_refs WHERE mail_id = ?", ids)
     conn.executemany("DELETE FROM mails WHERE id = ?", ids)
     conn.commit()
     return len(ids)
+
+
+# ---------- 同じ相手とのやり取り (返信画面の履歴) ----------
+
+# 返信画面に出すやり取りの最大件数 (新しい順。これより多いときは新しい方だけ出す)
+THREAD_MAX = 30
+# 一覧に出す本文の書き出しの文字数
+THREAD_SNIPPET_CHARS = 100
+# 1通から覚える References の Message-ID の数 (新しい方から。長く続いたやり取りや、
+# 細工したメールで表が大きくならないように)。In-Reply-To は別に3つまで
+REFS_PER_MAIL = 20
+# ヘッダでつながるメールをたどる回数と、見つける数の上限 (返事の返事…と何段もつながって
+# いても見つけられ、細工したメールでも重くならないように)
+THREAD_HOPS = 3
+THREAD_LINK_MAX = 100
+# 前からあるメールのつながりを、どの番号のメールまで調べ終えたか (settings の非公開キー)
+REFS_FILLED_KEY = "mail_state_refs_filled_upto"
+
+_MSGID_RE = re.compile(r"<[^<>\s]{1,250}>")
+# IN (…) の ? の数の上限 (古い SQLite の 999 個より少なくする)
+_IN_MAX = 400
+
+
+def message_ids(value) -> list[str]:
+    """ヘッダ (Message-ID・In-Reply-To・References) の値から <…> の Message-ID を順に取り出す.
+
+    同じものは1つにする。<…> の外の文字 (古いメールソフトが付ける説明など) は使わない。
+    """
+    return list(dict.fromkeys(_MSGID_RE.findall(str(value or ""))))
+
+
+def thread_refs(in_reply_to, references) -> list[str]:
+    """届いたメールが返事として指している Message-ID (覚えておくもの).
+
+    In-Reply-To (ふつうは1つ) と、References の新しい方 (末尾) から REFS_PER_MAIL 個。
+    """
+    ids = message_ids(in_reply_to)[:3] + message_ids(references)[-REFS_PER_MAIL:]
+    return list(dict.fromkeys(ids))
+
+
+def save_refs(conn, mail_id: int, in_reply_to="", references="") -> None:
+    """届いたメールの In-Reply-To・References を mail_refs に覚える (コミットは呼び出し側)."""
+    conn.executemany("INSERT OR IGNORE INTO mail_refs (mail_id, ref) VALUES (?, ?)",
+                     [(mail_id, ref) for ref in thread_refs(in_reply_to, references)])
+
+
+def fill_missing_refs(conn) -> int:
+    """つながり (mail_refs) を覚えていないメールの分を作り、作ったメールの数を返す (起動時).
+
+    この機能より前に取り込んだメールと、自動更新で前の版に戻っていた間に取り込んだメールは
+    mail_refs が無いので、保存してある References の列から作る (In-Reply-To は残って
+    いないので References だけ)。前の回に調べ終えた番号より後のメールだけを見る
+    (メールの番号は使い回されず増える一方なので、同じメールを毎回調べ直さない)。
+    """
+    try:
+        upto = int(_get_state(conn, REFS_FILLED_KEY, "0") or 0)
+    except ValueError:
+        upto = 0
+    newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM mails").fetchone()[0]
+    if newest <= upto:
+        return 0
+    rows = conn.execute(
+        "SELECT id, references_hdr FROM mails m WHERE id > ? AND id <= ?"
+        " AND references_hdr != ''"
+        " AND NOT EXISTS (SELECT 1 FROM mail_refs r WHERE r.mail_id = m.id)",
+        (upto, newest)).fetchall()
+    for mail_id, references in rows:
+        save_refs(conn, mail_id, "", references)
+    _set_state(conn, REFS_FILLED_KEY, newest)
+    conn.commit()
+    return len(rows)
+
+
+def sent_message_id(raw) -> str:
+    """送ったメール (send_reply が返したもの) の Message-ID (読めなければ "")."""
+    if not isinstance(raw, (bytes, bytearray)):
+        return ""
+    try:
+        msg = email.message_from_bytes(bytes(raw), policy=email.policy.default)
+        ids = message_ids(msg.get("Message-ID", ""))
+    except Exception:  # noqa: BLE001  読めなくても送信の結果は変えない
+        return ""
+    return ids[0] if ids else ""
+
+
+def _marks(values) -> str:
+    """IN (…) に入れる ? の並び."""
+    return ",".join("?" * len(values))
+
+
+def _linked_by_headers(conn, seeds: list[int]) -> set[int]:
+    """seeds のメールと Message-ID・In-Reply-To・References でつながるメールの番号.
+
+    返事の元 (指している Message-ID のメール。こちらが送った返信への返事なら、その返信を
+    送ったメール) と、返事 (このメールか、送った返信を指しているメール) を、THREAD_HOPS 段まで
+    たどって集める (seeds 自身は除く・THREAD_LINK_MAX 通まで)。返事の元がここにあれば、
+    同じメールへのほかの返事も2段目で見つかる。
+    返事の元がここに無いメールどうし (Gmail などから大勢に送ったお知らせへの、別々の
+    お客様からの返事など) は、同じメールを指していてもつなげない (別の人のやり取りが混ざるため)。
+    どれも索引で探す (メール全部を読むことはしない)。
+    """
+    seen = set(seeds)
+    found: set[int] = set()
+    frontier = list(seeds)
+    for _ in range(THREAD_HOPS):
+        marks = _marks(frontier)
+        own = list(dict.fromkeys(v for row in conn.execute(
+            f"SELECT message_id, reply_message_id FROM mails WHERE id IN ({marks})", frontier)
+            for v in row if v))
+        refs = list(dict.fromkeys(row[0] for row in conn.execute(
+            f"SELECT ref FROM mail_refs WHERE mail_id IN ({marks})", frontier)))
+        # 1回の問い合わせに入れる数を抑える (古い SQLite は ? を 999 個までしか使えない)
+        refs, own = refs[:_IN_MAX], own[:_IN_MAX]
+        queries = []
+        if refs:
+            # 返事の元 (届いたメール・こちらが送った返信)
+            queries += [("SELECT id FROM mails WHERE message_id IN ({})", refs),
+                        ("SELECT id FROM mails WHERE reply_message_id IN ({})", refs)]
+        if own:
+            # 返事 (このメールか、このメールに送った返信を指しているメール)
+            queries.append(("SELECT mail_id FROM mail_refs WHERE ref IN ({})", own))
+        if not queries:
+            break
+        ids = []
+        for sql, values in queries:
+            ids += [row[0] for row in conn.execute(
+                sql.format(_marks(values)) + " LIMIT ?",
+                (*values, THREAD_LINK_MAX + len(seen)))]
+        new = list(dict.fromkeys(i for i in ids if i not in seen))
+        new = new[:THREAD_LINK_MAX - len(found)]
+        if not new:
+            break
+        found.update(new)
+        seen.update(new)
+        if len(found) >= THREAD_LINK_MAX:
+            break
+        frontier = new
+    return found
+
+
+def _snippet(text, limit: int = THREAD_SNIPPET_CHARS) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+def mail_thread(conn, row, limit: int = THREAD_MAX) -> dict:
+    """同じ相手とのやり取り (返信画面の履歴)。{"thread": [...], "thread_total": 件数}.
+
+    同じアドレス (大文字・小文字は区別しない) から届いたほかのメールと、それらとこのメールに
+    Message-ID・In-Reply-To・References でつながるメール (別のアドレスから届いた同じ話の
+    返事など) を、新しい順に limit 件まで返す。このメール自身は入れない。
+    それぞれに、こちらが送った返信 (本文・送った時刻・送った人・CC) も付ける。
+    届いたメールの本文は書き出しだけ (全文は画面がそのメールを開いて読む)。
+    差出人が空のメールどうしは、同じ相手とはみなさない。
+    thread_total は見つかった全部の件数 (limit より多いことがある)。
+    """
+    mail_id, addr = row["id"], str(row["from_addr"] or "")
+    total, same = 0, []
+    if addr:
+        # 索引 (lower(from_addr), received_at) で探す (新しい順に並んでいるので並べ替えも要らない)
+        total = conn.execute(
+            "SELECT COUNT(*) FROM mails WHERE lower(from_addr) = lower(?) AND id != ?",
+            (addr, mail_id)).fetchone()[0]
+        same = [r[0] for r in conn.execute(
+            "SELECT id FROM mails WHERE lower(from_addr) = lower(?) AND id != ?"
+            " ORDER BY received_at DESC LIMIT ?", (addr, mail_id, limit))]
+    ids = set(same)
+    linked = sorted(_linked_by_headers(conn, [mail_id, *same]))
+    if linked:
+        # 同じアドレスのものは上で数えたので、別のアドレスから届いたものだけ足す
+        others = [r[0] for r in conn.execute(
+            f"SELECT id FROM mails WHERE id IN ({_marks(linked)})"
+            " AND (? = '' OR lower(from_addr) != lower(?))", (*linked, addr, addr))]
+        total += len(others)
+        ids.update(others)
+    if not ids:
+        return {"thread": [], "thread_total": 0}
+    ids = sorted(ids)
+    # 番号で読む (多くても上限の数十通)。並べ替えはここでする (どの索引を使うかを
+    # DB の判断に任せると、メールの少ない DB で全部を読む並べ方になることがあるため)
+    rows = conn.execute(
+        "SELECT id, from_addr, from_name, subject, substr(body, 1, 400) AS head,"
+        " received_at, status, reply_body, replied_at, replied_by, reply_cc"
+        f" FROM mails WHERE id IN ({_marks(ids)})", ids).fetchall()
+    rows = sorted(rows, key=lambda r: (r["received_at"], r["id"]), reverse=True)[:limit]
+    return {"thread": [{
+        "id": r["id"],
+        "from_addr": r["from_addr"],
+        "from_name": r["from_name"],
+        "subject": r["subject"],
+        "received_at": r["received_at"],
+        "status": r["status"],
+        "snippet": _snippet(r["head"]),
+        # こちらが送った返信 (送っていなければ空)
+        "reply_body": r["reply_body"] if r["replied_at"] else "",
+        "replied_at": r["replied_at"],
+        "replied_by": r["replied_by"] if r["replied_at"] else "",
+        "reply_cc": split_addresses(r["reply_cc"]) if r["replied_at"] else [],
+    } for r in rows], "thread_total": total}

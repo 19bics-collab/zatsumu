@@ -169,6 +169,15 @@ async def lifespan(app: FastAPI):
 
             if demo.seed(conn, SCREENSHOT_DIR, MAIL_ATTACHMENT_DIR):
                 print("デモデータを投入しました (管理者トークン: demo-admin)")
+        # 前からあるメールの「どのメールへの返事か」を覚える (返信画面の「この相手との
+        # やり取り」用。前の回に調べ終えたメールは調べない)。失敗しても起動は止めない
+        try:
+            filled = mail.fill_missing_refs(conn)
+            if filled:
+                print(f"メール {filled} 通のつながり（返事の元）を記録しました")
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            print(f"メールのつながりを記録できませんでした: {e}")
         # 保存済みのタイムゾーン設定を適用する
         tz.set_tz(db.get_settings(conn)["timezone"])
     finally:
@@ -2159,10 +2168,14 @@ def purge_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
 # ===================== メール (受信箱・優先度・AI返信) =====================
 
 # 一覧・詳細で使う SELECT (担当の人の名前と、添付ファイルの数も一緒に取る。
-# 添付は保存しなかったものも数える。一覧で 📎 を出す用)
+# 添付は保存しなかったものも数える。一覧で 📎 を出す用)。
+# thread_count は同じ相手 (差出人のアドレス。大文字・小文字は区別しない) から届いた
+# ほかのメールの数 (一覧の「やり取り N件」用。索引 idx_mails_from_lower で数える)
 _MAIL_SELECT = (
     "SELECT m.*, u.name AS assignee_name,"
-    " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count"
+    " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count,"
+    " CASE WHEN m.from_addr = '' THEN 0 ELSE (SELECT COUNT(*) FROM mails t"
+    " WHERE lower(t.from_addr) = lower(m.from_addr) AND t.id != m.id) END AS thread_count"
     " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
 )
 
@@ -2182,6 +2195,8 @@ def _mail_summary(r) -> dict:
         "has_draft": bool(r["draft_reply"]),
         "replied_at": r["replied_at"],
         "attachment_count": r["attachment_count"],
+        # 同じ相手から届いたほかのメールの数 (0 なら一覧に「やり取り」を出さない)
+        "thread_count": r["thread_count"],
         # 種類 (空=未分類。この機能より前に取り込んだメール) と担当
         "category": r["category"],
         "assignee_user_id": r["assignee_user_id"],
@@ -2443,12 +2458,23 @@ def mail_templates_for_mail(
 
 
 @app.get("/api/mail/{mail_id}")
-def mail_detail(mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)):
+def mail_detail(
+    mail_id: int, thread: bool = True, _admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """メールの詳細 (本文・返信・添付・この相手とのやり取り).
+
+    thread=false なら「この相手とのやり取り」を探さない (返信画面が、やり取りの1通の
+    全文を読むとき用)。
+    """
     r = conn.execute(_MAIL_SELECT + " WHERE m.id = ?", (mail_id,)).fetchone()
     if not r:
         raise HTTPException(404, "Not found")
     atts = conn.execute("SELECT * FROM mail_attachments WHERE mail_id = ? ORDER BY id",
                         (mail_id,)).fetchall()
+    # 同じ相手とのやり取り (新しい順。こちらが送った返信も付く)
+    history = (mail.mail_thread(conn, r) if thread
+               else {"thread": [], "thread_total": 0})
     return {
         **_mail_summary(r),
         "to_addr": r["to_addr"],
@@ -2468,6 +2494,7 @@ def mail_detail(mail_id: int, _admin=Depends(require_admin), conn=Depends(get_co
         "attachments": [mail.attachment_info(a) for a in atts if not a["skip_reason"]],
         "skipped_attachments": [mail.skipped_attachment_info(a)
                                 for a in atts if a["skip_reason"]],
+        **history,
     }
 
 
@@ -2666,7 +2693,7 @@ def mail_send(
         conn.execute(
             "UPDATE mails SET status = 'unhandled', reply_subject = '',"
             " reply_body = '', reply_cc = '', reply_bcc = '', replied_at = NULL,"
-            " replied_by = '' WHERE id = ?",
+            " replied_by = '', reply_message_id = '' WHERE id = ?",
             (mail_id,),
         )
 
@@ -2717,6 +2744,12 @@ def mail_send(
         bcc = [a for a in bcc if a.lower() not in refused_keys]
         conn.execute("UPDATE mails SET reply_cc = ?, reply_bcc = ? WHERE id = ?",
                      (", ".join(cc), ", ".join(bcc), mail_id))
+        conn.commit()
+    # 送った返信の Message-ID を残す (相手がこの返信に返事をくれたとき、別のアドレスからでも
+    # 同じやり取りだと分かるように)。控えの保存 (IMAP) の前に確定する (ロックを持ったまま待たない)
+    reply_id = mail.sent_message_id(raw)
+    if reply_id:
+        conn.execute("UPDATE mails SET reply_message_id = ? WHERE id = ?", (reply_id, mail_id))
         conn.commit()
     # 控えを送信済みフォルダへ保存する (Webメールの「送信済み」にも出るように)。
     # 相手には届いているので、ここで失敗しても送信は成功として扱う

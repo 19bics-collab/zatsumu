@@ -72,6 +72,10 @@
          white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
          vertical-align: 1px; }
   .cat.none { background: #f3f4f6; color: #6b7280; }
+  /* 同じ相手から届いたほかのメールの数 (一覧の差出人の横) */
+  .thr-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+               border-radius: 99px; background: #ede9fe; color: #5b21b6; margin-left: .35rem;
+               white-space: nowrap; vertical-align: 1px; font-weight: normal; }
   /* 設定 */
   .settings-grid { display: grid; gap: 1rem;
                    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
@@ -125,7 +129,9 @@
   #m-status { order: -1; flex-basis: 100%; overflow-wrap: anywhere; }
   #m-status:empty { display: none; }
   #m-send { margin-left: auto; }
-  .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; }
+  .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; overflow-wrap: anywhere; }
+  /* 区切りの無い長い件名 (URL など) でも、スマホで横にはみ出さないように折り返す */
+  #m-subject { overflow-wrap: anywhere; }
   .mail-body { white-space: pre-wrap; background: #f9fafb; border: 1px solid var(--line);
                border-radius: 6px; padding: .7rem; max-height: 12rem; overflow: auto;
                font-size: .92rem; color: #374151; }
@@ -165,6 +171,31 @@
   .att-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .att-name small { color: #6b7280; }
   .att button { padding: .4rem .7rem; flex-shrink: 0; }
+  /* この相手とのやり取り (返信モーダル)。開け閉めは details/summary (iPhone でも動く) */
+  .thread { margin-top: .7rem; border: 1px solid var(--line); border-radius: 6px;
+            background: #fff; font-size: .88rem; color: #374151; }
+  .thread[hidden] { display: none; }
+  .thread summary { cursor: pointer; list-style: none; -webkit-tap-highlight-color: rgba(0,0,0,.06); }
+  .thread summary::-webkit-details-marker { display: none; }
+  .thread > summary { padding: .55rem .7rem; font-weight: 600; }
+  .thread summary::before { content: "▸"; display: inline-block; width: 1.1em; color: #6b7280; }
+  .thread details[open] > summary::before, .thread[open] > summary::before { content: "▾"; }
+  .thr-list { padding: 0 .7rem .6rem; display: flex; flex-direction: column; gap: .4rem; }
+  .thr-item { border: 1px solid var(--line); border-radius: 6px; background: #f9fafb; }
+  /* 印 (▸) は左に置く。summary を flex にすると古い iPhone の Safari で崩れるので使わない */
+  .thr-item > summary { position: relative; padding: .45rem .6rem .45rem 1.7rem; }
+  .thr-item > summary::before { position: absolute; left: .6rem; top: .45rem; }
+  .thr-line { display: block; overflow-wrap: anywhere; }
+  .thr-head { color: #6b7280; font-size: .8rem; }
+  .thr-subj { font-weight: 600; }
+  .thr-reply { color: #166534; }
+  .thr-other { color: #b45309; font-size: .8rem; }
+  .thr-full { padding: 0 .6rem .6rem; display: flex; flex-direction: column; gap: .35rem; }
+  .thr-full small { color: #6b7280; overflow-wrap: anywhere; }
+  .thr-full .mail-body { max-height: 16rem; background: #fff; }
+  .thr-full button { align-self: flex-start; padding: .4rem .8rem; }
+  #m-back { align-self: flex-start; padding: .35rem .8rem; margin-bottom: .4rem; }
+  #m-back[hidden] { display: none; }
   /* 添付の画像を大きく見る */
   #att-viewer { z-index: 20; cursor: zoom-out; flex-direction: column; gap: .6rem; }
   #att-viewer img { max-width: 94vw; max-height: 84vh; object-fit: contain;
@@ -189,7 +220,7 @@
                      border-radius: 8px; margin: 0 0 .6rem; padding: .3rem .8rem;
                      box-shadow: 0 1px 3px rgba(0,0,0,.06); }
     .table-wrap td { display: block; border: none; border-bottom: 1px solid #f1f5f9;
-                     padding: .5rem 0; text-align: left; }
+                     padding: .5rem 0; text-align: left; overflow-wrap: anywhere; }
     .table-wrap tr td:last-child { border-bottom: none; }
     .table-wrap td[data-label]::before { content: attr(data-label); display: block;
                      font-weight: 600; color: #6b7280; font-size: .72rem; margin-bottom: .15rem; }
@@ -251,6 +282,8 @@
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
   問い合わせの種類（清掃のご依頼など）と担当は自動で入り、返信画面で変えられます。
+  同じ相手からほかにもメールが届いているときは差出人の横に「やり取り」の件数が出て、
+  返信画面の「この相手とのやり取り」で前のメールと送った返信を見られます。
   受信サーバ（IMAP）とAIの設定は「設定」画面で行ってください。</small></p>
   <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
   理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
@@ -433,10 +466,15 @@
 
 <div id="mail-modal" class="modal" hidden>
   <div class="box">
+    <button id="m-back" class="ghost" hidden>← 前のメールに戻る</button>
     <h2 id="m-subject" style="margin:.2rem 0"></h2>
     <div class="mail-meta" id="m-meta"></div>
     <div class="mail-body" id="m-body"></div>
     <div class="atts" id="m-atts" hidden></div>
+    <details class="thread" id="m-thread" hidden>
+      <summary id="m-thread-title">この相手とのやり取り</summary>
+      <div class="thr-list" id="m-thread-list"></div>
+    </details>
     <div style="display:flex;gap:.6rem;align-items:center;margin-top:.8rem;flex-wrap:wrap">
       <label class="m-field">優先度
         <select id="m-priority">
@@ -607,17 +645,24 @@ async function refreshStatus() {
   try { await checkStatus(); } catch {}   // 失敗時は静かに諦める(アラートは出さない)
 }
 
-// 時刻を会社のタイムゾーン (設定。既定は日本時間) の「10:03」にする。今日でなければ日付も付ける
+// 日時を会社のタイムゾーン (設定。既定は日本時間) で文字にする
+function fmtTz(date, o) {
+  try { return date.toLocaleString("ja-JP", { ...o, timeZone: appSettings.timezone || "Asia/Tokyo" }); }
+  catch { return date.toLocaleString("ja-JP", o); }   // ブラウザが知らないタイムゾーン
+}
+// 時刻を「10:03」にする。今日でなければ日付も付ける
 function fmtTime(iso) {
   const d = new Date(iso);
   if (isNaN(d)) return "";
-  const fmt = (date, o) => {
-    try { return date.toLocaleString("ja-JP", { ...o, timeZone: appSettings.timezone || "Asia/Tokyo" }); }
-    catch { return date.toLocaleString("ja-JP", o); }   // ブラウザが知らないタイムゾーン
-  };
   const day = { month: "numeric", day: "numeric" };
-  const time = fmt(d, { hour: "2-digit", minute: "2-digit" });
-  return fmt(d, day) === fmt(new Date(), day) ? time : `${fmt(d, day)} ${time}`;
+  const time = fmtTz(d, { hour: "2-digit", minute: "2-digit" });
+  return fmtTz(d, day) === fmtTz(new Date(), day) ? time : `${fmtTz(d, day)} ${time}`;
+}
+// 日時を「2026/10/20 14:03」にする (やり取りの一覧用)
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : fmtTz(d, { year: "numeric", month: "numeric", day: "numeric",
+                                     hour: "2-digit", minute: "2-digit" });
 }
 
 // 未対応の数 (受信箱のボタン・タブの名前)、最終受信の時刻、直近の受信の失敗を出す。
@@ -647,6 +692,10 @@ function renderStatus() {
 /* ---------- 受信箱 ---------- */
 // 種類のバッジ。種類が空 (この機能より前に届いたメール) は「未分類」。種類の名前は esc() を通す
 const catBadge = c => c ? `<span class="cat">${esc(c)}</span>` : '<span class="cat none">未分類</span>';
+// 同じ相手 (同じアドレス) から届いたほかのメールの数。返信画面の「この相手とのやり取り」で見られる
+const threadBadge = m => m.thread_count > 0
+  ? ` <span class="thr-badge" title="この相手から届いたほかのメール（返信画面で見られます）">やり取り ${Number(m.thread_count)}件</span>`
+  : "";
 
 let inboxSeq = 0;        // 受信箱を取り直した回数 (前の取り直しの結果で上書きしない用)
 let inboxStale = false;  // 返信画面・設定を開いている間に受信箱が変わった (戻ったときに取り直す)
@@ -735,7 +784,7 @@ function renderInbox(list, keepPlace) {
     return `
     <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
-      <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong></td>
+      <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong>${threadBadge(m)}</td>
       <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
       <td data-label="状態" class="st-${m.status}">${ST[m.status] || m.status}</td>
@@ -877,6 +926,7 @@ async function openMail(id) {
     (m.status === "replied" && m.replied_by ? `（${m.replied_by} が送信）` : "");
   $("m-body").textContent = m.body || "（本文なし）";
   renderAttachments(id, m);
+  renderThread(m);
   $("m-priority").value = m.priority;
   modal.category = m.category || "";
   modal.assigneeId = m.assignee_user_id || null;
@@ -899,7 +949,9 @@ async function openMail(id) {
   $("m-send").textContent = m.status === "replied" ? "返信済み" : "返信を送信";
   $("m-gen").disabled = m.status === "replied";
   $("m-archive").disabled = m.status !== "unhandled";
+  $("m-back").hidden = !modalHistory.length;
   $("mail-modal").hidden = false;
+  $("mail-modal").querySelector(".box").scrollTop = 0;   // やり取りから開いたときは先頭から見せる
   loadModalTemplates(id);   // 一覧は後から入る (開くのを待たせない)
 }
 
@@ -1064,8 +1116,8 @@ $("m-archive").onclick = async () => {
   } catch {}
 };
 
-async function closeModal() {
-  // 編集途中の下書きは閉じるときに自動保存する(送信済みは保存しない)
+// 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき。送信済みは保存しない)
+async function saveDraft() {
   const draft = $("m-draft").value;
   if (modal.id && !$("m-draft").readOnly && draft !== modal.savedDraft) {
     try {
@@ -1073,16 +1125,122 @@ async function closeModal() {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ draft_reply: draft }),
       });
+      modal.savedDraft = draft;
     } catch {}
   }
+}
+
+async function closeModal() {
+  await saveDraft();
   modal = { ...EMPTY_MODAL };
+  modalHistory = [];
   clearAttachments();
+  clearThread();
   $("mail-modal").hidden = true;
   // 開いている間に新着などで受信箱が変わっていたら、ここで取り直す
   if (inboxStale && viewName === "inbox") showInbox({ auto: true });
 }
 $("m-close").onclick = () => closeModal();
 $("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
+
+/* この相手とのやり取り (同じ相手から届いたほかのメールと、こちらが送った返信)。
+   差出人・件名・本文などは外から来た文字なので、必ず esc() を通してから入れる。
+   届いたメールの全文は、その1通を開いたときに読み込む (やり取りが多くても返信画面をすぐ開ける) */
+let threadOpen = false;  // 「この相手とのやり取り」を開いていたか (次に開くメールでも同じにする)
+let threadSeq = 0;       // やり取りを描き直したら増やす (前のメールの読み込み結果を捨てる用)
+let modalHistory = [];   // やり取りから開く前に見ていたメール (「前のメールに戻る」用)
+
+const snip = (s, n = 60) => {
+  const t = String(s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n) + "…" : t;
+};
+
+function clearThread() {
+  threadSeq++;
+  $("m-thread-list").innerHTML = "";
+  $("m-thread").hidden = true;
+}
+
+function renderThread(m) {
+  clearThread();
+  const list = m.thread || [];
+  if (!list.length) return;
+  const total = Math.max(Number(m.thread_total) || 0, list.length);
+  const self = String(m.from_addr || "").toLowerCase();
+  $("m-thread-title").textContent = `この相手とのやり取り（${total}件）`;
+  $("m-thread-list").innerHTML = list.map(t => {
+    const other = String(t.from_addr || "").toLowerCase() !== self;
+    const who = `${t.from_name ? t.from_name + " " : ""}<${t.from_addr || "不明"}>`;
+    return `
+    <details class="thr-item" data-thr="${Number(t.id)}">
+      <summary>
+        <span class="thr-line thr-head">${esc(fmtDate(t.received_at))} ・ <span class="st-${esc(t.status)}">${esc(ST[t.status] || t.status)}</span></span>
+        ${other ? `<span class="thr-line thr-other">別のアドレスから: ${esc(who)}</span>` : ""}
+        <span class="thr-line thr-subj">${esc(t.subject) || "（件名なし）"}</span>
+        <span class="thr-line">📩 ${esc(t.snippet) || "（本文なし）"}</span>
+        ${t.replied_at ? `<span class="thr-line thr-reply">↩ 返信: ${esc(snip(t.reply_body))}</span>` : ""}
+      </summary>
+      <div class="thr-full">
+        <small>届いたメール（${esc(who)}）</small>
+        <div class="mail-body thr-body">読み込み中…</div>
+        ${t.replied_at ? `
+        <small>送った返信（${esc(fmtDate(t.replied_at))}${t.replied_by ? "・" + esc(t.replied_by) : ""}）${(t.reply_cc || []).length ? "<br>CC: " + esc(t.reply_cc.join(", ")) : ""}</small>
+        <div class="mail-body">${esc(t.reply_body) || "（本文なし）"}</div>` : ""}
+        <button class="ghost" data-thr-open="${Number(t.id)}">このメールを開く</button>
+      </div>
+    </details>`;
+  }).join("") +
+    (total > list.length ? `<small>新しい${list.length}件を出しています（前のものは受信箱から探せます）</small>` : "");
+  $("m-thread").open = threadOpen;
+  $("m-thread").hidden = false;
+}
+
+// やり取りの1通を開いたら、届いたメールの全文を読み込む (やり取りは要らないので thread=false)
+async function loadThreadBody(item) {
+  if (item.dataset.loaded) return;
+  item.dataset.loaded = "1";
+  const seq = threadSeq, el = item.querySelector(".thr-body");
+  try {
+    const r = await api(`/api/mail/${Number(item.dataset.thr)}?thread=false`);
+    if (!r.ok) throw new Error(r.status === 404 ? "gone" : "load");
+    const d = await r.json();
+    if (seq !== threadSeq) return;     // 待っている間に別のメールを開いた
+    el.textContent = d.body || "（本文なし）";
+  } catch (e) {
+    if (seq !== threadSeq || e.message === "auth") return;
+    delete item.dataset.loaded;        // 閉じてもう一度開くと読み直す
+    el.textContent = e.message === "gone"
+      ? "このメールは見つかりませんでした（保存日数を過ぎて消えた可能性があります）"
+      : "読み込めませんでした。閉じてもう一度開くと読み直します";
+  }
+}
+// toggle は親に伝わらないので、捕まえる側 (capture) で受け取る
+$("m-thread-list").addEventListener("toggle", e => {
+  if (e.target.matches && e.target.matches(".thr-item") && e.target.open) loadThreadBody(e.target);
+}, true);
+$("m-thread").addEventListener("toggle", e => {
+  if (e.target === $("m-thread")) threadOpen = $("m-thread").open;
+});
+
+// やり取りのメールを開く (書きかけの返信文は保存してから)。「前のメールに戻る」で戻れる
+async function openOtherMail(id, back) {
+  const from = modal.id;
+  if (!from || id === from) return;
+  await saveDraft();
+  if (modal.id !== from) return;       // 保存を待っている間に閉じた
+  if (back) modalHistory.pop(); else modalHistory.push(from);
+  try { await openMail(id); }
+  catch {                              // 開けなかった (apiJson が原因をアラート表示済み)
+    if (back) modalHistory.push(id); else modalHistory.pop();
+  }
+}
+$("m-thread-list").onclick = e => {
+  const b = e.target.closest("button[data-thr-open]");
+  if (b) openOtherMail(Number(b.dataset.thrOpen), false);
+};
+$("m-back").onclick = () => {
+  if (modalHistory.length) openOtherMail(modalHistory[modalHistory.length - 1], true);
+};
 
 /* 添付ファイル。中身は管理者のトークンが無いと受け取れないので、リンクではなく
    fetch で受け取り、ブラウザの中だけの一時的なURL (blob:) で表示・保存する */

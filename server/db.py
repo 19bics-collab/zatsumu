@@ -111,7 +111,17 @@ CREATE TABLE IF NOT EXISTS mails (
     reply_bcc TEXT NOT NULL DEFAULT '',       -- 実際に BCC で送ったアドレス (", " 区切り)
     category TEXT NOT NULL DEFAULT '',        -- 問い合わせの種類 (空=未分類。この機能より前のメール)
     -- 担当の人 (NULL=担当なし)。その人を削除したら担当なしに戻す
-    assignee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+    assignee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    -- 送った返信の Message-ID (相手がその返信に返事をくれたとき、同じやり取りだと分かるように)
+    reply_message_id TEXT NOT NULL DEFAULT ''
+);
+-- 届いたメールが「どのメールへの返事か」を示す Message-ID (In-Reply-To・References の中身)。
+-- 返信画面の「この相手とのやり取り」で、同じ話のメールを探すのに使う (server/mail.py)。
+-- References は長くなることがあるので、新しい方から決まった数だけ残す
+CREATE TABLE IF NOT EXISTS mail_refs (
+    mail_id INTEGER NOT NULL REFERENCES mails(id) ON DELETE CASCADE,
+    ref TEXT NOT NULL,
+    PRIMARY KEY (mail_id, ref)
 );
 -- 受信メールの添付ファイル (server/mail.py)。中身はデータフォルダの
 -- mail_attachments/<mail_id>/<id> に置く (元のファイル名は保存先のパスに使わない)。
@@ -166,6 +176,9 @@ CREATE INDEX IF NOT EXISTS idx_mails_status ON mails(status);
 CREATE INDEX IF NOT EXISTS idx_mail_templates_order ON mail_templates(sort_order, id);
 CREATE INDEX IF NOT EXISTS idx_mail_attachments_mail ON mail_attachments(mail_id);
 CREATE INDEX IF NOT EXISTS idx_mails_received ON mails(received_at);
+-- 同じ相手 (差出人のアドレス。大文字・小文字は区別しない) のメールを新しい順に探す用
+CREATE INDEX IF NOT EXISTS idx_mails_from_lower ON mails(lower(from_addr), received_at);
+CREATE INDEX IF NOT EXISTS idx_mail_refs_ref ON mail_refs(ref);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_open ON sessions(user_id, clock_out);
 CREATE INDEX IF NOT EXISTS idx_sessions_clock_in ON sessions(clock_in);
 CREATE INDEX IF NOT EXISTS idx_screenshots_user_taken ON screenshots(user_id, taken_at);
@@ -383,8 +396,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "assignee_user_id" not in mcols:
         conn.execute("ALTER TABLE mails ADD COLUMN assignee_user_id INTEGER"
                      " REFERENCES users(id) ON DELETE SET NULL")
+    # 送った返信の Message-ID。以前に送った返信は分からないので空のまま
+    # (その返信への返事も、References に元のメールが入っていれば同じやり取りだと分かる)
+    if "reply_message_id" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN reply_message_id TEXT NOT NULL DEFAULT ''")
     # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
+    # 送った返信への返事を探す用 (この列も後から足したので、ここで作る)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_reply_msgid ON mails(reply_message_id)")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
     _seed_mail_templates(conn)
