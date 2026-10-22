@@ -97,12 +97,23 @@ def check_clockout_reminders(conn) -> int:
 
 
 def _mail_tick() -> None:
-    """メールの定期受信と保存期間パージ (ネットワークI/Oを含むため別スレッドで実行)."""
+    """メールの定期受信と保存期間パージ、返事をしていないメールのお知らせ
+    (ネットワークI/Oを含むため別スレッドで実行)."""
     conn = db.connect(DATA_DIR / "zatsumu.db")
     try:
-        mail.check_mail(conn, attachment_dir=MAIL_ATTACHMENT_DIR)
-        mail.purge_old_mails(conn, db.get_settings(conn)["mail_retention_days"],
-                             MAIL_ATTACHMENT_DIR)
+        try:
+            mail.check_mail(conn, attachment_dir=MAIL_ATTACHMENT_DIR)
+            mail.purge_old_mails(conn, db.get_settings(conn)["mail_retention_days"],
+                                 MAIL_ATTACHMENT_DIR)
+        finally:
+            # 受信に失敗しても (受信サーバの不調など)、届いているメールのお知らせは続ける。
+            # お知らせの失敗はここでログに出して止め、受信の失敗 (ループのログに出る) を隠さない
+            try:
+                conn.rollback()
+                mail.remind_unanswered(conn)
+            except Exception as e:  # noqa: BLE001
+                conn.rollback()
+                print(f"返事をしていないメールのお知らせでエラー: {e}")
     finally:
         conn.close()
 
@@ -393,6 +404,11 @@ class SettingsPatch(BaseModel):
     mail_retention_days: int | None = None
     mail_fetch_days: int | None = None
     notify_mail_high: bool | None = None
+    mail_remind_enabled: bool | None = None
+    mail_remind_hours_high: int | None = None
+    mail_remind_hours_normal: int | None = None
+    mail_remind_quiet: str | None = None
+    mail_page_url: str | None = None
     anthropic_api_key: str | None = None
     anthropic_model: str | None = None
     anthropic_classify_model: str | None = None
@@ -832,6 +848,9 @@ def _mask_settings(s: dict) -> dict:
     ] if str(s.get("anthropic_api_key") or "").strip() else []
     # 今使う種類の一覧 (読み取り専用。メール画面の選択欄用。「その他」は必ず入っている)
     s["mail_category_list"] = mail.category_list(s)
+    # 「メール画面のアドレス」が空のときにお知らせに載せるアドレス (読み取り専用。
+    # サーバの環境変数から作る。分からなければ空)
+    s["mail_page_url_auto"] = mail.env_mail_page_url()
     for key in ("smtp_pass", "imap_pass", "anthropic_api_key"):
         s[f"{key}_set"] = bool(s.get(key))
         s[key] = ""
@@ -848,6 +867,8 @@ SETTING_LABELS = {
     "mail_fetch_interval_min": "自動受信の間隔（分）",
     "mail_fetch_days": "初回に遡る日数",
     "mail_retention_days": "メール保存日数",
+    "mail_remind_hours_high": "お知らせまでの時間・優先度[高]（時間）",
+    "mail_remind_hours_normal": "お知らせまでの時間・優先度[中]・[低]（時間）",
 }
 # 変えたら、記録してある受信の失敗を消す設定 (前の設定での失敗は当てにならないので)
 IMAP_SETTING_KEYS = ("imap_host", "imap_port", "imap_user", "imap_pass",
@@ -891,6 +912,9 @@ def patch_settings(
         "mail_fetch_days": (1, 365),
         "notify_mail_high": (0, 1),
         "mail_save_sent": (0, 1),
+        "mail_remind_enabled": (0, 1),
+        "mail_remind_hours_high": mail.REMIND_HOURS_RANGE,
+        "mail_remind_hours_normal": mail.REMIND_HOURS_RANGE,
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -936,6 +960,15 @@ def patch_settings(
             if changes[key] and not mail.valid_model_name(changes[key]):
                 raise HTTPException(
                     400, "モデル名の形式が正しくありません（例: claude-opus-5-5）")
+    # 返事をしていないメールのお知らせ: 止めておく時間帯 ("21-8" の形にそろえる) と、
+    # お知らせに載せるメール画面のアドレス
+    for key, clean in (("mail_remind_quiet", mail.clean_quiet_hours),
+                       ("mail_page_url", mail.clean_page_url)):
+        if key in changes:
+            try:
+                changes[key] = clean(changes[key])
+            except ValueError as e:
+                raise HTTPException(400, str(e))
 
     current = db.get_settings(conn)
     cat_keys = ("mail_categories", "mail_category_keywords", "mail_category_assignees")
@@ -986,6 +1019,28 @@ def test_notify(admin=Depends(require_admin), conn=Depends(get_conn)):
     if not sent:
         raise HTTPException(502, "送信に失敗しました。設定値を確認してください")
     return {"sent": sent}
+
+
+@app.post("/api/settings/test-remind")
+def test_remind(admin=Depends(require_admin), conn=Depends(get_conn)):
+    """返事をしていないメールのお知らせを、保存済みの送り先へ試しに送る (メール画面の設定用).
+
+    いま「未対応」のメールを、届いてからの時間に関係なく見本として並べる
+    (お知らせ済みにはしない)。送れた送り先と、送れなかった送り先を返す。
+    """
+    s = db.get_settings(conn)
+    configured = notify.channels(s)
+    if not configured:
+        raise HTTPException(
+            400, "お知らせの送り先が未設定です。Slack の URL か、通知先メール"
+                 "（「返信の送信（SMTP）」の設定も必要）を入れて「保存」してからお試しください")
+    subject, text = mail.remind_test_message(conn, s, admin["name"])
+    conn.commit()   # 送信 (時間がかかる) の間、DB の書き込みロックを持たない
+    sent = notify.deliver(s, text, subject)
+    if not sent:
+        raise HTTPException(
+            502, "送信できませんでした。Slack の URL・通知先メール・SMTP の設定を確かめてください")
+    return {"sent": sent, "failed": [c for c in configured if c not in sent]}
 
 
 class TestEmailBody(BaseModel):

@@ -23,6 +23,8 @@ IMAP・SMTP ともサーバ証明書を検証し、暗号化できない接続�
 返信画面には、同じ相手 (差出人のアドレス) から届いたほかのメールと、Message-ID・
 In-Reply-To・References でつながるメール (別のアドレスからの同じ話の返事など) を、
 こちらが送った返信と一緒に「この相手とのやり取り」として出す (mail_thread)。
+届いてから決めた時間がたっても「未対応」のままのメールは、定期受信の回ごとに
+Slack・通知先メールへまとめてお知らせする (1通につき1回。夜中などは止めておく。remind_unanswered)。
 """
 import base64
 import email
@@ -32,6 +34,7 @@ import html as html_
 import imaplib
 import json
 import mimetypes
+import os
 import re
 import shutil
 import socket
@@ -1922,6 +1925,304 @@ def _notify_text(s) -> str:
     山括弧を全角へ置き換える (メール通知でもそのまま読める)。
     """
     return str(s or "").replace("<", "＜").replace(">", "＞").strip()
+
+
+# ---------- 返事をしていないメールのお知らせ ----------
+
+# 「何時間たったらお知らせするか」に選べる範囲 (0=その優先度はお知らせしない)
+REMIND_HOURS_RANGE = (0, 168)
+# 1回のお知らせに並べるメールの数 (多いときは「ほかにも N 通」とまとめる)
+REMIND_LIST_MAX = 10
+# 1回でお知らせ済みにするメールの数の上限 (それより多い分は次の回に回す)
+REMIND_SCAN_MAX = 500
+# お知らせを使い始める前 (この機能を入れる前・止めていた間・送り先が無かった間) に
+# 取り込んだメールは、直近この日数の分だけお知らせする。更新した直後などに、
+# 前からたまっていた古いメールをまとめて知らせないため
+REMIND_BACKLOG_DAYS = 7
+# お知らせがこれより長く動いていなければ (止めていた・送り先が無かった・サーバが止まっていた)、
+# 次に動いたときを「使い始め」とみなす
+REMIND_PAUSE = timedelta(days=1)
+# お知らせを使い始めた時刻と、最後に動いた時刻 (settings の非公開キー。UTC ISO)
+REMIND_SINCE_KEY = "mail_state_remind_since"
+REMIND_ACTIVE_KEY = "mail_state_remind_active_at"
+# お知らせに載せる件名・名前の最大文字数 (長いものは縮める)
+REMIND_SUBJECT_MAX_CHARS = 60
+REMIND_NAME_MAX_CHARS = 40
+# 設定「お知らせしない時間帯」の書き方 (全角は先に半角へ直す)。
+# 「21-8」「21〜8」「21時から8時まで」「21:00-8:00」を受け付ける
+_QUIET_RE = re.compile(
+    r"(\d{1,2})(?::00)?時?(?:-|~|〜|ー|−|–|—|から)(\d{1,2})(?::00)?時?(?:まで)?")
+# 設定「メール画面のアドレス」に使える形 (空白・山括弧・| は Slack の書式とぶつかるので不可。制御文字も不可)
+_PAGE_URL_RE = re.compile(r"https?://[^\s<>\"'|\\\x00-\x1f\x7f]+", re.IGNORECASE)
+PAGE_URL_MAX_CHARS = 300
+# 環境変数のドメイン名として使える形 (「:8443」のようなポートも可)
+_DOMAIN_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?")
+
+
+def parse_quiet_hours(text) -> tuple[int, int] | None:
+    """設定「お知らせしない時間帯」(例 "21-8") を (始まりの時, 終わりの時) にする (空なら None).
+
+    全角の数字や「〜」「から」でも読む。24時は0時と同じ。書き方がおかしければ、
+    画面にそのまま出せる日本語の ValueError にする。
+    """
+    s = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text or "")))
+    if not s:
+        return None
+    mt = _QUIET_RE.fullmatch(s)
+    hours = [int(g) for g in mt.groups()] if mt else []
+    if not hours or max(hours) > 24:
+        raise ValueError("お知らせしない時間帯は「21-8」のように、始まりと終わりの時"
+                         "（0〜23）で書いてください（止めないときは空にします）")
+    start, end = (h % 24 for h in hours)
+    if start == end:
+        raise ValueError("お知らせしない時間帯の始まりと終わりが同じです"
+                         "（止めないときは「なし」にしてください）")
+    return start, end
+
+
+def clean_quiet_hours(text) -> str:
+    """設定「お知らせしない時間帯」を保存する形 ("21-8"。止めないなら "") にする."""
+    hours = parse_quiet_hours(text)
+    return f"{hours[0]}-{hours[1]}" if hours else ""
+
+
+def in_quiet_hours(settings: dict, now: datetime) -> bool:
+    """今がお知らせしない時間帯か (集計と同じタイムゾーン。既定は日本時間).
+
+    「21-8」なら 21:00〜7:59 (日をまたぐ)。「12-13」なら 12:00〜12:59。
+    手で DB を書き換えたなどで読めないときは、既定の時間帯 (夜中) を使う。
+    """
+    try:
+        hours = parse_quiet_hours(settings.get("mail_remind_quiet", ""))
+    except ValueError:
+        hours = parse_quiet_hours(db.STR_SETTINGS["mail_remind_quiet"])
+    if not hours:
+        return False
+    start, end = hours
+    h = now.astimezone(tz.TZ).hour
+    return start <= h < end if start < end else (h >= start or h < end)
+
+
+def clean_page_url(value) -> str:
+    """設定「メール画面のアドレス」を確かめる (空はよい。おかしければ日本語の ValueError)."""
+    url = str(value or "").strip()
+    if url and (len(url) > PAGE_URL_MAX_CHARS or not _PAGE_URL_RE.fullmatch(url)):
+        raise ValueError("メール画面のアドレスは「https://」で始まる形で入れてください"
+                         "（例: https://desk.example.com/mail）")
+    return url
+
+
+def env_mail_page_url() -> str:
+    """サーバの設定 (環境変数) から分かるメール画面のアドレス (分からなければ "").
+
+    Docker では、docker-compose.yml が Caddy と同じ ZATSUMU_MAIL_DOMAIN・ZATSUMU_DOMAIN・
+    ZATSUMU_CADDYFILE をアプリにも渡している。メール専用の Caddyfile.mail を使っていれば
+    ZATSUMU_MAIL_DOMAIN、そうでなければ ZATSUMU_DOMAIN で公開している (自動更新係と同じ考え)。
+    localhost のまま (まだ公開していない) なら使わない。
+    """
+    caddyfile = os.environ.get("ZATSUMU_CADDYFILE", "")
+    key = "ZATSUMU_MAIL_DOMAIN" if "mail" in caddyfile.lower() else "ZATSUMU_DOMAIN"
+    domain = os.environ.get(key, "").strip().lower()
+    host = domain.split(":")[0]
+    if (not _DOMAIN_RE.fullmatch(domain) or "." not in host
+            or host == "localhost" or host.endswith(".localhost")):
+        return ""
+    return f"https://{domain}/mail"
+
+
+def mail_page_url(settings: dict) -> str:
+    """お知らせに載せるメール画面のアドレス (設定 → 環境変数。どちらも無ければ "")."""
+    try:
+        url = clean_page_url(settings.get("mail_page_url", ""))
+    except ValueError:   # 手で DB を書き換えたなど
+        url = ""
+    return url or env_mail_page_url()
+
+
+def wait_text(seconds: float) -> str:
+    """待っている時間を「45分」「2時間」「1日3時間」のような言葉にする."""
+    minutes = max(int(seconds // 60), 0)
+    if minutes < 60:
+        return f"{minutes}分"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}時間"
+    days, hours = divmod(hours, 24)
+    return f"{days}日" + (f"{hours}時間" if hours else "")
+
+
+def _remind_part(value, limit: int) -> str:
+    """お知らせに載せる外から来た文字 (件名・差出人など) を、無害な1行にして縮める.
+
+    改行は空白にし、制御文字と文字の向きを変える記号は除く。Slack の特殊な書き方
+    (<!channel> など) にならないよう山括弧は全角にする (_notify_text と同じ)。
+    """
+    text = " ".join(str(value or "").split())
+    text = "".join(ch for ch in text if unicodedata.category(ch) not in ("Cc", "Cf"))
+    text = _notify_text(text)
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+# お知らせに並べるメールを読む SELECT (担当の人の名前も一緒に取る)
+_REMIND_SELECT = (
+    "SELECT m.id, m.subject, m.from_addr, m.from_name, m.priority, m.category,"
+    " m.fetched_at, u.name AS assignee_name"
+    " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
+    " WHERE m.status = 'unhandled'"
+)
+
+
+def _remind_line(r, now: datetime) -> str:
+    """お知らせの1通分 (2行)."""
+    subject = _remind_part(r["subject"], REMIND_SUBJECT_MAX_CHARS) or "(件名なし)"
+    name = _remind_part(r["from_name"], REMIND_NAME_MAX_CHARS)
+    addr = _remind_part(r["from_addr"], 100)
+    sender = f"{name}（{addr}）" if name and addr else (name or addr or "差出人不明")
+    try:
+        waited = wait_text((now - datetime.fromisoformat(r["fetched_at"])).total_seconds())
+    except (TypeError, ValueError):
+        waited = "?"
+    category = _remind_part(r["category"], CATEGORY_NAME_MAX_CHARS) or "未分類"
+    assignee = _remind_part(r["assignee_name"], REMIND_NAME_MAX_CHARS)
+    label = PRIORITY_LABELS.get(r["priority"], "中")
+    return (f"・[{label}] {subject} — {sender}\n"
+            f"　　届いてから{waited}／{category}／"
+            + (f"担当: {assignee}" if assignee else "担当なし"))
+
+
+def _remind_rule(settings: dict) -> str:
+    """どのメールをお知らせしているか (お知らせの最後に添える説明)."""
+    high = int(settings.get("mail_remind_hours_high") or 0)
+    normal = int(settings.get("mail_remind_hours_normal") or 0)
+    parts = []
+    if high:
+        parts.append(f"[高]は{high}時間")
+    if normal:
+        parts.append(f"[中]・[低]は{normal}時間")
+    if not parts:
+        return ""
+    return ("（優先度" + "、".join(parts) + "たっても「未対応」のままのメールを、"
+            "1通につき1回お知らせしています）")
+
+
+def remind_message(rows, settings: dict, now: datetime,
+                   test_by: str | None = None) -> tuple[str, str]:
+    """お知らせの (件名, 本文) を作る。rows は知らせるメール全部 (並べるのは先頭の10通まで).
+
+    test_by を渡すと「テスト送信」用の文にする (その人が送ったこと・時間に関係なく
+    今の未対応のメールを並べていることを書く)。
+    """
+    total = len(rows)
+    url = mail_page_url(settings)
+    lines = []
+    if test_by is not None:
+        who = _remind_part(test_by, REMIND_NAME_MAX_CHARS)
+        lines.append(f"[テスト] 返事をしていないメールのお知らせは、ここに届きます（{who}が送りました）")
+        if not total:
+            lines.append("いまは「未対応」のメールはありません。")
+        else:
+            lines.append("次は、いま「未対応」のメールを、届いてからの時間に関係なく並べた見本です。")
+    if total:
+        lines.append(f"⏰ まだ返事をしていないメールが {total} 通あります")
+        lines += [_remind_line(r, now) for r in rows[:REMIND_LIST_MAX]]
+        if total > REMIND_LIST_MAX:
+            lines.append(f"ほかにも {total - REMIND_LIST_MAX} 通あります。")
+    if url:
+        lines.append(f"受信箱を開く: {url}")
+    if test_by is None:
+        rule = _remind_rule(settings)
+        if rule:
+            lines.append(rule)
+    subject = ("[テスト] 返事をしていないメールのお知らせ" if test_by is not None
+               else f"まだ返事をしていないメールが {total} 通あります")
+    return subject, "\n".join(lines)
+
+
+def _remind_window(conn, now: datetime) -> str:
+    """お知らせの対象にする、取り込んだ時刻の下限 (UTC ISO) を決めて、動いた時刻を記録する.
+
+    お知らせを使い始めた時刻 (初めて動いたとき・しばらく動いていなかった後にまた動いたとき)
+    より後に取り込んだメールと、直近 REMIND_BACKLOG_DAYS 日に取り込んだメールが対象。
+    記録はすぐ確定する (この後の送信の間、書き込みのロックを持たない)。
+    """
+    now_iso = tz.utc_iso(now)
+    since = _get_state(conn, REMIND_SINCE_KEY)
+    active = _get_state(conn, REMIND_ACTIVE_KEY)
+    if not since or not active or active < tz.utc_iso(now - REMIND_PAUSE):
+        since = now_iso
+        _set_state(conn, REMIND_SINCE_KEY, since)
+    _set_state(conn, REMIND_ACTIVE_KEY, now_iso)
+    conn.commit()
+    return min(since, tz.utc_iso(now - timedelta(days=REMIND_BACKLOG_DAYS)))
+
+
+def due_reminders(conn, settings: dict, now: datetime, floor: str) -> list:
+    """今お知らせするメール (未対応・まだ知らせていない・待ち時間を過ぎた) を、優先度の高い順・
+    届いた順に返す (REMIND_SCAN_MAX 通まで).
+
+    待ち時間は、このサーバが取り込んだ時刻 (fetched_at) から数える (差出人が付ける Date は
+    ずれていたり細工されていたりするため。保存日数と同じ考え)。
+    """
+    conds, params = [], []
+    high = int(settings.get("mail_remind_hours_high") or 0)
+    normal = int(settings.get("mail_remind_hours_normal") or 0)
+    if high > 0:
+        conds.append("(m.priority = 1 AND m.fetched_at <= ?)")
+        params.append(tz.utc_iso(now - timedelta(hours=high)))
+    if normal > 0:
+        conds.append("(m.priority != 1 AND m.fetched_at <= ?)")
+        params.append(tz.utc_iso(now - timedelta(hours=normal)))
+    if not conds:
+        return []
+    return conn.execute(
+        _REMIND_SELECT + " AND m.reminded_at IS NULL AND m.fetched_at >= ?"
+        " AND (" + " OR ".join(conds) + ")"
+        " ORDER BY m.priority, m.fetched_at, m.id LIMIT ?",
+        (floor, *params, REMIND_SCAN_MAX)).fetchall()
+
+
+def remind_unanswered(conn, notifier=None, now: datetime | None = None) -> int:
+    """返事をしていない (未対応のままの) メールを、まとめて1通でお知らせする (定期受信の回ごと).
+
+    優先度[高]は mail_remind_hours_high、[中]・[低]は mail_remind_hours_normal 時間たっても
+    未対応のメールが対象で、1通につき1回だけ知らせる (mails.reminded_at)。
+    送り先 (Slack・通知先メール) が無ければ何もしない (お知らせ済みにもしない)。
+    お知らせしない時間帯 (夜中など) は止めておき、終わった後の回にまとめて送る。
+    どこにも送れなかったときもお知らせ済みにせず、次の回にもう一度送る。
+    知らせたメールの数を返す (notifier はテスト用に差し替えられる。notify.deliver と同じ形)。
+    """
+    from . import notify  # 循環を避けるため遅延インポート
+
+    s = db.get_settings(conn)
+    if not s.get("mail_remind_enabled") or not notify.channels(s):
+        return 0
+    now = now or datetime.now(timezone.utc)
+    floor = _remind_window(conn, now)
+    if in_quiet_hours(s, now):
+        return 0
+    rows = due_reminders(conn, s, now, floor)
+    if not rows:
+        return 0
+    subject, text = remind_message(rows, s, now)
+    conn.commit()   # 念のため、書き込みのロックを持ったまま送らない
+    sent = (notifier or notify.deliver)(s, text, subject)
+    if not sent:
+        print("返事をしていないメールのお知らせを送れませんでした (次の回にもう一度送ります)")
+        return 0
+    conn.executemany(
+        "UPDATE mails SET reminded_at = ? WHERE id = ? AND reminded_at IS NULL",
+        [(tz.utc_iso(now), r["id"]) for r in rows])
+    conn.commit()
+    return len(rows)
+
+
+def remind_test_message(conn, settings: dict, admin_name: str,
+                        now: datetime | None = None) -> tuple[str, str]:
+    """「テスト送信」用のお知らせ (今の未対応のメールを、時間に関係なく並べる。読むだけ)."""
+    now = now or datetime.now(timezone.utc)
+    rows = conn.execute(_REMIND_SELECT + " ORDER BY m.priority, m.fetched_at, m.id LIMIT ?",
+                        (REMIND_SCAN_MAX,)).fetchall()
+    return remind_message(rows, settings, now, test_by=admin_name)
 
 
 def remove_orphan_attachment_dirs(conn, attachment_dir) -> int:

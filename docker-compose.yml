@@ -11,6 +11,11 @@ services:
       # 新しい端末からの管理者ログインにメールの確認コードを必須にする (任意)。
       # .env に ZATSUMU_LOGIN_VERIFY_EMAIL=宛先 を書くと有効。空なら無効 (従来どおり)
       ZATSUMU_LOGIN_VERIFY_EMAIL: ${ZATSUMU_LOGIN_VERIFY_EMAIL:-}
+      # 「返事をしていないメールのお知らせ」に載せるメール画面のアドレスを作るのに使う
+      # (Caddy と同じ値。メール画面の設定「メール画面のアドレス」が空のとき)
+      ZATSUMU_DOMAIN: ${ZATSUMU_DOMAIN:-}
+      ZATSUMU_MAIL_DOMAIN: ${ZATSUMU_MAIL_DOMAIN:-}
+      ZATSUMU_CADDYFILE: ${ZATSUMU_CADDYFILE:-}
     volumes:
       - app-data:/data
 

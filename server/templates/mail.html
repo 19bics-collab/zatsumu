@@ -94,6 +94,12 @@
   .set-help { margin: -.3rem 0 .7rem; color: #4b5563; line-height: 1.5; }
   #ai-status { white-space: pre-wrap; font-size: .85rem; overflow-wrap: anywhere; }
   #test-ai-msg { font-size: .85rem; margin-top: .4rem; overflow-wrap: anywhere; }
+  /* 返事をしていないメールのお知らせ (設定)。時間帯の2つの選択欄は、狭い画面では次の行へ */
+  .quiet-row { flex-wrap: wrap; }
+  .quiet-sel { display: flex; align-items: center; gap: .3rem; margin-left: auto; }
+  .set-row .quiet-sel select { width: 5.6rem; }
+  #remind-dest, #test-remind-msg { font-size: .85rem; overflow-wrap: anywhere; }
+  #test-remind-msg { margin-top: .4rem; }
   .set-card textarea { width: 100%; box-sizing: border-box; min-height: 3.6rem;
                        padding: .5rem; border: 1px solid #ccc; border-radius: 6px;
                        font-size: .9rem; font-family: inherit; }
@@ -403,6 +409,42 @@
         <button class="ghost" id="set-test-email">テスト送信</button>
       </div>
       <span id="test-email-msg" style="font-size:.85rem"></span>
+    </div>
+    <div class="set-card" id="remind-card">
+      <h3>返事をしていないメールのお知らせ</h3>
+      <label class="set-row"><span>お知らせする</span>
+        <input type="checkbox" id="set-remind-enabled"></label>
+      <label class="set-row"><span>優先度[高]：届いてから何時間で</span>
+        <input type="number" id="set-remind-high" min="0" max="168"></label>
+      <label class="set-row"><span>優先度[中]・[低]：届いてから何時間で</span>
+        <input type="number" id="set-remind-normal" min="0" max="168"></label>
+      <p class="set-help"><small>届いてからこの時間がたっても「未対応」のままのメールを、
+      Slack やメールでまとめてお知らせします（1通につき1回だけ。返信するか「対応不要」にすれば、お知らせしません）。
+      0 にすると、その優先度のメールはお知らせしません。</small></p>
+      <div class="set-row quiet-row"><span>お知らせしない時間帯</span>
+        <span class="quiet-sel">
+          <select id="set-remind-quiet-from" aria-label="お知らせしない時間帯の始まり"></select>
+          <span>〜</span>
+          <select id="set-remind-quiet-to" aria-label="お知らせしない時間帯の終わり"></select>
+        </span></div>
+      <p class="set-help"><small>夜中などに届かないよう、この時間帯はお知らせを止めておき、
+      終わった後にまとめて送ります（<span id="quiet-tz">日本時間</span>）。「なし」にすると、いつでも送ります。</small></p>
+      <label class="set-row"><span>通知先メール（カンマ区切り）</span>
+        <input type="text" id="set-mail-to" placeholder="boss@example.com" autocomplete="off"></label>
+      <label class="set-row"><span>Slack（Webhook の URL）</span>
+        <input type="password" id="set-slack" placeholder="(未設定)" autocomplete="off"></label>
+      <button class="ghost" id="set-slack-clear" hidden>Slackに送らない（URLを消す）</button>
+      <p class="set-help"><small>お知らせは、ここに入れた送り先に届きます（両方入れれば両方）。
+      通知先メールには「返信の送信（SMTP）」の設定で送ります。どちらも空なら、お知らせはしません。
+      この2つは「優先度[高]の受信を通知」や勤怠管理の通知と共通です。
+      Slack の URL は、Slack の「Incoming Webhook」で作れます（パスワードと同じように扱ってください）。</small></p>
+      <p id="remind-dest"></p>
+      <label class="set-row"><span>メール画面のアドレス</span>
+        <input type="text" id="set-mail-page-url" inputmode="url" autocomplete="off"></label>
+      <p class="set-help"><small>お知らせに載せる、この画面のアドレスです（押すと受信箱を開けます）。<span
+      id="page-url-help"></span></small></p>
+      <button class="ghost" id="set-test-remind">テスト送信</button>
+      <div id="test-remind-msg"></div>
     </div>
     <div class="set-card" id="cat-card">
       <h3>種類と担当（問い合わせの自動仕分け）</h3>
@@ -1488,11 +1530,118 @@ function fillSettings(s) {
   $("set-smtp-pass").value = "";
   $("set-smtp-pass").placeholder = s.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
   $("set-mail-from").value = s.mail_from;
+  fillRemindSettings(s);
   $("set-msg").textContent = "";
   $("test-imap-msg").textContent = "";
   $("test-ai-msg").textContent = "";
   $("test-email-msg").textContent = "";
+  $("test-remind-msg").textContent = "";
 }
+
+/* ---------- 返事をしていないメールのお知らせ (設定) ---------- */
+// 「お知らせしない時間帯」は設定では "21-8" の形 (空 = なし)。画面では2つの選択欄で選ぶ
+function fillQuietSelects(value) {
+  const from = $("set-remind-quiet-from"), to = $("set-remind-quiet-to");
+  if (!from.options.length) {
+    from.add(new Option("なし", ""));
+    for (let h = 0; h < 24; h++) {
+      from.add(new Option(h + "時", String(h)));
+      to.add(new Option(h + "時", String(h)));
+    }
+  }
+  const mt = /^(\d{1,2})-(\d{1,2})$/.exec(value || "");
+  from.value = mt ? String(+mt[1]) : "";
+  to.value = mt ? String(+mt[2]) : "8";
+  to.disabled = !mt;
+}
+$("set-remind-quiet-from").onchange = () => {
+  $("set-remind-quiet-to").disabled = !$("set-remind-quiet-from").value;
+};
+function quietValue() {
+  const from = $("set-remind-quiet-from").value;
+  return from ? `${from}-${$("set-remind-quiet-to").value}` : "";
+}
+function fillRemindSettings(s) {
+  $("set-remind-enabled").checked = !!s.mail_remind_enabled;
+  $("set-remind-high").value = s.mail_remind_hours_high;
+  $("set-remind-normal").value = s.mail_remind_hours_normal;
+  fillQuietSelects(s.mail_remind_quiet);
+  $("quiet-tz").textContent = !s.timezone || s.timezone === "Asia/Tokyo"
+    ? "日本時間" : s.timezone;
+  $("set-mail-to").value = s.mail_to || "";
+  // Slack の URL は、知っている人なら誰でも投稿できるので画面には出さない (変えるときだけ入れる)
+  $("set-slack").value = "";
+  $("set-slack").placeholder = s.slack_webhook_url ? "設定済み（変更時のみ入力）" : "(未設定)";
+  $("set-slack-clear").hidden = !s.slack_webhook_url;
+  $("set-mail-page-url").value = s.mail_page_url || "";
+  const auto = s.mail_page_url_auto || "";
+  const example = location.origin + "/mail";
+  $("set-mail-page-url").placeholder = auto || "例: " + example;
+  $("page-url-help").textContent = auto
+    ? `空のままなら ${auto} を載せます。`
+    : `空のままなら、アドレスは載せません（このページなら ${example} です）。`;
+  renderRemindDest(s);
+}
+// いまの送り先 (保存済みの設定で。お知らせを送るのはこの送り先)
+function renderRemindDest(s) {
+  const names = [];
+  if (s.slack_webhook_url) names.push("Slack");
+  if (s.smtp_host && s.mail_to) names.push("通知先メール");
+  const dest = $("remind-dest");
+  dest.className = names.length ? "" : "error";
+  dest.textContent = names.length
+    ? `いまの送り先: ${names.join("・")}`
+    : "⚠ 送り先（通知先メールか Slack）が入っていないため、お知らせは送られません。" +
+      (s.mail_to && !s.smtp_host ? "通知先メールに送るには「返信の送信（SMTP）」の設定も必要です。" : "");
+}
+// Slack の URL を消す (保存では空の欄は送らないため、消すときはこのボタンで消す)
+$("set-slack-clear").onclick = async () => {
+  if (!confirm("Slack にお知らせを送らないようにしますか？\n\n" +
+      "勤怠管理の Slack 通知や「優先度[高]の受信を通知」も Slack には届かなくなります。" +
+      "\nもう一度使うときは、URL を入れて保存してください。")) return;
+  appSettings = await apiJson("/api/settings", {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slack_webhook_url: "" }),
+  });
+  // Slack のところだけ表示を直す (ほかの欄の、まだ保存していない入力は消さない)
+  $("set-slack").value = "";
+  $("set-slack").placeholder = "(未設定)";
+  $("set-slack-clear").hidden = true;
+  renderRemindDest(appSettings);
+  $("test-remind-msg").style.color = "#0a7d32";
+  $("test-remind-msg").textContent = "Slack の URL を消しました ✓";
+};
+$("set-test-remind").onclick = async () => {
+  const b = $("set-test-remind"), msg = $("test-remind-msg");
+  // 送るのは保存済みの送り先。入れただけでまだ保存していないものは先に保存してもらう
+  if ($("set-slack").value || $("set-mail-to").value !== (loaded.mail_to ?? "")) {
+    msg.style.color = "#c62828";
+    msg.textContent = "送り先の変更がまだ保存されていません。先に下の「保存」を押してから試してください";
+    return;
+  }
+  b.disabled = true;
+  msg.style.color = "#475569";
+  msg.textContent = "送信中...";
+  try {
+    const r = await api("/api/settings/test-remind", { method: "POST" });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      const label = { slack: "Slack", email: "通知先メール" };
+      const sent = (e.sent || []).map(c => label[c] || c).join("・");
+      const failed = (e.failed || []).map(c => label[c] || c).join("・");
+      msg.style.color = failed ? "#b45309" : "#0a7d32";
+      msg.textContent = `${sent} に送りました ✓` +
+        (failed ? `（${failed} には送れませんでした。設定を確かめてください）` : "");
+    } else {
+      msg.style.color = "#c62828";
+      msg.textContent = e.detail || "送信できませんでした";
+    }
+  } catch {
+    msg.style.color = "#c62828";
+    msg.textContent = "通信に失敗しました。もう一度お試しください";
+  }
+  b.disabled = false;
+};
 
 /* AI のモデルの選び方。値はモデル名、表示は分かりやすい言葉にする。
    既定 (おすすめ) はサーバ側の設定の既定値 (server/db.py) と同じにしておく */
@@ -1579,19 +1728,34 @@ $("set-save").onclick = async () => {
     mail_categories: $("set-mail-categories").value,
     mail_category_keywords: $("set-mail-category-keywords").value,
     mail_category_assignees: $("set-mail-category-assignees").value,
+    mail_remind_enabled: $("set-remind-enabled").checked,
+    mail_remind_hours_high: +$("set-remind-high").value,
+    mail_remind_hours_normal: +$("set-remind-normal").value,
+    mail_remind_quiet: quietValue(),
+    mail_page_url: $("set-mail-page-url").value,
   };
-  // SMTP は勤怠画面と共通。この画面で実際に変えた項目だけ送り、
+  // 空の欄は 0 (お知らせしない) と区別がつかないので、入れてもらう
+  for (const id of ["set-remind-high", "set-remind-normal"]) {
+    if ($(id).value.trim() === "") {
+      alert("お知らせまでの時間を入れてください（お知らせしないときは 0）");
+      $(id).focus();
+      return;
+    }
+  }
+  // SMTP と通知先メールは勤怠画面と共通。この画面で実際に変えた項目だけ送り、
   // 表示していた古い値で相手側の変更を消さないようにする
   for (const [key, id] of [["smtp_host", "set-smtp-host"],
                            ["smtp_port", "set-smtp-port"],
                            ["smtp_user", "set-smtp-user"],
-                           ["mail_from", "set-mail-from"]]) {
+                           ["mail_from", "set-mail-from"],
+                           ["mail_to", "set-mail-to"]]) {
     const v = $(id).value;
     if (v !== (loaded[key] ?? "")) body[key] = v;
   }
   if ($("set-imap-pass").value) body.imap_pass = $("set-imap-pass").value;
   if ($("set-anthropic-key").value) body.anthropic_api_key = $("set-anthropic-key").value;
   if ($("set-smtp-pass").value) body.smtp_pass = $("set-smtp-pass").value;
+  if ($("set-slack").value.trim()) body.slack_webhook_url = $("set-slack").value.trim();
   appSettings = await apiJson("/api/settings", {
     method: "PATCH", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

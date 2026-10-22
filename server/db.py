@@ -113,7 +113,9 @@ CREATE TABLE IF NOT EXISTS mails (
     -- 担当の人 (NULL=担当なし)。その人を削除したら担当なしに戻す
     assignee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     -- 送った返信の Message-ID (相手がその返信に返事をくれたとき、同じやり取りだと分かるように)
-    reply_message_id TEXT NOT NULL DEFAULT ''
+    reply_message_id TEXT NOT NULL DEFAULT '',
+    -- 「返事をしていないメール」としてお知らせした時刻 (NULL=まだ。1通につき1回だけ知らせる)
+    reminded_at TEXT
 );
 -- 届いたメールが「どのメールへの返事か」を示す Message-ID (In-Reply-To・References の中身)。
 -- 返信画面の「この相手とのやり取り」で、同じ話のメールを探すのに使う (server/mail.py)。
@@ -219,6 +221,10 @@ INT_SETTINGS = {
     "mail_fetch_days": 7,          # 初回取り込み時に遡る日数
     "notify_mail_high": 1,         # 優先度[高]のメール受信を通知するか
     "mail_save_sent": 1,           # 送信した返信を IMAP の送信済みフォルダにも保存するか
+    # 返事をしていない (未対応のままの) メールを Slack/メールでお知らせするか (server/mail.py)
+    "mail_remind_enabled": 1,
+    "mail_remind_hours_high": 2,     # 優先度[高]は、届いてから何時間でお知らせするか (0=しない)
+    "mail_remind_hours_normal": 24,  # 優先度[中]・[低]は、何時間でお知らせするか (0=しない)
 }
 
 # 全社設定の既定値 (文字列)
@@ -271,6 +277,12 @@ STR_SETTINGS = {
     # 種類ごとの担当 (1行に「種類: 名前」)。その種類のメールが届いたら、登録されている
     # 同じ名前の人を担当にする (空なら担当は自動で入らない)
     "mail_category_assignees": "",
+    # 返事をしていないメールのお知らせを止めておく時間帯 (「始まりの時-終わりの時」。
+    # 集計と同じタイムゾーン=既定は日本時間。日をまたいでよい。空なら止めない)。
+    # 止めている間の分は、時間帯が終わった後にまとめて送る
+    "mail_remind_quiet": "21-8",
+    # お知らせに載せるメール画面のアドレス (空ならサーバの設定 ZATSUMU_MAIL_DOMAIN などから作る)
+    "mail_page_url": "",
 }
 
 # 後方互換: 旧名を参照しているコード向け
@@ -400,6 +412,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # (その返信への返事も、References に元のメールが入っていれば同じやり取りだと分かる)
     if "reply_message_id" not in mcols:
         conn.execute("ALTER TABLE mails ADD COLUMN reply_message_id TEXT NOT NULL DEFAULT ''")
+    # 返事をしていないメールのお知らせ。以前に取り込んだメールも NULL (まだ知らせていない) だが、
+    # 古いものをまとめて知らせないよう、知らせるかどうかは取り込んだ時刻で決める (server/mail.py)
+    if "reminded_at" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN reminded_at TEXT")
     # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
     # 送った返信への返事を探す用 (この列も後から足したので、ここで作る)
