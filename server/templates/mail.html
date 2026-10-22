@@ -96,6 +96,9 @@
   .modal .box { background: #fff; padding: 1.2rem; border-radius: 8px;
                 max-width: 94vw; max-height: 94vh; display: flex; flex-direction: column;
                 min-width: 320px; width: 680px; overflow: auto; }
+  /* 中身が画面より長いとき (スマホ・添付ファイルが多いとき) は、本文の欄を
+     縮めずに、返信画面ごとスクロールさせる */
+  .modal .box > * { flex-shrink: 0; }
   .modal .bar { display: flex; gap: .6rem; align-items: center; }
   .modal .bar span { flex: 1; color: #374151; font-size: .9rem; }
   .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; }
@@ -121,6 +124,23 @@
   .rcpt-all { display: flex; align-items: center; gap: .4rem; }
   .rcpt-all[hidden] { display: none; }
   .rcpt-all input { width: 1.2rem; height: 1.2rem; margin: 0; }
+  /* 添付ファイル (返信モーダル) */
+  .atts { margin-top: .6rem; display: flex; flex-direction: column; gap: .4rem;
+          font-size: .88rem; color: #374151; }
+  .atts[hidden] { display: none; }
+  .att { display: flex; align-items: center; gap: .6rem; border: 1px solid var(--line);
+         border-radius: 6px; padding: .4rem .6rem; background: #fff; }
+  .att.skipped { background: #f9fafb; color: #6b7280; }
+  .att-thumb { width: 56px; height: 56px; flex: 0 0 56px; object-fit: cover;
+               border-radius: 4px; background: #f3f4f6; cursor: zoom-in; }
+  .att-icon { flex: 0 0 56px; text-align: center; font-size: 1.5rem; }
+  .att-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .att-name small { color: #6b7280; }
+  .att button { padding: .4rem .7rem; flex-shrink: 0; }
+  /* 添付の画像を大きく見る */
+  #att-viewer { z-index: 20; cursor: zoom-out; flex-direction: column; gap: .6rem; }
+  #att-viewer img { max-width: 94vw; max-height: 84vh; object-fit: contain;
+                    background: #fff; border-radius: 4px; }
   @media (max-width: 720px) {
     html { font-size: 15px; }
     main { padding: .8rem; }
@@ -242,6 +262,7 @@
         <input type="checkbox" id="set-notify-mail-high"></label>
       <p><small>共有の受信箱（例: info@…）をIMAPで定期取得し、「受信箱」に優先度順で
       表示します。受信箱のメールは変更しません（既読も付きません）。
+      添付ファイルもこのサーバに保存し、「メール保存日数」を過ぎるとメールと一緒に消えます。
       この画面から送った返信は、同じメールボックスの送信済みフォルダにも控えを残すので、
       Webメールの「送信済み」からも見られます。フォルダが見つからないときは
       「IMAP接続テスト」の結果を見て、Webメールで使っているフォルダ名を入れてください。</small></p>
@@ -345,6 +366,7 @@
     <h2 id="m-subject" style="margin:.2rem 0"></h2>
     <div class="mail-meta" id="m-meta"></div>
     <div class="mail-body" id="m-body"></div>
+    <div class="atts" id="m-atts" hidden></div>
     <div style="display:flex;gap:.6rem;align-items:center;margin-top:.8rem;flex-wrap:wrap">
       <label style="font-size:.85rem;color:#374151">優先度
         <select id="m-priority" style="padding:.35rem;border:1px solid #ccc;border-radius:6px">
@@ -382,6 +404,11 @@
       <button id="m-close" class="ghost">閉じる</button>
     </div>
   </div>
+</div>
+
+<div id="att-viewer" class="modal" hidden>
+  <img id="att-viewer-img" alt="">
+  <button class="ghost">閉じる</button>
 </div>
 
 <script>
@@ -497,7 +524,7 @@ async function showInbox() {
     <tr class="mail-row ${m.status === "unhandled" ? "" : "done"}" data-id="${m.id}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
       <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong></td>
-      <td data-label="件名">${esc(m.subject) || "（件名なし）"}</td>
+      <td data-label="件名">${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
       <td data-label="状態" class="st-${m.status}">${ST[m.status] || m.status}</td>
       <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
@@ -545,6 +572,7 @@ async function openMail(id) {
     `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${ST[m.status] || m.status}` +
     (m.status === "replied" && m.replied_by ? `（${m.replied_by} が送信）` : "");
   $("m-body").textContent = m.body || "（本文なし）";
+  renderAttachments(id, m);
   $("m-priority").value = m.priority;
   $("m-reason").textContent = m.priority_reason
     ? `判定理由: ${m.priority_reason}（${{ ai: "AI", rule: "ルール", manual: "手動" }[m.priority_source] || m.priority_source}）` : "";
@@ -676,10 +704,122 @@ async function closeModal() {
     } catch {}
   }
   modal = { ...EMPTY_MODAL };
+  clearAttachments();
   $("mail-modal").hidden = true;
 }
 $("m-close").onclick = () => closeModal();
 $("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
+
+/* 添付ファイル。中身は管理者のトークンが無いと受け取れないので、リンクではなく
+   fetch で受け取り、ブラウザの中だけの一時的なURL (blob:) で表示・保存する */
+const PREVIEW_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+let attList = [];        // 開いているメールの添付 (保存したもの)
+let attUrls = [];        // 縮小画像の一時的なURL (閉じるときに消す)
+let attSeq = 0;          // メールを開き直したら増やす (前のメールの読み込み結果を捨てる用)
+
+function fmtSize(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function clearAttachments() {
+  attSeq++;
+  attUrls.forEach(u => URL.revokeObjectURL(u));
+  attUrls = [];
+  attList = [];
+  $("m-atts").innerHTML = "";
+  $("m-atts").hidden = true;
+  closeViewer();
+}
+
+function renderAttachments(id, m) {
+  clearAttachments();
+  attList = m.attachments || [];
+  const skipped = m.skipped_attachments || [];
+  if (!attList.length && !skipped.length) return;
+  // ファイル名・理由は外から来た文字なので esc() を通す。番号は数字にしてから入れる
+  $("m-atts").innerHTML =
+    `<small>📎 添付ファイル（${attList.length + skipped.length}）</small>` +
+    attList.map(a => `
+    <div class="att">
+      ${a.previewable ? `<img class="att-thumb" data-att="${Number(a.id)}" alt="${esc(a.filename)}">`
+                      : `<span class="att-icon">📄</span>`}
+      <div class="att-name">${esc(a.filename)}<br><small>${esc(fmtSize(a.size))}</small></div>
+      <button class="ghost" data-att-dl="${Number(a.id)}">ダウンロード</button>
+    </div>`).join("") +
+    skipped.map(a => `
+    <div class="att skipped">
+      <span class="att-icon">⚠</span>
+      <div class="att-name">${esc(a.filename)}${a.size ? ` <small>（${esc(fmtSize(a.size))}）</small>` : ""}<br>
+        <small>${esc(a.reason)}</small></div>
+    </div>`).join("") +
+    (skipped.length ? "<small>保存していないファイルは、Webメールで元のメールを開くと見られます。</small>" : "");
+  $("m-atts").hidden = false;
+  loadThumbnails(id, attSeq);
+}
+
+// 添付ファイルを受け取って Blob にする。画像 (png/jpeg/gif/webp) の表示用以外は
+// 必ず「ただのデータ」として扱う (HTML などをこの画面の中で開いてしまわないように)
+async function fetchAttachment(mailId, a, preview) {
+  const r = await api(`/api/mail/${mailId}/attachments/${Number(a.id)}` + (preview ? "?inline=1" : ""));
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.detail || "添付ファイルを受け取れませんでした");
+  }
+  const type = preview && PREVIEW_TYPES.includes(a.content_type) ? a.content_type
+    : "application/octet-stream";
+  return new Blob([await r.arrayBuffer()], { type });
+}
+
+// 縮小画像は1つずつ読み込む (写真がたくさんあってもスマホのメモリを使いすぎないように)
+async function loadThumbnails(mailId, seq) {
+  for (const a of attList.filter(x => x.previewable)) {
+    let url;
+    try { url = URL.createObjectURL(await fetchAttachment(mailId, a, true)); }
+    catch { continue; }                // 出せなければ縮小画像なし (ダウンロードはできる)
+    if (seq !== attSeq) { URL.revokeObjectURL(url); return; }   // 待っている間に閉じた
+    attUrls.push(url);
+    const img = $("m-atts").querySelector(`img[data-att="${Number(a.id)}"]`);
+    if (img) img.src = url;
+  }
+}
+
+async function downloadAttachment(button) {
+  const a = attList.find(x => x.id === +button.dataset.attDl);
+  if (!a || !modal.id) return;
+  button.disabled = true; button.textContent = "準備中…";
+  try {
+    const url = URL.createObjectURL(await fetchAttachment(modal.id, a, false));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = a.filename || "添付ファイル";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // すぐ消すと保存が始まる前に消えてしまうブラウザがあるので、少し待ってから消す
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    if (e.message !== "auth") alert(e.message);
+  }
+  button.disabled = false; button.textContent = "ダウンロード";
+}
+
+$("m-atts").onclick = e => {
+  const dl = e.target.closest("button[data-att-dl]");
+  if (dl) { downloadAttachment(dl); return; }
+  const img = e.target.closest("img[data-att]");
+  if (img && img.src) {                // 縮小画像を押すと大きく見られる
+    $("att-viewer-img").src = img.src;
+    $("att-viewer-img").alt = img.alt;
+    $("att-viewer").hidden = false;
+  }
+};
+function closeViewer() {
+  $("att-viewer").hidden = true;
+  $("att-viewer-img").removeAttribute("src");
+}
+$("att-viewer").onclick = () => closeViewer();
 
 /* 定型文を入れる。差し込み ({相手の名前} など) はサーバがこのメール用に置き換え済み */
 let modalTemplates = [];

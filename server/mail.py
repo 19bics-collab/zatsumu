@@ -12,6 +12,8 @@ IMAP の送信済みフォルダへ保存する (Webメール等からも送っ�
 「全員に返信」では元メールの To・Cc の人 (自分たちを除く) を CC の候補にし、
 画面で直した CC・BCC を確かめてから送る (BCC はヘッダに出さず、送り先にだけ入れる)。
 IMAP・SMTP ともサーバ証明書を検証し、暗号化できない接続ではパスワードを送らない。
+受信メールの添付ファイルは、メールを DB に入れた後でデータフォルダに保存する
+(元のファイル名は保存先のパスに使わない。大きすぎるものは名前と理由だけ残す)。
 """
 import base64
 import email
@@ -20,12 +22,17 @@ import hashlib
 import html as html_
 import imaplib
 import json
+import mimetypes
 import re
+import shutil
 import ssl
 import threading
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
+from pathlib import Path
+from urllib.parse import quote
 from email.utils import (
     format_datetime,
     getaddresses,
@@ -132,6 +139,257 @@ def parse_message(raw: bytes) -> dict:
         "received_at": tz.utc_iso(received),
         "references_hdr": str(msg.get("References", "")).strip(),
     }
+
+
+# ---------- 添付ファイル ----------
+
+_MB = 1024 * 1024
+# 1つのファイルの上限と、1通のメールの合計の上限 (超えた分は保存せず、名前と理由だけ残す)。
+# サーバのディスクを使い切らないため
+ATTACHMENT_MAX_BYTES = 15 * _MB
+ATTACHMENT_TOTAL_MAX_BYTES = 40 * _MB
+# 1通で残す添付の数の上限 (これより多い分はまとめて「ほか◯個」と残す)
+ATTACHMENT_MAX_COUNT = 50
+# 画面に出すファイル名の最大文字数 (拡張子は残して縮める)
+ATTACHMENT_NAME_MAX_CHARS = 150
+# 入れ子の深さの上限 (細工したメールで処理が終わらないのを防ぐ)
+_ATTACHMENT_MAX_DEPTH = 20
+
+# 画面で縮小画像を出してよい種類 (中身の先頭を見て、本当にその画像だと確かめたものだけ)。
+# SVG や HTML は中に命令 (スクリプト) を書けるので、ここには入れない
+PREVIEW_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+OCTET_STREAM = "application/octet-stream"
+_CONTENT_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}")
+
+
+def skip_reason_text(code: str) -> str:
+    """保存しなかった理由を、画面にそのまま出せる日本語にする."""
+    return {
+        "too_large": "大きすぎるため保存していません"
+                     f"（1つ{ATTACHMENT_MAX_BYTES // _MB}MBまで）",
+        "total_too_large": "大きすぎるため保存していません"
+                           f"（1通で合わせて{ATTACHMENT_TOTAL_MAX_BYTES // _MB}MBまで）",
+        "too_many": f"数が多すぎるため保存していません（1通で{ATTACHMENT_MAX_COUNT}個まで）",
+        "save_failed": "サーバに保存できませんでした",
+    }.get(code, "保存していません")
+
+
+def clean_filename(name, content_type: str = "") -> str:
+    """添付ファイルの名前を、画面に出せる1行の名前に整える (保存先のパスには使わない).
+
+    文字コード付きの名前 (RFC 2231 / =?UTF-8?…?=) は読み込みの時点で戻っている。
+    フォルダの区切りがあれば最後の部分だけにし、改行などの制御文字と、文字の向きを
+    変える記号 (「…fdp.exe」を「…exe.pdf」に見せかけられる) を除く。
+    Mac から届く濁点の分かれた名前は、普通の文字にまとめる。
+    """
+    name = unicodedata.normalize("NFC", str(name or ""))
+    name = re.split(r"[\\/]", name)[-1]
+    name = "".join(ch for ch in name if unicodedata.category(ch) not in ("Cc", "Cf"))
+    name = " ".join(name.split()).strip(" .")
+    if len(name) > ATTACHMENT_NAME_MAX_CHARS:
+        stem, dot, ext = name.rpartition(".")
+        if dot and stem and 0 < len(ext) <= 10:
+            name = stem[:ATTACHMENT_NAME_MAX_CHARS - len(ext) - 1].rstrip(" .") + "." + ext
+        else:
+            name = name[:ATTACHMENT_NAME_MAX_CHARS].rstrip(" .")
+    if not name:
+        ext = "" if content_type == OCTET_STREAM else (
+            mimetypes.guess_extension(content_type or "") or "")
+        name = "添付ファイル" + ext
+    return name
+
+
+def _sniff_image(data: bytes) -> str:
+    """中身の先頭から画像の種類を調べる (縮小画像を出してよい種類だけ。違えば "")."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _attachment_parts(part, body, depth: int = 0):
+    """メールの中から添付ファイルの部品を順に返す.
+
+    添付 (Content-Disposition: attachment) と、名前の付いた本文以外の部品
+    (本文の中に貼り付けた画像など) が対象。名前の無い本文の断片や HTML 版の本文は除く。
+    添付された転送メール (.eml) は、中を開かずに1つのファイルとして扱う。
+    """
+    if depth > _ATTACHMENT_MAX_DEPTH:
+        return
+    disposition = part.get_content_disposition()
+    if part.get_content_type() == "message/rfc822" and disposition == "attachment":
+        yield part
+        return
+    if part.is_multipart():
+        for sub in part.get_payload():
+            yield from _attachment_parts(sub, body, depth + 1)
+        return
+    if part is body:
+        return
+    if disposition == "attachment" or part.get_filename():
+        yield part
+
+
+def _part_bytes(part) -> bytes:
+    """部品の中身 (base64 などを戻したバイト列)."""
+    if part.get_content_type() == "message/rfc822":
+        return part.get_payload(0).as_bytes()
+    return part.get_payload(decode=True) or b""
+
+
+def extract_attachments(raw: bytes) -> list[dict]:
+    """RFC822 のバイト列から添付ファイルを取り出す.
+
+    1件ごとに {filename, content_type, size, data, skip} の dict を返す。
+    skip が空でないものは保存しない (大きすぎる・数が多すぎる。data は None)。
+    1つが ATTACHMENT_MAX_BYTES より大きいもの、1通の合計が
+    ATTACHMENT_TOTAL_MAX_BYTES を超える分は保存しない。
+    """
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    body = None
+    try:
+        body = msg.get_body(preferencelist=("plain", "html"))
+    except Exception:  # noqa: BLE001  壊れた multipart は本文なし扱い (_extract_body と同じ)
+        pass
+    out: list[dict] = []
+    total, extra = 0, 0
+    for part in _attachment_parts(msg, body):
+        if len(out) >= ATTACHMENT_MAX_COUNT:
+            extra += 1   # 中身は読まずに数えるだけ
+            continue
+        content_type = part.get_content_type()
+        if not _CONTENT_TYPE_RE.fullmatch(content_type):
+            content_type = OCTET_STREAM
+        try:
+            filename = part.get_filename()
+        except Exception:  # noqa: BLE001  壊れたヘッダは名前なし扱い
+            filename = None
+        item = {"filename": "", "content_type": content_type, "size": 0,
+                "data": None, "skip": ""}
+        try:
+            data = _part_bytes(part)
+        except Exception as e:  # noqa: BLE001  中身を戻せない部品は「保存できなかった」と残す
+            print(f"添付ファイルを読み取れませんでした: {e}")
+            item.update(skip="save_failed")
+            data = None
+        if data is not None:
+            item["size"] = len(data)
+            # 画像は名乗っている種類ではなく中身で決める (画像を名乗った HTML などを
+            # 画像として扱わない・種類の書き間違いの写真は画像として見せる)
+            image_type = _sniff_image(data)
+            if image_type:
+                item["content_type"] = image_type
+            elif content_type in PREVIEW_TYPES:
+                item["content_type"] = OCTET_STREAM
+            if len(data) > ATTACHMENT_MAX_BYTES:
+                item["skip"] = "too_large"
+            elif total + len(data) > ATTACHMENT_TOTAL_MAX_BYTES:
+                item["skip"] = "total_too_large"
+            else:
+                item["data"] = data
+                total += len(data)
+        item["filename"] = clean_filename(filename, item["content_type"])
+        out.append(item)
+    if extra:
+        out.append({"filename": f"ほか{extra}個のファイル", "content_type": OCTET_STREAM,
+                    "size": 0, "data": None, "skip": "too_many"})
+    return out
+
+
+def _mail_attachment_dir(attachment_dir, mail_id: int) -> Path:
+    return Path(attachment_dir) / str(int(mail_id))
+
+
+def save_attachments(conn, attachment_dir, mail_id: int, items: list[dict],
+                     now: str) -> None:
+    """取り出した添付ファイルを保存する (メールの行を入れた後、同じトランザクションで呼ぶ).
+
+    中身は attachment_dir/<mail_id>/<添付の id> に置く。保存しなかったもの
+    (大きすぎる等) は名前と理由だけを残す。ディスクに書けなかったときもメールは
+    取り込み、その添付は「保存できませんでした」として残す。
+    """
+    if not items:
+        return
+    folder = _mail_attachment_dir(attachment_dir, mail_id)
+    # メールの番号は確定した後は使い回さないので、フォルダが既にあるのは
+    # 前に取り込みの途中で止まったときの残りもの (中身は DB に無い)
+    shutil.rmtree(folder, ignore_errors=True)
+    for item in items:
+        cur = conn.execute(
+            "INSERT INTO mail_attachments (mail_id, filename, content_type, size,"
+            " path, skip_reason, created_at) VALUES (?, ?, ?, ?, '', ?, ?)",
+            (mail_id, item["filename"], item["content_type"], item["size"],
+             item["skip"], now),
+        )
+        if item["skip"]:
+            continue
+        att_id = cur.lastrowid
+        dest = folder / str(att_id)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(item["data"])
+        except OSError as e:  # ディスクがいっぱい等
+            print(f"添付ファイルを保存できませんでした (メール {mail_id}): {e}")
+            try:
+                dest.unlink(missing_ok=True)   # 書きかけを残さない
+            except OSError:
+                pass
+            conn.execute("UPDATE mail_attachments SET skip_reason = 'save_failed'"
+                         " WHERE id = ?", (att_id,))
+            continue
+        conn.execute("UPDATE mail_attachments SET path = ? WHERE id = ?",
+                     (f"{int(mail_id)}/{att_id}", att_id))
+
+
+def remove_attachment_files(attachment_dir, mail_id: int) -> None:
+    """そのメールの添付ファイルをフォルダごと消す (無ければ何もしない)."""
+    folder = _mail_attachment_dir(attachment_dir, mail_id)
+    try:
+        shutil.rmtree(folder)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"添付ファイルを削除できませんでした ({folder}): {e}")
+
+
+def attachment_file(attachment_dir, rel_path: str) -> Path | None:
+    """DB の path (「<mail_id>/<id>」) から実際のファイルの場所を返す (形が違えば None)."""
+    if not re.fullmatch(r"\d+/\d+", str(rel_path or "")):
+        return None
+    return Path(attachment_dir) / rel_path
+
+
+def attachment_info(row) -> dict:
+    """画面に返す添付ファイルの情報 (保存したもの)."""
+    return {"id": row["id"], "filename": row["filename"],
+            "content_type": row["content_type"], "size": row["size"],
+            "previewable": row["content_type"] in PREVIEW_TYPES}
+
+
+def skipped_attachment_info(row) -> dict:
+    """画面に返す「保存しなかった添付ファイル」の情報."""
+    return {"filename": row["filename"], "size": row["size"],
+            "reason": skip_reason_text(row["skip_reason"])}
+
+
+def content_disposition(kind: str, filename: str) -> str:
+    """ダウンロード用の Content-Disposition (日本語の名前は filename* で送る).
+
+    filename= には、古いブラウザ向けに英数字だけの名前を入れる。
+    """
+    ascii_ok = filename.isascii() and filename.isprintable() and not any(
+        c in filename for c in '"\\;')
+    if ascii_ok:
+        fallback = filename
+    else:
+        ext = filename.rpartition(".")[2] if "." in filename else ""
+        fallback = "attachment" + (f".{ext}" if re.fullmatch(r"[A-Za-z0-9]{1,10}", ext) else "")
+    return f"{kind}; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 # ---------- 優先度分類 ----------
@@ -947,12 +1205,13 @@ def should_save_sent(settings: dict) -> bool:
         bool(int(settings.get("mail_save_sent", 1) or 0))
 
 
-def fetch_new_mail(conn, settings: dict) -> list[dict]:
+def fetch_new_mail(conn, settings: dict, attachment_dir=None) -> list[dict]:
     """IMAP から新着メールを取り込み、追加した行 (分類済み) を返す.
 
     UIDVALIDITY と最終取得 UID を settings テーブルに記録して差分だけ読む。
     重複は message_id の UNIQUE 制約でも防ぐ (INSERT OR IGNORE)。
     受信箱は変更しない (readonly・既読フラグも付けない)。
+    attachment_dir を渡すと、新しく入れたメールの添付ファイルをそこに保存する。
     """
     folder = settings.get("imap_folder") or "INBOX"
     m = _imap_connect(settings)
@@ -1008,7 +1267,7 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
     own = {a.strip().lower()
            for a in (settings.get("mail_from", ""), settings.get("smtp_user", ""))
            if a and a.strip()}
-    parsed: list[tuple[int, dict]] = []
+    parsed: list[tuple[int, dict, bytes]] = []
     for uid, raw in raws:
         try:
             p = parse_message(raw)
@@ -1022,7 +1281,9 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
         ).fetchone()
         if known:
             continue
-        parsed.append((uid, p))
+        # 添付ファイルは DB に入れるときに raw から取り出す
+        # (全部のメールの添付を先に取り出して持っておくと、メモリを多く使うため)
+        parsed.append((uid, p, raw))
 
     # AI 分類・下書き生成 (時間のかかるネットワーク処理) を INSERT の前に
     # すべて済ませる。書き込みトランザクションを長く保持すると、他の接続の
@@ -1033,7 +1294,7 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
     # 使わずルール判定・定型文にする。1通ごとに待ち時間の上限まで待つと、
     # 新着が多いときに受信処理が何時間も止まるため (失敗の理由は記録済み)
     ai_settings, ai_failures = settings, 0
-    for uid, p in parsed:
+    for uid, p, raw in parsed:
         ai_on = _ai_ready(ai_settings)
         prio, reason, source = classify_priority(ai_settings, p)
         draft, draft_source, drafted_at = "", "", None
@@ -1047,45 +1308,67 @@ def fetch_new_mail(conn, settings: dict) -> list[dict]:
                 print("AIが続けて失敗したため、今回の残りのメールは"
                       "ルール判定・定型文で処理します")
                 ai_settings = {**settings, "anthropic_api_key": ""}
-        rows.append((uid, p, prio, reason, source, draft, draft_source,
+        rows.append((uid, p, raw, prio, reason, source, draft, draft_source,
                      drafted_at))
 
     added: list[dict] = []
-    for uid, p, prio, reason, source, draft, draft_source, drafted_at in rows:
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO mails (message_id, imap_uid, from_addr,"
-            " from_name, to_addr, cc_addr, subject, body, received_at, fetched_at,"
-            " priority, priority_reason, priority_source, draft_reply,"
-            " draft_source, draft_generated_at, references_hdr)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
-             p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
-             reason, source, draft, draft_source, drafted_at, p["references_hdr"]),
-        )
-        if cur.rowcount:
+    # 今回添付ファイルを書いたメール (途中で失敗したらファイルも消して元に戻すため)
+    written: list[int] = []
+    try:
+        for uid, p, raw, prio, reason, source, draft, draft_source, drafted_at in rows:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO mails (message_id, imap_uid, from_addr,"
+                " from_name, to_addr, cc_addr, subject, body, received_at, fetched_at,"
+                " priority, priority_reason, priority_source, draft_reply,"
+                " draft_source, draft_generated_at, references_hdr)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
+                 p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
+                 reason, source, draft, draft_source, drafted_at, p["references_hdr"]),
+            )
+            if not cur.rowcount:
+                continue  # 同じメールが既にある (添付も保存しない)
+            if attachment_dir is not None:
+                # メールの行が入って番号が決まってから保存する。ファイルの書き込みは
+                # このサーバのディスクだけ (通信ではない) で、1通40MBまでに抑えてある
+                try:
+                    items = extract_attachments(raw)
+                except Exception as e:  # noqa: BLE001  読めない添付があってもメールは取り込む
+                    print(f"添付ファイルの取り出しに失敗 (UID {uid}): {e}")
+                    items = []
+                if items:
+                    written.append(cur.lastrowid)
+                    save_attachments(conn, attachment_dir, cur.lastrowid, items, now)
             added.append({**p, "priority": prio})
-    # 取得に成功した UID までだけ進める (途中で break した分は次回再試行)
-    max_uid = max([u for u, _ in raws], default=0)
-    if max_uid > last_uid:
-        if uv:
-            _set_state(conn, "mail_state_uidvalidity", uv)
-        _set_state(conn, "mail_state_last_uid", max_uid)
-    conn.commit()
+        # 取得に成功した UID までだけ進める (途中で break した分は次回再試行)
+        max_uid = max([u for u, _ in raws], default=0)
+        if max_uid > last_uid:
+            if uv:
+                _set_state(conn, "mail_state_uidvalidity", uv)
+            _set_state(conn, "mail_state_last_uid", max_uid)
+        conn.commit()
+    except BaseException:
+        # DB を元に戻し、書いた添付ファイルも消す (DB に無いファイルを残さない)
+        conn.rollback()
+        for mail_id in written:
+            remove_attachment_files(attachment_dir, mail_id)
+        raise
     return added
 
 
-def check_mail(conn, notifier=None) -> int:
+def check_mail(conn, notifier=None, attachment_dir=None) -> int:
     """バックグラウンド/手動の受信処理。取り込んだ新着件数を返す.
 
     IMAP 未設定・自動受信OFFなら何もしない。優先度[高]の新着は通知する
     (notifier を差し替え可能にしてテストしやすくする)。
+    attachment_dir は添付ファイルの保存先 (fetch_new_mail に渡す)。
     """
     from . import notify  # 循環を避けるため遅延インポート
 
     s = db.get_settings(conn)
     if not str(s.get("imap_host", "")).strip() or not s.get("mail_fetch_enabled"):
         return 0
-    added = fetch_new_mail(conn, s)
+    added = fetch_new_mail(conn, s, attachment_dir=attachment_dir)
     send = notifier or notify.deliver_async
     if s.get("notify_mail_high"):
         for row in added:
@@ -1109,15 +1392,25 @@ def _notify_text(s) -> str:
     return str(s or "").replace("<", "＜").replace(">", "＞").strip()
 
 
-def purge_old_mails(conn, days: int) -> int:
-    """保存日数を過ぎた受信メールを削除する (days<=0 なら何もしない).
+def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
+    """保存日数を過ぎた受信メールを、添付ファイルごと削除する (days<=0 なら何もしない).
 
     received_at は差出人が付けた Date ヘッダ由来で細工され得るため、
     サーバが付与した取込時刻 (fetched_at) を基準にする。
+    ファイルを先に消してから DB の行を消す (途中で止まっても、次の回にもう一度
+    同じメールが対象になり、残りが消える。消えているファイルは飛ばす)。
     """
     if days <= 0:
         return 0
     cutoff = tz.utc_iso(datetime.now(timezone.utc) - timedelta(days=days))
-    cur = conn.execute("DELETE FROM mails WHERE fetched_at < ?", (cutoff,))
+    ids = [(r["id"],) for r in conn.execute(
+        "SELECT id FROM mails WHERE fetched_at < ?", (cutoff,))]
+    if not ids:
+        return 0
+    if attachment_dir is not None:
+        for (mail_id,) in ids:
+            remove_attachment_files(attachment_dir, mail_id)
+    conn.executemany("DELETE FROM mail_attachments WHERE mail_id = ?", ids)
+    conn.executemany("DELETE FROM mails WHERE id = ?", ids)
     conn.commit()
-    return cur.rowcount
+    return len(ids)

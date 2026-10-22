@@ -156,6 +156,10 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   返信画面では**全員に返信**もできます（元メールの To・CC の人が CC 欄に最初から入り、
   「CCの人にも送る」のチェックで外せる。自分たちのアドレスは入らない。BCC も追加可。
   宛先・CC・BCC は合わせて20件まで）。
+  届いたメールの**添付ファイル**も返信画面で見られます（一覧で 📎 が付く。
+  写真は縮小表示、ほかは「ダウンロード」。1つ15MB・1通で合わせて40MBまで保存し、
+  それより大きいものは「大きすぎるため保存していません」と名前だけ出る。
+  この機能を入れた後に届いたメールから保存）。
   勤怠管理とは**別のUI**ですが、同じサーバ・同じDB・同じ管理者トークンで、
   **同じドメインの `/mail`** で開きます（例 `kintai.example.com/mail`）。
   メールだけ別ドメインにすることもできます（[DEPLOY.md](DEPLOY.md) 参照）
@@ -224,7 +228,8 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
 | GET | `/api/mail` | admin | 受信メール一覧（優先度順、status/priority で絞り込み） |
-| GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き・全員に返信の CC 候補） |
+| GET | `/api/mail/{id}` | admin | メール詳細（本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧） |
+| GET | `/api/mail/{id}/attachments/{添付id}` | admin | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
 | POST | `/api/mail/fetch` | admin | 今すぐ IMAP から新着を取り込み |
 | POST | `/api/mail/{id}/draft` | admin | 返信下書きの(再)生成（AI / 定型文） |
 | PATCH | `/api/mail/{id}` | admin | 下書き保存・優先度/状態の変更 |

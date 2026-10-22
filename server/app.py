@@ -19,6 +19,8 @@ from . import db, devices, imaging, mail, notify, reports, retention, tz
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
+# 受信メールの添付ファイル (<メールの番号>/<添付の番号> に保存する)
+MAIL_ATTACHMENT_DIR = DATA_DIR / "mail_attachments"
 # バックグラウンド処理(キャプチャ自動削除・長時間在席チェック)の実行間隔(分)
 ALERT_CHECK_INTERVAL_MIN = float(os.environ.get("ZATSUMU_CHECK_INTERVAL_MIN", "10"))
 
@@ -86,8 +88,9 @@ def _mail_tick() -> None:
     """メールの定期受信と保存期間パージ (ネットワークI/Oを含むため別スレッドで実行)."""
     conn = db.connect(DATA_DIR / "zatsumu.db")
     try:
-        mail.check_mail(conn)
-        mail.purge_old_mails(conn, db.get_settings(conn)["mail_retention_days"])
+        mail.check_mail(conn, attachment_dir=MAIL_ATTACHMENT_DIR)
+        mail.purge_old_mails(conn, db.get_settings(conn)["mail_retention_days"],
+                             MAIL_ATTACHMENT_DIR)
     finally:
         conn.close()
 
@@ -130,7 +133,7 @@ async def lifespan(app: FastAPI):
         if os.environ.get("ZATSUMU_DEMO") == "1":
             from . import demo
 
-            if demo.seed(conn, SCREENSHOT_DIR):
+            if demo.seed(conn, SCREENSHOT_DIR, MAIL_ATTACHMENT_DIR):
                 print("デモデータを投入しました (管理者トークン: demo-admin)")
         # 保存済みのタイムゾーン設定を適用する
         tz.set_tz(db.get_settings(conn)["timezone"])
@@ -2102,11 +2105,14 @@ def list_mail(
             raise HTTPException(400, "priority は 1〜3 で指定してください")
         where.append("priority = ?")
         params.append(priority)
-    sql = "SELECT * FROM mails"
+    # 添付ファイルの数 (一覧で 📎 を出す用。保存しなかったものも数える)
+    sql = ("SELECT m.*, (SELECT COUNT(*) FROM mail_attachments a"
+           " WHERE a.mail_id = m.id) AS attachment_count FROM mails m")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY priority, received_at DESC LIMIT 500"
-    return [_mail_summary(r) for r in conn.execute(sql, params)]
+    return [{**_mail_summary(r), "attachment_count": r["attachment_count"]}
+            for r in conn.execute(sql, params)]
 
 
 @app.post("/api/mail/fetch")
@@ -2116,7 +2122,7 @@ def fetch_mail_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
     if not str(s.get("imap_host", "")).strip():
         raise HTTPException(400, "IMAPが未設定です。設定画面で受信サーバを保存してください")
     try:
-        added = mail.fetch_new_mail(conn, s)
+        added = mail.fetch_new_mail(conn, s, attachment_dir=MAIL_ATTACHMENT_DIR)
     except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
         raise HTTPException(502, f"受信に失敗しました: {notify.safe_error(e, s)}")
     return {"fetched": len(added)}
@@ -2261,6 +2267,8 @@ def mail_templates_for_mail(
 @app.get("/api/mail/{mail_id}")
 def mail_detail(mail_id: int, _admin=Depends(require_admin), conn=Depends(get_conn)):
     r = _mail_or_404(conn, mail_id)
+    atts = conn.execute("SELECT * FROM mail_attachments WHERE mail_id = ? ORDER BY id",
+                        (mail_id,)).fetchall()
     return {
         **_mail_summary(r),
         "to_addr": r["to_addr"],
@@ -2276,7 +2284,47 @@ def mail_detail(mail_id: int, _admin=Depends(require_admin), conn=Depends(get_co
         "reply_cc": mail.split_addresses(r["reply_cc"]),
         "reply_bcc": mail.split_addresses(r["reply_bcc"]),
         "replied_by": r["replied_by"],
+        # 添付ファイル (保存したもの) と、大きすぎるなどで保存しなかったもの (名前と理由)
+        "attachments": [mail.attachment_info(a) for a in atts if not a["skip_reason"]],
+        "skipped_attachments": [mail.skipped_attachment_info(a)
+                                for a in atts if a["skip_reason"]],
     }
+
+
+@app.get("/api/mail/{mail_id}/attachments/{att_id}")
+def mail_attachment(
+    mail_id: int, att_id: int, inline: bool = False,
+    _admin=Depends(require_admin), conn=Depends(get_conn),
+):
+    """添付ファイルの中身 (管理者のみ。そのメールの添付でなければ 404).
+
+    画面は fetch で受け取って保存・表示する (トークンを付けるため)。
+    中身を見て確かめた画像 (png/jpeg/gif/webp) だけ、その種類で返し、
+    ?inline=1 で表示用にできる。それ以外 (SVG・HTML を含む) は必ず
+    「ただのデータ」(application/octet-stream) のダウンロードにする。
+    ブラウザが中身から種類を推測して開かないよう nosniff を付ける。
+    """
+    row = conn.execute(
+        "SELECT * FROM mail_attachments WHERE id = ? AND mail_id = ?",
+        (att_id, mail_id),
+    ).fetchone()
+    if not row or row["skip_reason"]:
+        raise HTTPException(404, "添付ファイルが見つかりません")
+    path = mail.attachment_file(MAIL_ATTACHMENT_DIR, row["path"])
+    if path is None or not path.is_file():
+        raise HTTPException(404, "添付ファイルが見つかりません（削除された可能性があります）")
+    preview = row["content_type"] in mail.PREVIEW_TYPES
+    kind = "inline" if inline and preview else "attachment"
+    return FileResponse(
+        path,
+        media_type=row["content_type"] if preview else mail.OCTET_STREAM,
+        headers={
+            "Content-Disposition": mail.content_disposition(kind, row["filename"]),
+            "X-Content-Type-Options": "nosniff",
+            # お客様のファイルなので、ブラウザや途中のサーバに残さない
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @app.post("/api/mail/{mail_id}/draft")

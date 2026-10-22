@@ -6,12 +6,13 @@ ZATSUMU_DEMO=1 で起動すると、DB が空の場合に固定トークンの�
 
   管理者: demo-admin / メンバー: demo-tanaka, demo-suzuki, demo-sato
 """
+import io
 import random
 import sqlite3
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
-from . import db, tz
+from . import db, mail, tz
 
 DEMO_USERS = [
     ("管理者", "demo-admin", 1),
@@ -39,8 +40,28 @@ def _fake_desktop(path: Path, accent: str) -> None:
     img.save(path, "JPEG", quality=65)
 
 
-def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
-    """DB が空なら投入して True を返す."""
+def _fake_floor_plan() -> bytes:
+    """デモのメールに添付する、小さな間取り図の画像 (PNG)."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (360, 240), "#ffffff")
+    d = ImageDraw.Draw(img)
+    d.rectangle((20, 20, 340, 220), outline="#374151", width=4)   # 外壁
+    d.line((200, 20, 200, 150), fill="#374151", width=3)          # 部屋の仕切り
+    d.line((20, 150, 340, 150), fill="#374151", width=3)
+    d.rectangle((215, 165, 325, 205), fill="#bfdbfe")            # 浴室
+    d.rectangle((35, 165, 120, 205), fill="#fde68a")             # キッチン
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def seed(conn: sqlite3.Connection, screenshot_dir: Path,
+         attachment_dir: Path | None = None) -> bool:
+    """DB が空なら投入して True を返す.
+
+    attachment_dir を渡すと、デモのメールに添付ファイルも付ける。
+    """
     if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
         return False
 
@@ -150,7 +171,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
     def add_mail(mins_ago, from_name, from_addr, subject, body, prio, reason,
                  draft="", status="unhandled", cc=""):
         received = (now_utc - timedelta(minutes=mins_ago)).isoformat()
-        conn.execute(
+        return conn.execute(
             "INSERT INTO mails (message_id, from_addr, from_name, to_addr,"
             " cc_addr, subject, body, received_at, fetched_at, priority,"
             " priority_reason, priority_source, status, draft_reply,"
@@ -161,7 +182,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
              now_utc.isoformat(), prio, reason, "rule", status, draft,
              "template" if draft else "",
              now_utc.isoformat() if draft else None),
-        )
+        ).lastrowid
 
     add_mail(20, "山本 商事", "yamamoto@example.com",
              "【至急】納品物の不具合について",
@@ -171,16 +192,26 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path) -> bool:
              "山本 商事 様\n\nお世話になっております。\n"
              "納品物の不具合の件、大変申し訳ございません。\n"
              "至急状況を確認のうえ、本日中に対応方法をご連絡いたします。")
-    add_mail(90, "佐々木", "sasaki@example.com",
-             "お見積もりのご相談",
-             "新規案件についてお見積もりをお願いしたく、"
-             "ご都合の良い日程を教えてください。",
-             2, "通常",
-             "佐々木 様\n\nお世話になっております。\n"
-             "お見積もりのご相談ありがとうございます。\n"
-             "候補日程を確認のうえ、改めてご連絡差し上げます。",
-             # 全員に返信 (CC) の確認用
-             cc="佐々木 部長 <sasaki-bucho@example.com>, keiri@example.com")
+    estimate_id = add_mail(
+        90, "佐々木", "sasaki@example.com",
+        "お見積もりのご相談",
+        "新規案件についてお見積もりをお願いしたく、"
+        "ご都合の良い日程を教えてください。\n間取り図を添付します。",
+        2, "通常",
+        "佐々木 様\n\nお世話になっております。\n"
+        "お見積もりのご相談ありがとうございます。\n"
+        "候補日程を確認のうえ、改めてご連絡差し上げます。",
+        # 全員に返信 (CC) の確認用
+        cc="佐々木 部長 <sasaki-bucho@example.com>, keiri@example.com")
+    if attachment_dir is not None:
+        # 添付ファイルの確認用 (画像は縮小表示される・大きすぎる動画は保存していない例)
+        plan = _fake_floor_plan()
+        mail.save_attachments(conn, attachment_dir, estimate_id, [
+            {"filename": "間取り図.png", "content_type": "image/png",
+             "size": len(plan), "data": plan, "skip": ""},
+            {"filename": "物件の動画.mov", "content_type": "video/quicktime",
+             "size": 52 * 1024 * 1024, "data": None, "skip": "too_large"},
+        ], now_utc.isoformat())
     add_mail(240, "業界ニュース配信", "no-reply@newsletter.example.com",
              "【メルマガ】今週の業界トピックス",
              "今週の業界ニュースをお届けします。配信停止はこちら。",

@@ -2258,11 +2258,11 @@ def test_mail_fetch_endpoint(client, users, monkeypatch):
     client.patch("/api/settings", headers=auth(admin),
                  json={"imap_host": "imap.example.com"})
     monkeypatch.setattr(app_module.mail, "fetch_new_mail",
-                        lambda conn, s: [{"priority": 2}, {"priority": 1}])
+                        lambda conn, s, **kw: [{"priority": 2}, {"priority": 1}])
     r = client.post("/api/mail/fetch", headers=auth(admin))
     assert r.status_code == 200 and r.json() == {"fetched": 2}
     # 受信エラーは 502 で原因を返す
-    def boom(conn, s):
+    def boom(conn, s, **kw):
         raise RuntimeError("login failed")
     monkeypatch.setattr(app_module.mail, "fetch_new_mail", boom)
     assert client.post("/api/mail/fetch",
@@ -2282,7 +2282,7 @@ def test_check_mail_notifies_high_priority(client, users, tmp_path, monkeypatch)
                  json={"imap_host": "imap.example.com"})
     monkeypatch.setattr(
         mail, "fetch_new_mail",
-        lambda conn, s: [
+        lambda conn, s, **kw: [
             {"priority": 1, "subject": "至急 <!channel> の件", "from_addr": "a@e.com"},
             {"priority": 2, "subject": "普通の件", "from_addr": "b@e.com"}])
     notified = []

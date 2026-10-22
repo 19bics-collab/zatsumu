@@ -110,6 +110,19 @@ CREATE TABLE IF NOT EXISTS mails (
     reply_cc TEXT NOT NULL DEFAULT '',        -- 実際に CC で送ったアドレス (", " 区切り)
     reply_bcc TEXT NOT NULL DEFAULT ''        -- 実際に BCC で送ったアドレス (", " 区切り)
 );
+-- 受信メールの添付ファイル (server/mail.py)。中身はデータフォルダの
+-- mail_attachments/<mail_id>/<id> に置く (元のファイル名は保存先のパスに使わない)。
+-- 大きすぎるなどで保存しなかったものも、画面で知らせるため名前と理由 (skip_reason) を残す
+CREATE TABLE IF NOT EXISTS mail_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mail_id INTEGER NOT NULL REFERENCES mails(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL DEFAULT '',      -- 画面に出す名前 (整えたもの)
+    content_type TEXT NOT NULL DEFAULT '',  -- 画像は中身を見て決めた種類
+    size INTEGER NOT NULL DEFAULT 0,        -- バイト数
+    path TEXT NOT NULL DEFAULT '',          -- 保存先 (mail_attachments からの相対。保存しなかったものは空)
+    skip_reason TEXT NOT NULL DEFAULT '',   -- 保存しなかった理由 (空=保存した)
+    created_at TEXT NOT NULL
+);
 -- よく使う返信文 (定型文)。返信画面で選んで本文に入れる。
 -- {相手の名前} などの差し込みは、入れるときにそのメールの内容へ置き換える (server/mail.py)
 CREATE TABLE IF NOT EXISTS mail_templates (
@@ -148,6 +161,7 @@ CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_device_challenges_user ON device_challenges(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_mails_status ON mails(status);
 CREATE INDEX IF NOT EXISTS idx_mail_templates_order ON mail_templates(sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_mail_attachments_mail ON mail_attachments(mail_id);
 CREATE INDEX IF NOT EXISTS idx_mails_received ON mails(received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_open ON sessions(user_id, clock_out);
 CREATE INDEX IF NOT EXISTS idx_sessions_clock_in ON sessions(clock_in);
