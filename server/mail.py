@@ -12,8 +12,9 @@ IMAP の送信済みフォルダへ保存する (Webメール等からも送っ�
 「全員に返信」では元メールの To・Cc の人 (自分たちを除く) を CC の候補にし、
 画面で直した CC・BCC を確かめてから送る (BCC はヘッダに出さず、送り先にだけ入れる)。
 IMAP・SMTP ともサーバ証明書を検証し、暗号化できない接続ではパスワードを送らない。
-受信メールの添付ファイルは、メールを DB に入れた後でデータフォルダに保存する
-(元のファイル名は保存先のパスに使わない。大きすぎるものは名前と理由だけ残す)。
+受信メールの添付ファイルは、先に一時フォルダへ書いておき、メールを DB に入れるときに
+データフォルダへ移す (元のファイル名は保存先のパスに使わない。大きすぎるもの・
+サーバの空きが少ないときは名前と理由だけ残す)。
 問い合わせの種類 (清掃のご依頼・予約など) も受信時に決める。AI を使うときは優先度と
 同じ1回の依頼で選ばせ、使わないときは設定のキーワードで決める。種類ごとの担当
 (設定) があれば、その人を担当にする。
@@ -29,6 +30,7 @@ import mimetypes
 import re
 import shutil
 import ssl
+import tempfile
 import threading
 import time
 import unicodedata
@@ -153,6 +155,17 @@ ATTACHMENT_MAX_BYTES = 15 * _MB
 ATTACHMENT_TOTAL_MAX_BYTES = 40 * _MB
 # 1通で残す添付の数の上限 (これより多い分はまとめて「ほか◯個」と残す)
 ATTACHMENT_MAX_COUNT = 50
+_GB = 1024 * _MB
+# 1通ごとの上限とは別の、サーバ全体の歯止め。外から大きなメールを続けて送られても、
+# DB (同じデータフォルダにある) や勤怠のスクショが書けなくならないようにする。
+# 保存すると空きがこれより少なくなるなら保存しない
+ATTACHMENT_MIN_FREE_BYTES = 2 * _GB
+# 保存しておく添付ファイル全体の合計の上限 (保存日数を過ぎたメールが消えると、また保存できる)
+ATTACHMENT_STORE_MAX_BYTES = 10 * _GB
+# 取り込み中に添付ファイルを先に書いておく一時フォルダの名前 (添付の保存先の中に作る)
+_STAGING_PREFIX = ".staging-"
+# 止まった取り込みが残した一時フォルダを消すまでの時間 (秒)
+_STAGING_STALE_SECONDS = 24 * 3600
 # 画面に出すファイル名の最大文字数 (拡張子は残して縮める)
 ATTACHMENT_NAME_MAX_CHARS = 150
 # 入れ子の深さの上限 (細工したメールで処理が終わらないのを防ぐ)
@@ -174,6 +187,9 @@ def skip_reason_text(code: str) -> str:
                            f"（1通で合わせて{ATTACHMENT_TOTAL_MAX_BYTES // _MB}MBまで）",
         "too_many": f"数が多すぎるため保存していません（1通で{ATTACHMENT_MAX_COUNT}個まで）",
         "save_failed": "サーバに保存できませんでした",
+        "disk_low": "サーバの空きが少ないため保存していません",
+        "store_full": "保存している添付ファイルが合わせて"
+                      f"{ATTACHMENT_STORE_MAX_BYTES // _GB}GBに達したため保存していません",
     }.get(code, "保存していません")
 
 
@@ -308,11 +324,91 @@ def _mail_attachment_dir(attachment_dir, mail_id: int) -> Path:
     return Path(attachment_dir) / str(int(mail_id))
 
 
+def stored_attachment_bytes(conn) -> int:
+    """今保存している添付ファイルの合計の大きさ (読むだけ)."""
+    return conn.execute("SELECT COALESCE(SUM(size), 0) FROM mail_attachments"
+                        " WHERE path != ''").fetchone()[0]
+
+
+def _space_skip(attachment_dir, size: int, stored: int) -> str:
+    """この大きさのファイルを今保存してよいか (だめなら理由のコード、よければ "")."""
+    if stored + size > ATTACHMENT_STORE_MAX_BYTES:
+        return "store_full"
+    try:
+        free = shutil.disk_usage(attachment_dir).free
+    except OSError:
+        return ""   # 調べられないときは書いてみる (書けなければ「保存できませんでした」)
+    if free - size < ATTACHMENT_MIN_FREE_BYTES:
+        return "disk_low"
+    return ""
+
+
+def make_staging_dir(attachment_dir) -> Path | None:
+    """取り込み1回分の一時フォルダを作る (作れなければ None).
+
+    添付の保存先の中に作る (同じディスクなので、DB に入れるときは名前を変えるだけで移せる)。
+    取り込みは同時に2つ動くことがあるので、回ごとに別の名前にする。
+    前に止まった取り込みが残した古い一時フォルダは、ここで片付ける。
+    """
+    base = Path(attachment_dir)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        for old in base.glob(_STAGING_PREFIX + "*"):
+            try:
+                if time.time() - old.stat().st_mtime > _STAGING_STALE_SECONDS:
+                    shutil.rmtree(old, ignore_errors=True)
+            except OSError:
+                pass
+        return Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=base))
+    except OSError as e:
+        print(f"添付ファイルの一時フォルダを作れませんでした: {e}")
+        return None
+
+
+def stage_attachments(attachment_dir, staging: Path | None, key: str,
+                      items: list[dict], stored: int) -> int:
+    """取り出した添付ファイルの中身を、DB に入れる前に一時フォルダへ書いておく.
+
+    DB の書き込み (ロック) を持ったまま大きなファイルを書くと、その間ほかの書き込み
+    (打刻・設定の保存・返信の送信) が待たされて失敗するため。書いたものは
+    item["staged"] に場所を入れ、中身 (data) は手放す (メモリを使い続けない)。
+    サーバの空きが少ない・全体の合計の上限を超えるものは保存せず理由だけ残す。
+    stored は今保存している合計で、書いた分を足して返す。
+    """
+    for n, item in enumerate(items):
+        data = item.get("data")
+        if item["skip"] or data is None:
+            continue
+        item["data"] = None
+        reason = "save_failed" if staging is None else _space_skip(
+            attachment_dir, len(data), stored)
+        if reason:
+            item["skip"] = reason
+            continue
+        path = staging / f"{key}-{n}"
+        try:
+            path.write_bytes(data)
+        except OSError as e:  # ディスクがいっぱい等
+            print(f"添付ファイルを保存できませんでした: {e}")
+            try:
+                path.unlink(missing_ok=True)   # 書きかけを残さない
+            except OSError:
+                pass
+            item["skip"] = "save_failed"
+            continue
+        item["staged"] = path
+        stored += len(data)
+    return stored
+
+
 def save_attachments(conn, attachment_dir, mail_id: int, items: list[dict],
                      now: str) -> None:
     """取り出した添付ファイルを保存する (メールの行を入れた後、同じトランザクションで呼ぶ).
 
-    中身は attachment_dir/<mail_id>/<添付の id> に置く。保存しなかったもの
+    中身は attachment_dir/<mail_id>/<添付の id> に置く。stage_attachments で
+    一時フォルダに書いてあるもの (item["staged"]) は名前を変えて移すだけにする
+    (ロックを持つ時間をファイルの大きさに左右させない)。そうでないもの
+    (お試し用のデータ等) は data をここで書く。保存しなかったもの
     (大きすぎる等) は名前と理由だけを残す。ディスクに書けなかったときもメールは
     取り込み、その添付は「保存できませんでした」として残す。
     """
@@ -335,7 +431,10 @@ def save_attachments(conn, attachment_dir, mail_id: int, items: list[dict],
         dest = folder / str(att_id)
         try:
             folder.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(item["data"])
+            if item.get("staged"):
+                Path(item["staged"]).replace(dest)
+            else:
+                dest.write_bytes(item["data"])
         except OSError as e:  # ディスクがいっぱい等
             print(f"添付ファイルを保存できませんでした (メール {mail_id}): {e}")
             try:
@@ -1123,10 +1222,25 @@ def _header_text(value) -> str:
     return re.sub(r"[\r\n\x00]+", " ", str(value or "")).strip()
 
 
+class SomeRecipientsRefused(Exception):
+    """送り先の一部だけが送信サーバに断られた (ほかの送り先には送れている).
+
+    raw は送ったメールそのもの、refused は断られたアドレスの一覧。
+    """
+
+    def __init__(self, raw: bytes, refused: list[str]):
+        super().__init__("一部の送り先に送れませんでした: " + ", ".join(refused))
+        self.raw = raw
+        self.refused = refused
+
+
 def send_reply(settings: dict, to_addr: str, subject: str, body: str,
                in_reply_to: str = "", references: str = "",
                cc=None, bcc=None) -> bytes:
     """返信メールを1通送信し、送ったメールそのもの (bytes) を返す (失敗時は例外).
+
+    送り先の一部だけが断られたとき (宛先は断られ CC には届いた、など) は
+    SomeRecipientsRefused にする。黙って「送れた」扱いにしないため。
 
     cc は Cc ヘッダに出す。bcc はヘッダに出さず、SMTP の送り先にだけ入れる
     (BCC の人が誰かは、宛先・CC の人には見えない)。cc・bcc は呼び出し側で
@@ -1158,7 +1272,9 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
 
     raw = msg.as_string()
     # 接続・暗号化・ログインは通知メールと同じ1か所の処理を使う
-    notify.smtp_send(settings, sender, [to_addr, *cc, *bcc], raw)
+    refused = notify.smtp_send(settings, sender, [to_addr, *cc, *bcc], raw)
+    if refused:
+        raise SomeRecipientsRefused(raw.encode("utf-8"), list(refused))
     return raw.encode("utf-8")
 
 
@@ -1558,37 +1674,25 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None) -> list[dict]:
     added: list[dict] = []
     # 今回添付ファイルを書いたメール (途中で失敗したらファイルも消して元に戻すため)
     written: list[int] = []
+    staging = None
     try:
-        for (uid, p, raw, prio, reason, source, category, draft, draft_source,
-             drafted_at) in rows:
-            assignee = assignees.get(category)
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO mails (message_id, imap_uid, from_addr,"
-                " from_name, to_addr, cc_addr, subject, body, received_at, fetched_at,"
-                " priority, priority_reason, priority_source, category,"
-                " assignee_user_id, draft_reply, draft_source, draft_generated_at,"
-                " references_hdr)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
-                 p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
-                 reason, source, category, assignee, draft, draft_source, drafted_at,
-                 p["references_hdr"]),
-            )
-            if not cur.rowcount:
-                continue  # 同じメールが既にある (添付も保存しない)
-            if attachment_dir is not None:
-                # メールの行が入って番号が決まってから保存する。ファイルの書き込みは
-                # このサーバのディスクだけ (通信ではない) で、1通40MBまでに抑えてある
+        # 添付ファイルは、書き込みのロックを持つ前に一時フォルダへ書いておく
+        # (メールが多い・大きいと書くのに時間がかかり、その間ほかの書き込みが失敗するため)。
+        # 1通ずつ取り出して書き、中身は手放す (全部を持っておくとメモリを多く使う)
+        attachments: list[list[dict]] = []
+        if attachment_dir is not None and rows:
+            staging = make_staging_dir(attachment_dir)
+            stored = stored_attachment_bytes(conn)
+            for i, row in enumerate(rows):
                 try:
-                    items = extract_attachments(raw)
+                    items = extract_attachments(row[2])
                 except Exception as e:  # noqa: BLE001  読めない添付があってもメールは取り込む
-                    print(f"添付ファイルの取り出しに失敗 (UID {uid}): {e}")
+                    print(f"添付ファイルの取り出しに失敗 (UID {row[0]}): {e}")
                     items = []
-                if items:
-                    written.append(cur.lastrowid)
-                    save_attachments(conn, attachment_dir, cur.lastrowid, items, now)
-            added.append({**p, "priority": prio, "category": category,
-                          "assignee_user_id": assignee})
+                stored = stage_attachments(attachment_dir, staging, str(i), items, stored)
+                attachments.append(items)
+        _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
+                      added, written)
         # 取得に成功した UID までだけ進める (途中で break した分は次回再試行)
         max_uid = max([u for u, _ in raws], default=0)
         if max_uid > last_uid:
@@ -1602,7 +1706,44 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None) -> list[dict]:
         for mail_id in written:
             remove_attachment_files(attachment_dir, mail_id)
         raise
+    finally:
+        # 移さなかった分 (同じメールが既にあった等) は一時フォルダごと消す
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
     return added
+
+
+def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
+                  added: list, written: list) -> None:
+    """分類済みのメールを DB に入れ、一時フォルダの添付ファイルを保存先へ移す.
+
+    コミットは呼び出し側。added には入れたメール、written には添付を移したメールの
+    番号を足していく (失敗したときに呼び出し側で元に戻せるように)。
+    """
+    for i, (uid, p, _raw, prio, reason, source, category, draft, draft_source,
+            drafted_at) in enumerate(rows):
+        assignee = assignees.get(category)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO mails (message_id, imap_uid, from_addr,"
+            " from_name, to_addr, cc_addr, subject, body, received_at, fetched_at,"
+            " priority, priority_reason, priority_source, category,"
+            " assignee_user_id, draft_reply, draft_source, draft_generated_at,"
+            " references_hdr)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
+             p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
+             reason, source, category, assignee, draft, draft_source, drafted_at,
+             p["references_hdr"]),
+        )
+        if not cur.rowcount:
+            continue  # 同じメールが既にある (添付も保存しない)
+        items = attachments[i] if attachment_dir is not None else []
+        if items:
+            # メールの行が入って番号が決まってから移す (一時フォルダからの名前の変更だけ)
+            written.append(cur.lastrowid)
+            save_attachments(conn, attachment_dir, cur.lastrowid, items, now)
+        added.append({**p, "priority": prio, "category": category,
+                      "assignee_user_id": assignee})
 
 
 def check_mail(conn, notifier=None, attachment_dir=None) -> int:

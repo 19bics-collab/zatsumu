@@ -2560,13 +2560,8 @@ def mail_send(
     if not cur.rowcount:
         raise HTTPException(409, "このメールには返信済みです")
     conn.commit()
-    try:
-        raw = mail.send_reply(
-            s, r["from_addr"], subject, text,
-            in_reply_to=r["message_id"], references=r["references_hdr"],
-            cc=cc, bcc=bcc,
-        )
-    except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+
+    def back_to_unhandled():
         # 送信できなかったら未対応に戻し、画面から再試行できるようにする
         conn.execute(
             "UPDATE mails SET status = 'unhandled', reply_subject = '',"
@@ -2574,8 +2569,44 @@ def mail_send(
             " replied_by = '' WHERE id = ?",
             (mail_id,),
         )
+
+    refused: list[str] = []
+    try:
+        raw = mail.send_reply(
+            s, r["from_addr"], subject, text,
+            in_reply_to=r["message_id"], references=r["references_hdr"],
+            cc=cc, bcc=bcc,
+        )
+    except mail.SomeRecipientsRefused as e:
+        # 一部の送り先だけ送信サーバに断られた (ほかの人には届いている)
+        raw, refused = e.raw, e.refused
+    except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
+        back_to_unhandled()
         conn.commit()
         raise HTTPException(502, f"送信に失敗しました: {notify.safe_error(e, s)}")
+    refused_keys = {a.strip().lower() for a in refused}
+    if r["from_addr"].strip().lower() in refused_keys:
+        # 肝心の相手 (元メールの差出人) に届いていない。CC・BCC の人には届いているが、
+        # 「返信済み」にすると対応が終わったと思われてしまうので、未対応に戻して知らせる
+        delivered = [a for a in (*cc, *bcc) if a.lower() not in refused_keys]
+        back_to_unhandled()
+        _audit(conn, admin, "mail_send_refused",
+               detail=f"to={r['from_addr']} refused={','.join(refused)}"
+                      f" delivered={','.join(delivered)} subject={subject}")
+        conn.commit()
+        raise HTTPException(
+            502, f"送信できませんでした: 宛先（{r['from_addr']}）は相手のメールサーバに"
+                 "受け取りを断られました。アドレスを確かめてください"
+                 + (f"（CC・BCC の {len(delivered)}件には届いています。"
+                    "送り直すと、その人たちには2通目が届きます）" if delivered else ""))
+    if refused_keys:
+        # CC・BCC の一部だけ届かなかった。「送った CC・BCC」には届いた人だけを残し、
+        # 届かなかったアドレスは画面と記録で知らせる
+        cc = [a for a in cc if a.lower() not in refused_keys]
+        bcc = [a for a in bcc if a.lower() not in refused_keys]
+        conn.execute("UPDATE mails SET reply_cc = ?, reply_bcc = ? WHERE id = ?",
+                     (", ".join(cc), ", ".join(bcc), mail_id))
+        conn.commit()
     # 控えを送信済みフォルダへ保存する (Webメールの「送信済み」にも出るように)。
     # 相手には届いているので、ここで失敗しても送信は成功として扱う
     # (失敗扱いにすると画面から再送され、相手に二重に届いてしまう)
@@ -2591,12 +2622,15 @@ def mail_send(
         detail += f" cc={','.join(cc)}"
     if bcc:
         detail += f" bcc={','.join(bcc)}"
+    if refused:
+        detail += f" refused={','.join(refused)}"
     detail += f" recipients={1 + len(cc) + len(bcc)} subject={subject}"
     if sent_folder:
         detail += f" saved={sent_folder}"
     elif save_error:
         detail += " saved=failed"
     _audit(conn, admin, "mail_send", detail=detail)
-    return {"sent": r["from_addr"], "cc": cc, "bcc": bcc, "subject": subject,
+    return {"sent": r["from_addr"], "cc": cc, "bcc": bcc, "refused": refused,
+            "subject": subject,
             "saved_to_sent": bool(sent_folder), "sent_folder": sent_folder,
             "sent_save_error": save_error}

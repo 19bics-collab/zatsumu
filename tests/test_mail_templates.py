@@ -347,26 +347,24 @@ def test_template_cursor_only_from_user_actions(client):
     """カーソルの位置を選んだとみなすのは、人がタップ・キー操作したときだけ."""
     import re
     page = client.get("/mail").text
-    m = re.search(r'for \(const ev of \[([^\]]*)\]\) \{\s*'
-                  r'\$\("m-draft"\)\.addEventListener\(ev, \(\) => \{ modal\.cursorSet = true; \}\);',
-                  page)
-    assert m, "返信文の欄で cursorSet を立てるイベントの一覧が見つからない"
-    events = set(re.findall(r'"(\w+)"', m.group(1)))
-    assert {"pointerdown", "keydown"} <= events
+    events = set(re.findall(r'\$\("m-draft"\)\.addEventListener\("(\w+)"', page))
+    assert {"click", "keydown", "input"} <= events
     # focus は ta.focus() でも、select は setSelectionRange でも起きる (人の操作ではない)。
-    # keyup は確認を Enter で閉じたときのキーが届くことがある
-    assert not events & {"focus", "select", "keyup"}
-    assert '$("m-draft").addEventListener("focus"' not in page
+    # keyup は確認を Enter で閉じたときのキーが届くことがある。pointerdown は iPhone で
+    # 返信文の欄の上から画面を動かしただけでも起きる
+    assert not events & {"focus", "select", "keyup", "pointerdown"}
+    # Tab・Shift はカーソルを動かさない (Shift+Tab で定型文の欄に戻るとき)
+    assert '"Tab", "Shift"' in page
     # 丸ごと入れ替えた後は、もう一度選んでもらう
     handler = _js_block(page, '$("m-tpl").onchange = () => {', "\n};\n")
     tail = handler[handler.index("ta.value = t.body_with_signature"):]
-    assert tail.index("ta.setSelectionRange(0, 0);") < tail.index("modal.cursorSet = false;")
+    assert tail.index("ta.setSelectionRange(0, 0);") < tail.index("cursorByProgram(ta);")
 
 
 # ブラウザの代わりの最小限の部品。focus はその場で起き、select は後から起きる (Chrome と同じ)
 _NODE_HARNESS = r"""
 const listeners = {}, later = [];
-const fire = ev => (listeners[ev] || []).forEach(fn => fn());
+const fire = (ev, e = {}) => (listeners[ev] || []).forEach(fn => fn(e));
 const els = {
   "m-draft": {
     value: "", readOnly: false, selectionStart: 0, selectionEnd: 0,
@@ -378,7 +376,7 @@ const els = {
   "m-draft-src": { textContent: "" },
 };
 const $ = id => els[id];
-let modal = { cursorSet: false };
+let modal = { cursorSet: false, autoSel: null };
 const modalTemplates = [
   { id: 1, name: "お礼", body: "A定型", body_with_signature: "A定型\n--署名" },
   { id: 2, name: "日程", body: "B定型", body_with_signature: "B定型\n--署名" },
@@ -402,12 +400,29 @@ out.secondMsg = asked.join("");
 // 2. 人が末尾をタップしてから選ぶ
 asked.length = 0;
 ta.selectionStart = ta.selectionEnd = ta.value.length;
-fire("pointerdown"); pick(1);
+fire("pointerdown"); fire("click"); pick(1);
 out.tapped = { asked: asked.length, value: ta.value };
 // 3. 空の欄をタップしてから1つ目 → 2つ目
 asked.length = 0; ta.value = ""; modal.cursorSet = false;
-fire("pointerdown"); pick(1); pick(2);
+fire("pointerdown"); fire("click"); pick(1); pick(2);
 out.tapThenTwo = { asked: asked.length, value: ta.value };
+// 4. iPhone: 1つ目の後、返信文の欄の上から指で画面を動かした (pointerdown だけ。
+//    カーソルは先頭のまま) → 2つ目は聞く
+asked.length = 0; ta.value = ""; modal.cursorSet = false;
+pick(1); fire("pointerdown"); fire("pointercancel"); pick(2);
+out.swipe = { asked: asked.length, value: ta.value };
+// 5. PC: 1つ目の後、Shift+Tab で定型文の欄へ戻った → 2つ目は聞く
+asked.length = 0; ta.value = ""; modal.cursorSet = false;
+pick(1); fire("keydown", { key: "Shift" }); fire("keydown", { key: "Tab" }); pick(2);
+out.shiftTab = { asked: asked.length, value: ta.value };
+// 6. 1つ目の後、矢印キーでカーソルを動かした → 聞かずにその位置へ
+asked.length = 0; ta.value = ""; modal.cursorSet = false;
+pick(1); fire("keydown", { key: "End" }); ta.selectionStart = ta.selectionEnd = 3; pick(2);
+out.arrow = { asked: asked.length, value: ta.value };
+// 7. 1つ目の後、何のイベントも無くカーソルだけ動いた (長押しで選んだなど) → 聞かずに入れる
+asked.length = 0; ta.value = ""; modal.cursorSet = false;
+pick(1); ta.selectionStart = ta.selectionEnd = 3; pick(2);
+out.moved = { asked: asked.length, value: ta.value };
 console.log(JSON.stringify(out));
 """
 
@@ -438,3 +453,9 @@ def test_second_template_asks_before_replacing(client, tmp_path):
     assert out["tapped"] == {"asked": 0, "value": "B定型\n--署名A定型"}
     # 空の欄をタップしてから丸ごと入れても、次はまた聞く
     assert out["tapThenTwo"] == {"asked": 1, "value": "B定型\n--署名"}
+    # 画面を指で動かしただけ・Shift+Tab で戻っただけなら、先頭に黙って入れない
+    assert out["swipe"] == {"asked": 1, "value": "B定型\n--署名"}
+    assert out["shiftTab"] == {"asked": 1, "value": "B定型\n--署名"}
+    # カーソルを動かしたら、聞かずにその位置へ入れる
+    assert out["arrow"] == {"asked": 0, "value": "A定型B定型\n--署名"}
+    assert out["moved"] == {"asked": 0, "value": "A定型B定型\n--署名"}

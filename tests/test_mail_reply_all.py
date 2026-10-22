@@ -446,3 +446,151 @@ def test_mail_page_has_reply_all_ui(client):
     assert page.count('inputmode="email"') >= 2
     # 送信後は CC・BCC も変えられない
     assert '$("m-cc").readOnly = $("m-bcc").readOnly = true;' in page
+
+
+def test_reply_all_cc_is_off_until_chosen(client):
+    """CC の候補は最初は入れない (「CCの人にも送る」を選んだときだけ入れる).
+
+    元メールの To・Cc は送り主が自由に書けるので、知らない人が CC に入ったまま
+    いつもどおり送ってしまわないようにする。
+    """
+    page = client.get("/mail").text
+    i = page.index("async function openMail(id)")
+    block = page[i:page.index("\n}\n", i)]
+    assert '$("m-cc").value = replied ? (m.reply_cc || []).join(", ") : "";' in block
+    assert '$("m-cc-all").checked = replied && !!$("m-cc").value;' in block
+    assert ": modal.ccCandidates;" not in block
+    # チェックを付けたときに候補を入れる
+    assert 'if ($("m-cc-all").checked) cc.value = modal.ccSaved || modal.ccCandidates;' in page
+    # CC・BCC があるときは、確認の画面で知らせる
+    assert "CC・BCC の人にも同じ文が届きます" in page
+
+
+def _split_addrs(page: str, values: list[str]) -> list[list[str]]:
+    """画面の splitAddrs を node で動かす (node が無ければ飛ばす)."""
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node が無い")
+    i = page.index("const splitAddrs = ")
+    code = page[i:page.index(".filter(Boolean);", i) + len(".filter(Boolean);")]
+    script = code + f"\nconsole.log(JSON.stringify({json.dumps(values)}.map(splitAddrs)));"
+    r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_split_addrs_keeps_display_names(client):
+    """メールソフトからコピーした「名前 <アドレス>」は、名前に空白があっても1件のまま."""
+    page = client.get("/mail").text
+    out = _split_addrs(page, [
+        "山田 太郎 <yamada@example.com>",
+        "佐藤 <sato@example.com>, a@x.com、b@y.com;c@z.com\nd@w.com",
+        "a@x.com b@y.com",            # 空白だけで区切っても分ける
+        "ｅ＠ｘ．ｃｏｍ，　f@y.com",    # 全角は半角に直す
+        "  ",
+    ])
+    assert out == [
+        ["山田 太郎 <yamada@example.com>"],
+        ["佐藤 <sato@example.com>", "a@x.com", "b@y.com", "c@z.com", "d@w.com"],
+        ["a@x.com", "b@y.com"],
+        ["e@x.com", "f@y.com"],
+        [],
+    ]
+
+
+def test_send_accepts_display_name_from_screen():
+    """画面が送る「名前 <アドレス>」をサーバが受け付け、アドレスだけで送る."""
+    from server import mail
+    cc, bcc = mail.check_reply_recipients(
+        "taro@example.com", ["山田 太郎 <yamada@example.com>"], ["佐藤 <sato@example.com>"])
+    assert cc == ["yamada@example.com"] and bcc == ["sato@example.com"]
+
+
+# ---------- 一部の送り先だけ断られたとき ----------
+# smtplib は全員に断られたときだけ例外にし、一部だけなら残りの人に送って
+# 断られた人の一覧を返す。以前はそれを見ておらず、宛先 (お客様) に届かず CC にだけ
+# 届いたときも「返信済み」になっていた
+
+def test_smtp_send_returns_refused_recipients(monkeypatch):
+    from server import notify
+
+    class FakeSMTP:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def ehlo(self): pass
+        def starttls(self, context=None): pass
+        def sendmail(self, frm, to, msg):
+            return {"taro@example.com": (550, b"no such user")}
+
+    monkeypatch.setattr(notify.smtplib, "SMTP", FakeSMTP)
+    refused = notify.smtp_send({"smtp_host": "smtp.e", "smtp_port": "587"},
+                               "info@bics.example", ["taro@example.com", "sato@x.com"], "x")
+    assert list(refused) == ["taro@example.com"]
+
+
+def test_send_reply_raises_when_some_refused(monkeypatch):
+    from server import mail, notify
+
+    monkeypatch.setattr(notify, "smtp_send",
+                        lambda s, sender, rcpts, message: {"sato@x.com": (550, b"no")})
+    with pytest.raises(mail.SomeRecipientsRefused) as ei:
+        mail.send_reply({"smtp_host": "smtp.e", "mail_from": "info@bics.example"},
+                        "taro@example.com", "Re: x", "本文", cc=["sato@x.com"])
+    assert ei.value.refused == ["sato@x.com"]
+    assert b"Cc: sato@x.com" in ei.value.raw
+
+
+def _audit_csv(client, admin):
+    import datetime as _dt
+    return client.get(
+        "/api/reports/audit.csv?month=" + _dt.datetime.now().strftime("%Y-%m"),
+        headers=auth(admin)).text
+
+
+def test_send_to_refused_but_cc_delivered_is_not_marked_replied(
+        client, users, tmp_path, monkeypatch):
+    """宛先 (お客様) が断られ CC にだけ届いたら、未対応に戻して知らせる."""
+    from server import notify
+    _, admin = users
+    _setup(client, admin)
+    mid = _add_mail(tmp_path)
+    monkeypatch.setattr(notify, "smtp_send",
+                        lambda s, sender, rcpts, message: {"taro@example.com": (550, b"no")})
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                    json={"body": "本文", "cc": ["sato@x.com"]})
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert "taro@example.com" in detail and "受け取りを断られました" in detail
+    assert "1件には届いています" in detail
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["status"] == "unhandled" and d["reply_cc"] == []
+    csv_text = _audit_csv(client, admin)
+    assert "mail_send_refused" in csv_text
+    assert "refused=taro@example.com" in csv_text and "delivered=sato@x.com" in csv_text
+
+
+def test_send_with_some_cc_refused_reports_them(client, users, tmp_path, monkeypatch):
+    """CC・BCC の一部だけ断られたら、返信済みにして、届かなかった人を知らせる."""
+    from server import notify
+    _, admin = users
+    _setup(client, admin)
+    mid = _add_mail(tmp_path)
+    monkeypatch.setattr(notify, "smtp_send",
+                        lambda s, sender, rcpts, message: {"Bad@x.com": (550, b"no")})
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                    json={"body": "本文", "cc": ["bad@x.com", "ok@y.jp"],
+                          "bcc": ["boss@bics.example"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["refused"] == ["Bad@x.com"]
+    assert body["cc"] == ["ok@y.jp"] and body["bcc"] == ["boss@bics.example"]
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["status"] == "replied" and d["reply_cc"] == ["ok@y.jp"]
+    csv_text = _audit_csv(client, admin)
+    assert "refused=Bad@x.com" in csv_text and "recipients=3" in csv_text
+    # 画面で届かなかったアドレスを出す
+    assert "次のアドレスには届きませんでした" in client.get("/mail").text

@@ -59,8 +59,11 @@ def send_slack(url: str, text: str) -> None:
 
 
 def smtp_send(settings: dict, sender: str, recipients: list[str],
-              message: str) -> None:
+              message: str) -> dict:
     """SMTP で1通送る (失敗時は例外を送出).
+
+    送り先の一部だけがサーバに断られたときは例外にならず (全員に断られたときだけ例外)、
+    断られた送り先を {アドレス: (コード, 応答)} で返す。全員に送れたら空の dict。
 
     - サーバ証明書を検証する (Python の既定の starttls() は検証しないため
       ssl.create_default_context() を明示的に渡す)
@@ -96,7 +99,7 @@ def smtp_send(settings: dict, sender: str, recipients: list[str],
                 # ログインしないならパスワードは流れないので、そのまま続行
         if user:
             s.login(user, settings.get("smtp_pass", ""))
-        s.sendmail(sender, recipients, message)
+        return s.sendmail(sender, recipients, message) or {}
 
 
 def send_email(settings: dict, subject: str, text: str) -> None:

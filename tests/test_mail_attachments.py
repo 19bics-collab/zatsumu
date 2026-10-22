@@ -361,6 +361,106 @@ def test_oversize_attachment_is_recorded_not_saved(client, tmp_path, monkeypatch
         list((att_dir / str(rows[0]["mail_id"])).iterdir()) == []
 
 
+# ---------- DB のロックとディスクの空き ----------
+
+def test_files_are_written_before_taking_the_db_lock(client, tmp_path, monkeypatch):
+    """添付の中身は DB の書き込みロックを持つ前に書き、ロック中は名前の変更だけにする.
+
+    以前はロックを持ったまま全部のメールの添付を書いており、写真の多いメールが
+    続くと、その間ほかの書き込み (打刻・設定の保存・返信の送信) が失敗していた。
+    """
+    import sqlite3
+    from server import mail
+    att_dir = tmp_path / "mail_attachments"
+    real_write = Path.write_bytes
+    state = {"in_save": False, "staged": 0}
+
+    def write_bytes(self, data):
+        if state["in_save"]:
+            pytest.fail("DB のロックを持ったままファイルを書いた")
+        # ここで別の接続がすぐに書き込めること (ロックを持っていない)
+        other = sqlite3.connect(tmp_path / "zatsumu.db", timeout=0)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.rollback()
+        finally:
+            other.close()
+        state["staged"] += 1
+        return real_write(self, data)
+
+    real_save = mail.save_attachments
+
+    def save(*a, **kw):
+        state["in_save"] = True
+        try:
+            return real_save(*a, **kw)
+        finally:
+            state["in_save"] = False
+
+    monkeypatch.setattr(Path, "write_bytes", write_bytes)
+    monkeypatch.setattr(mail, "save_attachments", save)
+    raws = {5: mail_with_files(), 6: mail_with_files(message_id="<att2@example.com>")}
+    assert len(fetch(tmp_path, monkeypatch, raws, att_dir)) == 2
+    monkeypatch.undo()
+    assert state["staged"] == 4
+    rows = att_rows(tmp_path)
+    assert [r["skip_reason"] for r in rows] == [""] * 4
+    for r, data in zip(rows, (PDF, PNG, PDF, PNG)):
+        assert (att_dir / r["path"]).read_bytes() == data
+    # 一時フォルダは残さない (保存先にはメールの番号のフォルダだけ)
+    assert sorted(p.name for p in att_dir.iterdir()) == sorted(
+        {str(r["mail_id"]) for r in rows})
+
+
+def test_stale_staging_folder_is_cleaned(client, tmp_path, monkeypatch):
+    """止まった取り込みが残した古い一時フォルダは消す (動いている回のものは消さない)."""
+    import os
+    import time
+    att_dir = tmp_path / "mail_attachments"
+    old = att_dir / ".staging-old"
+    fresh = att_dir / ".staging-running"
+    for d in (old, fresh):
+        d.mkdir(parents=True)
+        (d / "0-0").write_bytes(b"x")
+    two_days_ago = time.time() - 2 * 24 * 3600
+    os.utime(old, (two_days_ago, two_days_ago))
+    fetch(tmp_path, monkeypatch, {5: mail_with_files()}, att_dir)
+    assert not old.exists()
+    assert fresh.exists()
+
+
+def test_low_disk_space_keeps_the_mail_without_files(client, tmp_path, monkeypatch):
+    """サーバの空きが少ないときは添付を保存せず、メールは取り込む (DB を書けなくしない)."""
+    import collections
+    from server import mail
+    usage = collections.namedtuple("usage", "total used free")
+    monkeypatch.setattr(mail.shutil, "disk_usage",
+                        lambda path: usage(10 * mail._GB, 9 * mail._GB, mail._GB))
+    att_dir = tmp_path / "mail_attachments"
+    assert len(fetch(tmp_path, monkeypatch, {5: mail_with_files()}, att_dir)) == 1
+    rows = att_rows(tmp_path)
+    assert [(r["skip_reason"], r["path"]) for r in rows] == [("disk_low", ""), ("disk_low", "")]
+    assert mail.skip_reason_text("disk_low") == "サーバの空きが少ないため保存していません"
+
+
+def test_total_size_limit(client, users, tmp_path, monkeypatch):
+    """保存している添付の合計が上限に達したら、それ以上は保存しない."""
+    from server import mail
+    monkeypatch.setattr(mail, "ATTACHMENT_STORE_MAX_BYTES", len(PDF) + len(PNG) + len(PDF))
+    att_dir = tmp_path / "mail_attachments"
+    raws = {5: mail_with_files(), 6: mail_with_files(message_id="<att2@example.com>")}
+    fetch(tmp_path, monkeypatch, raws, att_dir)
+    rows = att_rows(tmp_path)
+    # 1通目の2つと 2通目の PDF までは入り、2通目の PNG で上限を超える
+    assert [r["skip_reason"] for r in rows] == ["", "", "", "store_full"]
+    assert rows[3]["path"] == ""
+    assert "合わせて" in mail.skip_reason_text("store_full")
+    # 画面にも理由が出る
+    _, admin = users
+    d = client.get(f"/api/mail/{rows[3]['mail_id']}", headers=auth(admin)).json()
+    assert d["skipped_attachments"][0]["reason"] == mail.skip_reason_text("store_full")
+
+
 # ---------- 画面用の API ----------
 
 def add_mail_with_atts(tmp_path, items, n=1, **kw):
