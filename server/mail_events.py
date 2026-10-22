@@ -21,6 +21,10 @@ WEEKDAYS = "月火水木金土日"
 MAX_EVENTS = 5
 # 日付を探す本文の長さ (長い引用・転送の奥までは見ない)
 SCAN_MAX_CHARS = 20_000
+# 1行の長さの限り。これより長い行は「。」と、この長さごとに分けてから探す
+# (日付の書いてある行は短い。とても長い行に正規表現を使うと、いたずらのメールで
+# サーバ全体が何秒も止まることがあるので)
+LINE_MAX_CHARS = 500
 # 年の書いていない日付が、届いた日のこの日数前までなら、その年のまま (済んだ日の話)。
 # それより前なら来年のその日にする。年の書いてある日付も、これより前のものは候補にしない
 # (署名の「2019年設立」や、引用された前のメールの古い日付を拾わないように)
@@ -63,9 +67,13 @@ _QUOTE_RE = re.compile(r"^\s*(?:>\s*)+")
 # 予定ではない日付が書いてある行: 返事の元のメールの見出し
 # (「2026年10月20日(火) 10:00 山田 <taro@example.com>:」「… wrote:」) と、
 # 転送・引用したメールのヘッダの送信日時 (Date: / Sent: / 送信日時:)
-_SKIP_LINE_RE = re.compile(
-    r"(?:wrote|のメッセージ)\s*:\s*$|[<@][^<>]*>?\s*:\s*$|^\s*(?:date|sent|送信日時)\s*:",
-    re.IGNORECASE)
+# (見出しは「:」で終わる行の終わりの方だけを見る。「<」「@」の後ろの長さにも限りを付ける。
+# 限りが無いと「@」だけの長い行で、とても遅くなる)
+_SKIP_END_RE = re.compile(r"(?:wrote|のメッセージ)\s*:\s*$|[<@][^<>]{0,100}>?\s*:\s*$",
+                          re.IGNORECASE)
+_SKIP_HEAD_RE = re.compile(r"^\s*(?:date|sent|送信日時)\s*:", re.IGNORECASE)
+_SPACES_RE = re.compile(r"\s+")
+_SENTENCE_END_RE = re.compile(r"(?<=。)")
 
 _DATE_RE = re.compile(
     # 2026年10月25日 / 2026/10/25 / 2026.10.25 / 2026-10-25
@@ -114,6 +122,30 @@ def _norm(text) -> str:
     """全角の英数字・記号を半角に直し (NFKC)、URL を除く (URL の中の数字を日付と見ないように)."""
     text = unicodedata.normalize("NFKC", str(text or "")).replace("\t", " ")
     return _URL_RE.sub(" ", text)
+
+
+def _pieces(line: str) -> list[str]:
+    """探す前の1行: 続いた空白を1つにし、長すぎる行は「。」と LINE_MAX_CHARS ごとに分ける.
+
+    空白がとても長く続く行・とても長い行に正規表現を使うと、1回で何秒もかかり、
+    その間サーバ全体が止まる (いたずらのメールでも起きる) ので、先に短くしておく。
+    """
+    line = _SPACES_RE.sub(" ", line)
+    if len(line) <= LINE_MAX_CHARS:
+        return [line]
+    out = []
+    for sentence in _SENTENCE_END_RE.split(line):
+        out.extend(sentence[i:i + LINE_MAX_CHARS]
+                   for i in range(0, len(sentence), LINE_MAX_CHARS))
+    return [p for p in out if p.strip()]
+
+
+def _skip_line(line: str) -> bool:
+    """予定ではない日付が書いてある行 (返事の元のメールの見出し・転送のヘッダの送信日時) か."""
+    if _SKIP_HEAD_RE.match(line):
+        return True
+    line = line.rstrip()
+    return line.endswith(":") and bool(_SKIP_END_RE.search(line[-120:]))
 
 
 def _text(value, limit: int) -> str:
@@ -212,10 +244,12 @@ def _segments(mail_row: dict) -> list[tuple[list[str], bool]]:
         q = _QUOTE_RE.match(line)
         if q:
             line = line[q.end():]
-        if not line.strip() or _SKIP_LINE_RE.search(line):
-            continue
-        (quoted if q else own).append(line)
-    return [([_norm(mail_row.get("subject"))], False), (own, False), (quoted, True)]
+        for piece in _pieces(line):
+            if not piece.strip() or _skip_line(piece):
+                continue
+            (quoted if q else own).append(piece)
+    subject = _pieces(_norm(mail_row.get("subject"))[:SCAN_MAX_CHARS])
+    return [(subject, False), (own, False), (quoted, True)]
 
 
 def _infer_year(month: int, day: int, ref: date) -> date | None:

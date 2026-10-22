@@ -51,8 +51,8 @@
   .pr-3 { color: #6b7280; }
   .st-replied { color: #0a7d32; } .st-archived { color: #6b7280; }
   .st-unhandled { color: #d97706; } .st-pending_approval { color: #7c3aed; font-weight: 600; }
-  /* 確認待ちの数 (受信箱のボタン)・差し戻されたメール (一覧の状態の横) */
-  .ntf.pend { background: #7c3aed; }
+  /* 確認待ちの数 (受信箱の横のボタン) */
+  header button.pend { background: #7c3aed; }
   .mail-row td > span[class^="st-"] { white-space: nowrap; }
   .ret-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
                border-radius: 99px; background: #fee2e2; color: #991b1b; margin-left: .3rem;
@@ -398,8 +398,10 @@
 <div id="app" hidden>
 <header>
   <h1>📨 <span id="brand">メール対応</span></h1>
-  <button id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span><span
-    id="pending-badge" class="ntf pend" title="確認待ち（メール担当者からの確認のお願い）" hidden></span></button>
+  <button id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span></button>
+  <!-- 確認待ちの数は受信箱のボタンの中に入れない (スマホで受信箱を押したつもりが、
+       こちらに当たって確認待ちだけの一覧になってしまうので、別のボタンにする) -->
+  <button id="nav-pending" class="pend" title="確認待ち（メール担当者からの確認のお願い）" hidden></button>
   <button id="nav-settings" hidden>設定</button>
   <span class="spacer"></span>
   <span id="whoami"></span>
@@ -1082,8 +1084,8 @@ function renderStatus() {
   document.title = (n ? `(${n}) ` : "") + baseTitle;
   // 確認待ち (メール担当者からの確認のお願い)。管理者には受信箱の上にも知らせを出す
   const pend = s.pending_approval || 0;
-  $("pending-badge").hidden = pend === 0;
-  $("pending-badge").textContent = "確認待ち " + pend;
+  $("nav-pending").hidden = pend === 0;
+  $("nav-pending").textContent = "確認待ち " + pend;
   $("approval-banner").hidden = !isAdmin() || pend === 0 || $("filter").value === "pending_approval";
   $("approval-banner-text").textContent =
     `📝 メール担当者からの確認のお願いが ${pend} 件あります（返信文を確かめて「承認して送信」か「差し戻す」を押してください）`;
@@ -1242,7 +1244,7 @@ function renderInbox(list, keepPlace) {
   rememberShown(list);
 }
 $("filter").onchange = () => showInbox();
-// 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱のボタンの「確認待ち」から)
+// 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱の横の「確認待ち」から)
 function showPending() {
   $("filter").value = "pending_approval";
   showInbox();
@@ -1534,7 +1536,7 @@ $("m-gen").onclick = async () => {
   try {
     const r = await apiJson(`/api/mail/${id}/draft`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instructions: $("m-inst").value }),
+      body: JSON.stringify({ instructions: $("m-inst").value, seen_request: seenRequest() }),
     });
     if (modal.id !== id) return;
     $("m-draft").value = r.draft_reply;
@@ -1615,7 +1617,8 @@ $("m-send").onclick = async () => {
   try {
     const r = await apiJson(`/api/mail/${id}/send`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body: text, cc, bcc }),
+      body: JSON.stringify({ body: text, cc, bcc,
+                             approve_request: approving ? (modal.mail.requested_at || "") : null }),
     });
     if (modal.id !== id) { showInbox(); return; }
     modal.savedDraft = text;
@@ -1729,6 +1732,11 @@ $("m-return").onclick = async () => {
   b.disabled = false;
 };
 
+// この画面を開いたときの確認のお願いの時刻 (無ければ "")。下書きの保存・生成と送信に付けると、
+// 開いた後にメール担当者が確認をお願いしていたら、サーバが止めてくれる
+// (見ていない下書きを上書きしたり、承認したことにしたりしない)
+const seenRequest = () => modal.mail ? (modal.mail.requested_at || "") : null;
+
 // 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき。送信済みは保存しない)
 async function saveDraft() {
   const draft = $("m-draft").value;
@@ -1736,7 +1744,7 @@ async function saveDraft() {
     try {
       await api(`/api/mail/${modal.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draft_reply: draft }),
+        body: JSON.stringify({ draft_reply: draft, seen_request: seenRequest() }),
       });
       modal.savedDraft = draft;
     } catch {}
@@ -3282,8 +3290,8 @@ window.addEventListener("pageshow", e => { if (e.persisted) pollNow(); });
 
 /* ---------- ナビ・ログイン ---------- */
 $("nav-inbox").onclick = () => showInbox();
-// 受信箱のボタンの「確認待ち N」を押したら、確認待ちのメールだけを出す
-$("pending-badge").onclick = e => { e.stopPropagation(); showPending(); };
+// 受信箱の横の「確認待ち N」を押したら、確認待ちのメールだけを出す
+$("nav-pending").onclick = () => showPending();
 $("nav-settings").onclick = () => openSettings();
 $("login-btn").onclick = () => {
   localStorage.setItem(KEY, $("token-input").value.trim());

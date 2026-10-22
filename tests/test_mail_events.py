@@ -272,6 +272,38 @@ def test_rule_handles_long_and_odd_bodies():
         ("2026-10-25", "14:00", ""), ("2026-10-26", "15:00", "")]
 
 
+@pytest.mark.parametrize("body", [
+    "@" * 19_999,                            # 「@」だけの長い1行 (見出しの行の判定)
+    "@" * 19_990 + "<:",
+    ("@" * 499 + ":\n") * 40,                # 「:」で終わる長い行がたくさん
+    " " * 19_999,                            # 空白だけの長い1行 (時刻・曜日の判定)
+    "来週" + " " * 19_990,                   # 「来週」の後ろに長い空白
+    "10月25日(土)\n時間: 14時" + " " * 19_900 + "x",   # 次の行の時刻の後ろに長い空白
+    "@ " * 9_999,
+])
+def test_rule_crafted_bodies_finish_quickly(body):
+    """いたずらのメール (同じ文字がとても長く続く) でも、予定の候補はすぐに出る.
+
+    正規表現に何秒もかかると、その間サーバ全体が止まる (ほかの人の受信箱・送信・打刻も)。
+    """
+    import time
+    from server import mail_events
+    for row in (_row(body, "件名"), _row("", body)):
+        start = time.perf_counter()
+        mail_events.find_events({}, row)
+        assert time.perf_counter() - start < 1.0
+
+
+def test_rule_long_lines_still_find_dates():
+    """長い行 (HTML のメールの段落など) は分けて探すので、後ろの方の日付も見つかる."""
+    body = ("お世話になっております。" * 60 + "清掃は10月25日(日) 14時〜でお願いします。"
+            + "よろしくお願いいたします。" * 60)
+    assert len(body.splitlines()) == 1 and len(body) > 1_000
+    assert _found(body) == [("2026-10-25", "14:00", "")]
+    # 空白が続いていても日付・時刻は読める
+    assert _found("10月25日(日)        14時   〜   16時") == [("2026-10-25", "14:00", "16:00")]
+
+
 # ---------- AI での読み取り ----------
 
 def _ai_settings(**kw):

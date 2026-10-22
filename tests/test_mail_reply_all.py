@@ -435,7 +435,7 @@ def test_mail_page_has_reply_all_ui(client):
     page = client.get("/mail").text
     for marker in ('id="m-to"', 'id="m-cc-all"', 'id="m-cc"', 'id="m-bcc"',
                    "CCの人にも送る（全員に返信）",
-                   "JSON.stringify({ body: text, cc, bcc })",
+                   "JSON.stringify({ body: text, cc, bcc,",
                    "m.reply_cc_candidates"):
         assert marker in page, marker
     # 差出人名やアドレス (外から来た文字) は textContent / value で入れる

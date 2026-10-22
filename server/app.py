@@ -484,10 +484,14 @@ class MailPatch(BaseModel):
     status: str | None = None
     category: str | None = None           # 問い合わせの種類 ("" で未分類に戻す)
     assignee_user_id: int | None = None   # 担当の人 (null で担当なし)
+    # 下書きを書いた画面が見ていた確認のお願いの時刻 (requested_at。無ければ "")。
+    # 画面を開いた後に確認をお願いされていたら、その下書きを上書きしない (409)
+    seen_request: str | None = None
 
 
 class MailDraftBody(BaseModel):
     instructions: str = ""    # 返信の方針 (例: 「金曜までに対応すると伝える」)
+    seen_request: str | None = None   # MailPatch と同じ
 
 
 class MailSendBody(BaseModel):
@@ -495,6 +499,10 @@ class MailSendBody(BaseModel):
     subject: str | None = None  # 省略時は「Re: 元の件名」
     cc: list[str] | None = None   # CC のアドレス (全員に返信。省略時は CC なし)
     bcc: list[str] | None = None  # BCC のアドレス (ヘッダには出ない)
+    # 「承認して送信」のとき、画面で見ていた確認のお願いの時刻 (requested_at)。
+    # null なら自分の返信として送る (確認待ちのメールなら 409。見ていない下書きを承認したことにしない)。
+    # 項目ごと無い (この項目を知らない、更新前に開いた画面) ときは確かめない (今までどおり)
+    approve_request: str | None = None
 
 
 class MailApprovalBody(BaseModel):
@@ -2474,6 +2482,28 @@ def _mail_or_404(conn, mail_id: int):
     return row
 
 
+# 画面を開いた後に、メール担当者が確認をお願いした・頼み直したとき (その下書きを見ていない)
+SEEN_REQUEST_CHANGED = ("このメールは、開いた後にメール担当者が確認をお願いしました"
+                        "（閉じて開き直し、下書きを確かめてください）")
+
+
+def _check_seen_request(r, seen_request: str | None) -> None:
+    """下書きを書いた画面が見ていた確認のお願い (seen_request) が、いまと違えば 409.
+
+    画面を開いた後に確認をお願いされていると、見ていない下書きを上書きして消してしまう。
+    seen_request が null (送ってこない古い画面) なら確かめない。
+    """
+    if seen_request is not None and (r["requested_at"] or "") != seen_request:
+        raise HTTPException(409, SEEN_REQUEST_CHANGED)
+
+
+def _seen_request_sql(seen_request: str | None) -> tuple[str, tuple]:
+    """_check_seen_request と同じことを、書き込みの中で確かめる条件 (確かめた後の変更に備える)."""
+    if seen_request is None:
+        return "", ()
+    return " AND COALESCE(requested_at, '') = ?", (seen_request,)
+
+
 # メール担当者が、確認待ちのメールの返信文を変えようとしたとき (管理者が見ている文を変えない)
 PENDING_LOCKED = ("確認待ちの間は、返信文を変えられません"
                   "（直したいときは、管理者に「差し戻す」を頼んでください）")
@@ -3178,6 +3208,7 @@ def mail_generate_draft(
     staff = _is_mail_staff(user)
     if staff and r["status"] == "pending_approval":
         raise HTTPException(409, PENDING_LOCKED)
+    _check_seen_request(r, body.seen_request)
     s = db.get_settings(conn)
     conn.commit()   # AI の呼び出し (時間がかかる) の間、DB の書き込みロックを持たない
     text, source = mail.generate_reply(s, dict(r), body.instructions)
@@ -3185,15 +3216,19 @@ def mail_generate_draft(
     if source != "ai" and str(s.get("anthropic_api_key") or "").strip():
         ai_error = notify.safe_error(RuntimeError(
             mail.last_ai_error("draft") or "AIで返信文を作れませんでした"), s)
-    # 作っている間に確認をお願いしていたら、メール担当者の分は書き込まない
+    # 作っている間に確認をお願いしていたら、メール担当者の分は書き込まない。
+    # 管理者の分も、画面を開いた後に確認をお願いされていたら書き込まない (その下書きを消さない)
+    sql, params = _seen_request_sql(body.seen_request)
     cur = conn.execute(
         "UPDATE mails SET draft_reply = ?, draft_source = ?,"
         " draft_generated_at = ? WHERE id = ?"
-        + (" AND status != 'pending_approval'" if staff else ""),
-        (text, source, now_iso(), mail_id),
+        + (" AND status != 'pending_approval'" if staff else "") + sql,
+        (text, source, now_iso(), mail_id, *params),
     )
     if not cur.rowcount:
-        _mail_or_404(conn, mail_id)   # 作っている間に消えた (保存日数) なら 404
+        now_row = _mail_or_404(conn, mail_id)   # 作っている間に消えた (保存日数) なら 404
+        if not staff:
+            _check_seen_request(now_row, body.seen_request)
         raise HTTPException(409, PENDING_LOCKED)
     return {"draft_reply": text, "draft_source": source, "ai_error": ai_error}
 
@@ -3332,6 +3367,8 @@ def mail_patch(
         raise HTTPException(400, "「確認待ち」には、返信画面の「確認をお願いする」からしてください")
     if staff and "draft_reply" in changes and row["status"] == "pending_approval":
         raise HTTPException(409, PENDING_LOCKED)
+    if "draft_reply" in changes:
+        _check_seen_request(row, body.seen_request)
     s = db.get_settings(conn)
     if "category" in changes:
         category = " ".join(changes["category"].split())
@@ -3358,14 +3395,18 @@ def mail_patch(
             changes["assignee_user_id"] = uid
 
     if "draft_reply" in changes:
-        # メール担当者の分は、確かめた後に確認をお願いしていたら書き込まない (ほかの変更もしない)
+        # メール担当者の分は、確かめた後に確認をお願いしていたら書き込まない (ほかの変更もしない)。
+        # 管理者の分も、画面を開いた後に確認をお願いされていたら書き込まない
+        sql, params = _seen_request_sql(body.seen_request)
         cur = conn.execute(
             "UPDATE mails SET draft_reply = ? WHERE id = ?"
-            + (" AND status != 'pending_approval'" if staff else ""),
-            (changes["draft_reply"], mail_id),
+            + (" AND status != 'pending_approval'" if staff else "") + sql,
+            (changes["draft_reply"], mail_id, *params),
         )
-        if staff and not cur.rowcount:
-            raise HTTPException(409, PENDING_LOCKED)
+        if not cur.rowcount:
+            if staff:
+                raise HTTPException(409, PENDING_LOCKED)
+            _check_seen_request(_mail_or_404(conn, mail_id), body.seen_request)
     if "priority" in changes:
         conn.execute(
             "UPDATE mails SET priority = ?, priority_reason = ?,"
@@ -3405,6 +3446,25 @@ def mail_patch(
             "assignee_name": r["assignee_name"] or ""}
 
 
+def _check_send_approval(r, approve_request: str | None) -> None:
+    """送ろうとしている画面が、いまの確認待ちの様子と食い違っていれば 409.
+
+    確認待ちなのに「承認して送信」でない (画面を開いた後にメール担当者が確認をお願いした) と、
+    見ていない下書きを捨てて、承認したことになってしまう。「承認して送信」なのに確認待ちで
+    ない・別のお願いになっている (差し戻された・頼み直された) と、見ていない下書きを承認したことになる。
+    """
+    pending = r["status"] == "pending_approval"
+    if approve_request is None and pending:
+        raise HTTPException(
+            409, "このメールは、メール担当者が確認をお願いしたところです。"
+                 "閉じて開き直し、下書きを確かめてから送ってください")
+    if approve_request is not None and (
+            not pending or (r["requested_at"] or "") != approve_request):
+        raise HTTPException(
+            409, "確認のお願いが変わりました（ほかの管理者が差し戻したか、頼み直されました）。"
+                 "閉じて開き直し、下書きを確かめてください")
+
+
 @app.post("/api/mail/{mail_id}/send")
 def mail_send(
     mail_id: int, body: MailSendBody, admin=Depends(require_admin),
@@ -3419,10 +3479,18 @@ def mail_send(
     そのアドレスのメールボックスの送信済みフォルダに残す。
     送れるのは管理者だけ。確認待ち (メール担当者が確認をお願いした) のメールを送ると
     「承認して送信」になり、送った管理者の名前を approved_by に残す (送れなかったら確認待ちに戻す)。
+    承認するときは、画面で見ていた確認のお願いの時刻を approve_request で渡す (承認でなければ null)。
+    画面を開いた後に確認をお願いされた (下書きを見ていない)・差し戻されて頼み直された、などで
+    食い違えば 409。approve_request の項目ごと無い古い画面は確かめない。
     """
     r = _mail_or_404(conn, mail_id)
     if r["status"] == "replied":
         raise HTTPException(409, "このメールには返信済みです")
+    # 更新前に開いた画面 (approve_request を送ってこない) は、今までどおり確かめない
+    # (確かめると、ページを読み込み直すまで確認待ちのメールを送れなくなる)
+    check = "approve_request" in body.model_fields_set
+    if check:
+        _check_send_approval(r, body.approve_request)
     text = (body.body or "").strip()
     if not text:
         raise HTTPException(400, "返信本文を入力してください")
@@ -3445,18 +3513,25 @@ def mail_send(
     # 先に「返信済み」へ原子的に更新・コミットしてから送信する (二重送信防止:
     # 同じメールへ同時に送信した場合、後の方は rowcount=0 になり 409 で止まる)。
     # CC・BCC も実際に送ったものとして一緒に残す
-    # 確認待ちだったら (同じ書き込みの中で決めるので、同時に確認をお願いされても食い違わない)
-    # 「承認して送信」として、送った管理者の名前を残す
+    # 確認待ちだったら「承認して送信」として、送った管理者の名前を残す。承認するのは、画面で
+    # 見ていた確認のお願いのときだけ (同じ書き込みの中で確かめるので、確かめた後に確認を
+    # お願いされた・差し戻されたときは書き込まない。下の 409)
     cur = conn.execute(
         "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
         " reply_cc = ?, reply_bcc = ?, replied_at = ?, replied_by = ?,"
         " approved_by = CASE WHEN status = 'pending_approval' THEN ? ELSE '' END"
-        " WHERE id = ? AND status != 'replied'",
+        " WHERE id = ? AND status != 'replied' AND (? OR CASE WHEN ? IS NULL"
+        " THEN status != 'pending_approval'"
+        " ELSE status = 'pending_approval' AND COALESCE(requested_at, '') = ? END)",
         (subject, text, ", ".join(cc), ", ".join(bcc), now_iso(), admin["name"],
-         admin["name"], mail_id),
+         admin["name"], mail_id, int(not check), body.approve_request, body.approve_request),
     )
     if not cur.rowcount:
-        raise HTTPException(409, "このメールには返信済みです")
+        now_row = _mail_or_404(conn, mail_id)
+        if now_row["status"] == "replied" or not check:
+            raise HTTPException(409, "このメールには返信済みです")
+        _check_send_approval(now_row, body.approve_request)
+        raise HTTPException(409, "このメールは、ほかの画面で変わったところです（閉じて開き直してください）")
     approval = conn.execute("SELECT approved_by, requested_by FROM mails WHERE id = ?",
                             (mail_id,)).fetchone()
     conn.commit()

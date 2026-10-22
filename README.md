@@ -295,9 +295,9 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | POST | `/api/mail/{id}/draft` | admin・メール担当者 | 返信下書きの(再)生成（AI / 定型文） |
 | POST | `/api/mail/{id}/events` | admin・メール担当者 | このメールの日付から予定の候補を作る（`events`: 名前・日付・開始/終了・終日・場所・メモ。AI / ルール。DB には書かない。Google への登録は画面がする） |
 | POST | `/api/mail/{id}/notion` | admin | このメールを Notion のデータベースに1行で登録（本文・添付ファイル付き。登録済みなら 409、`{"again": true}` でもう1行作る） |
-| PATCH | `/api/mail/{id}` | admin・メール担当者 | 下書き保存・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更（メール担当者は状態を変えられず、確認待ちの下書きも変えられない） |
+| PATCH | `/api/mail/{id}` | admin・メール担当者 | 下書き保存・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更（メール担当者は状態を変えられず、確認待ちの下書きも変えられない。`seen_request` に画面を開いたときの `requested_at` を渡すと、開いた後に確認をお願いされていたら下書きを上書きせず 409） |
 | GET | `/api/mail/assignees` | admin・メール担当者 | 担当に選べる人（有効な人の番号と名前） |
-| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る。確認待ちのメールなら「承認して送信」になり `approved_by` を残す） |
+| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る。確認待ちのメールは `approve_request` に画面で見ていた `requested_at` を渡すと「承認して送信」になり `approved_by` を残す。null・食い違うときは 409（見ていない下書きを承認したことにしない）） |
 | POST | `/api/mail/{id}/request-approval` | admin・メール担当者 | 「確認をお願いする」（`body` `cc` `bcc` `note`。確認待ちにして Slack・通知先メールに知らせる。設定 `mail_require_approval` がオフなら 400） |
 | POST | `/api/mail/{id}/send-back` | admin | 確認待ちを「差し戻す」（`note` が必要。未対応に戻し、コメントをメール担当者に見せる） |
 | GET | `/api/mail/me` | admin・メール担当者 | ログインした人の役割（`admin` / `staff`）と、画面の表示に使う設定（秘密は入れない） |

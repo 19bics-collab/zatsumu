@@ -88,6 +88,11 @@ def _request(client, user, mid, body="山田 様\n\nご連絡ありがとうご�
                        json={"body": body, **kw})
 
 
+def _approve(tmp_path, mid, body="本文"):
+    """「承認して送信」の送信内容 (画面で見ていた確認のお願いの時刻を付ける)."""
+    return {"body": body, "approve_request": _row(tmp_path, mid)["requested_at"]}
+
+
 def _smtp_ready(client, admin):
     r = client.patch("/api/settings", headers=auth(admin),
                      json={"smtp_host": "smtp.example.com", "mail_from": "info@bics.example"})
@@ -466,7 +471,8 @@ def test_approve_and_send_records_approver(client, users, tmp_path, monkeypatch,
     assert calls == [] and _row(tmp_path, mid)["status"] == "pending_approval"
     # 管理者が直して送る (いつもの送信) と「承認して送信」になる
     r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
-                    json={"body": "直した文", "cc": ["sato@x.com"]})
+                    json={"body": "直した文", "cc": ["sato@x.com"],
+                          "approve_request": _row(tmp_path, mid)["requested_at"]})
     assert r.status_code == 200, r.text
     assert r.json()["approved_by"] == "黒須"
     (args, kw), = calls
@@ -498,7 +504,7 @@ def test_failed_approval_send_goes_back_to_pending(client, users, tmp_path, monk
         raise RuntimeError("connection refused")
 
     monkeypatch.setattr(app_module.mail, "send_reply", boom)
-    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin), json={"body": "本文"})
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin), json=_approve(tmp_path, mid))
     assert r.status_code == 502
     row = _row(tmp_path, mid)
     assert (row["status"], row["approved_by"], row["replied_by"]) == ("pending_approval", "", "")
@@ -522,9 +528,104 @@ def test_refused_recipient_on_approval_goes_back_to_pending(client, users, tmp_p
         raise app_module.mail.SomeRecipientsRefused(b"RAW", ["taro@example.com"])
 
     monkeypatch.setattr(app_module.mail, "send_reply", refused)
-    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin), json={"body": "本文"})
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin), json=_approve(tmp_path, mid))
     assert r.status_code == 502
     assert _row(tmp_path, mid)["status"] == "pending_approval"
+
+
+def test_send_from_screen_opened_before_request_is_refused(client, users, tmp_path,
+                                                           monkeypatch, notices):
+    """管理者が開いた後にメール担当者が確認をお願いしたら、その画面からは送らない (409).
+
+    送ると、見ていない下書きを捨てて「承認した」ことになってしまう。開き直せば承認して送れる。
+    """
+    from server import app as app_module
+    _, staff, admin = users
+    _smtp_ready(client, admin)
+    mid = _add_mail(tmp_path)
+    calls = []
+    monkeypatch.setattr(app_module.mail, "send_reply",
+                        lambda *a, **kw: calls.append((a, kw)) or b"RAW")
+    seen = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()["requested_at"] or ""
+    assert _request(client, staff, mid, body="田中の下書き").status_code == 200
+    # 開いた画面で書いていた管理者の返信 (下書きの保存・送信) は、どちらも止まる
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_reply": "管理者の文", "seen_request": seen})
+    assert r.status_code == 409 and "開き直し" in r.json()["detail"]
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                    json={"body": "管理者の文", "approve_request": None})
+    assert r.status_code == 409 and "開き直し" in r.json()["detail"]
+    row = _row(tmp_path, mid)
+    assert calls == []
+    assert (row["status"], row["draft_reply"], row["approved_by"]) == (
+        "pending_approval", "田中の下書き", "")
+    assert _audits(tmp_path, "mail_send") == []
+    # 開き直すと、確認のお願いの時刻が分かるので、承認して送れる
+    seen = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()["requested_at"]
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_reply": "田中の下書き（直した）", "seen_request": seen})
+    assert r.status_code == 200
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                    json={"body": "田中の下書き（直した）", "approve_request": seen})
+    assert r.status_code == 200 and r.json()["approved_by"] == "黒須"
+
+
+def test_approve_from_stale_request_is_refused(client, users, tmp_path, monkeypatch, notices):
+    """「承認して送信」の画面を開いた後に、差し戻された・頼み直されたら送らない (409)."""
+    from server import app as app_module
+    _, staff, admin = users
+    _smtp_ready(client, admin)
+    mid = _add_mail(tmp_path)
+    calls = []
+    monkeypatch.setattr(app_module.mail, "send_reply",
+                        lambda *a, **kw: calls.append((a, kw)) or b"RAW")
+    _request(client, staff, mid, body="1回目")
+    old = _row(tmp_path, mid)["requested_at"]
+    # ほかの管理者が差し戻した → 確認待ちではないので、承認できない
+    client.post(f"/api/mail/{mid}/send-back", headers=auth(admin), json={"note": "直して"})
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                    json={"body": "1回目", "approve_request": old})
+    assert r.status_code == 409 and "変わりました" in r.json()["detail"]
+    # 頼み直された (別のお願い) → 前のお願いの画面からは承認できない
+    with _db(tmp_path) as conn:   # 時刻が同じにならないよう、前のお願いの時刻をずらしておく
+        conn.execute("UPDATE mails SET requested_at = '2000-01-01T00:00:00+00:00' WHERE id = ?",
+                     (mid,))
+    old = _row(tmp_path, mid)["requested_at"]
+    assert _request(client, staff, mid, body="2回目").status_code == 200
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                    json={"body": "1回目", "approve_request": old})
+    assert r.status_code == 409
+    # 確認待ちではないメールに「承認して送信」も送らない。自分の返信 (null) なら送れる
+    other = _add_mail(tmp_path, n=2)
+    r = client.post(f"/api/mail/{other}/send", headers=auth(admin),
+                    json={"body": "本文", "approve_request": ""})
+    assert r.status_code == 409
+    assert calls == [] and _row(tmp_path, mid)["status"] == "pending_approval"
+    r = client.post(f"/api/mail/{other}/send", headers=auth(admin),
+                    json={"body": "本文", "approve_request": None})
+    assert r.status_code == 200 and r.json()["approved_by"] == ""
+    # 古い画面 (seen_request を送らない) の下書きの保存は今までどおり
+    third = _add_mail(tmp_path, n=3)
+    r = client.patch(f"/api/mail/{third}", headers=auth(admin), json={"draft_reply": "x"})
+    assert r.status_code == 200
+    # 更新前に開いた画面 (approve_request の項目ごと無い) も、今までどおり承認して送れる
+    # (確かめると、ページを読み込み直すまで送れなくなる)
+    r = client.post(f"/api/mail/{mid}/send", headers=auth(admin), json={"body": "2回目"})
+    assert r.status_code == 200 and r.json()["approved_by"] == "黒須"
+
+
+def test_regenerate_draft_after_request_is_refused(client, users, tmp_path, notices):
+    """管理者が開いた後に確認をお願いされたら、「返信文を生成」でもその下書きを上書きしない."""
+    _, staff, admin = users
+    mid = _add_mail(tmp_path)
+    _request(client, staff, mid, body="田中の下書き")
+    r = client.post(f"/api/mail/{mid}/draft", headers=auth(admin), json={"seen_request": ""})
+    assert r.status_code == 409
+    assert _row(tmp_path, mid)["draft_reply"] == "田中の下書き"
+    seen = _row(tmp_path, mid)["requested_at"]
+    r = client.post(f"/api/mail/{mid}/draft", headers=auth(admin), json={"seen_request": seen})
+    assert r.status_code == 200
+    assert _row(tmp_path, mid)["draft_reply"] == r.json()["draft_reply"]
 
 
 # ---------- メール担当者の切り替え ----------
@@ -776,10 +877,13 @@ def test_mail_page_has_role_aware_ui(client):
     page = client.get("/mail").text
     for marker in ('"/api/mail/me"', 'id="m-request"', 'id="m-return"', 'id="m-appr"',
                    'id="staff-card"', 'id="set-require-approval"', '"/api/mail/staff"',
-                   'value="pending_approval"', 'id="pending-badge"', 'id="approval-banner"',
+                   'value="pending_approval"', 'id="nav-pending"', 'id="approval-banner"',
+                   "approve_request: approving", "seen_request: seenRequest()",
                    "request-approval", "send-back", "mail_require_approval: $(",
                    'pending_approval: "確認待ち"', 'id="dv-staff"'):
         assert marker in page, marker
+    # 確認待ちの数は受信箱のボタンの中に入れない (スマホで受信箱を押すと当たってしまう)
+    assert 'id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span></button>' in page
     # 設定のボタンは最初は出さない (管理者だと分かってから出す)
     assert '<button id="nav-settings" hidden>' in page
     # メール担当者には送信・対応不要・設定を出さない (サーバも 403 で止める)
