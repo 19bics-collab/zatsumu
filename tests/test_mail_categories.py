@@ -651,12 +651,12 @@ def test_existing_db_gets_category_columns(tmp_path):
 
 def test_mail_page_has_category_ui(client):
     page = client.get("/mail").text
-    for marker in ('id="filter-cat"', 'id="filter-asg"', 'id="m-category"',
+    for marker in ('id="cat-tabs"', 'id="filter-asg"', 'id="m-category"',
                    'id="m-assignee"', 'id="cat-card"', 'id="set-mail-categories"',
                    'id="set-mail-category-keywords"', 'id="set-mail-category-assignees"',
                    "種類と担当", '"/api/mail/assignees"', "<th>担当</th>",
                    'q.set(key, $(id).value)', 'mail_category_assignees: $(',
-                   '["me", "自分の担当"]', '["none", "未分類"]'):
+                   '["me", "自分の担当"]', '[TAB_NONE, "未分類"'):
         assert marker in page, marker
     # 種類・担当の名前 (設定や登録した人の名前) は esc() か textContent で出す
     assert '<span class="cat">${esc(c)}</span>' in page

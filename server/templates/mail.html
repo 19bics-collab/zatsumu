@@ -85,6 +85,33 @@
   /* 絞り込み (状態・種類・担当) */
   .flt { padding: .4rem; border: 1px solid #ccc; border-radius: 6px; font-size: .9rem;
          background: #fff; max-width: 14rem; margin: .2rem 0 .2rem .4rem; }
+  /* 受信箱のタブ (すべて・重要・種類ごと) と並び順。広い画面ではタブを折り返し、
+     狭い画面ではタブの列だけを横にずらして見る (ページは横にずらさない) */
+  .inbox-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem;
+               margin: 0 0 .6rem; }
+  .cat-tabs { display: flex; flex-wrap: wrap; gap: .35rem; flex: 1 1 20rem; min-width: 0; }
+  .ctab { background: #fff; color: #374151; border: 1px solid #d1d5db; border-radius: 99px;
+          padding: .4rem .85rem; font-size: .88rem; white-space: nowrap; flex-shrink: 0; }
+  .ctab:hover { background: #f0fdf4; }
+  .ctab .cnt { display: inline-block; min-width: 1.1em; margin-left: .35rem; padding: 0 .4rem;
+               border-radius: 99px; background: #e5e7eb; color: #374151; font-size: .78rem;
+               font-weight: 700; text-align: center; line-height: 1.5; }
+  .ctab .cnt[hidden] { display: none; }
+  .ctab .cnt.zero { background: transparent; color: #9ca3af; font-weight: normal; }
+  .ctab.hi { color: #b91c1c; border-color: #fecaca; }
+  .ctab.hi .cnt:not(.zero) { background: #fee2e2; color: #991b1b; }
+  .ctab[aria-selected="true"] { background: #14532d; border-color: #14532d; color: #fff;
+                                font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+  .ctab[aria-selected="true"] .cnt { background: #fff; color: #14532d; }
+  .ctab.hi[aria-selected="true"] { background: #b91c1c; border-color: #b91c1c; }
+  .ctab.hi[aria-selected="true"] .cnt { color: #b91c1c; }
+  .sort-tg { display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem;
+             color: #6b7280; white-space: nowrap; margin-left: auto; }
+  .sort-tg button { background: transparent; color: #4b5563; border: 1px solid #d1d5db;
+                    padding: .25rem .6rem; font-size: .8rem; border-radius: 0; }
+  .sort-tg button:first-of-type { border-radius: 6px 0 0 6px; }
+  .sort-tg button:last-of-type { border-radius: 0 6px 6px 0; border-left: 0; }
+  .sort-tg button[aria-pressed="true"] { background: #e5e7eb; color: #111827; font-weight: 700; }
   /* 問い合わせの種類 (一覧のバッジ) */
   .cat { display: inline-block; font-size: .75rem; line-height: 1.5; padding: 0 .45rem;
          border-radius: 99px; background: #e0f2fe; color: #075985; margin-right: .35rem;
@@ -350,6 +377,11 @@
     header button { padding: .45rem .7rem; font-size: .82rem; }
     .table-wrap table { white-space: nowrap; }
     .table-wrap th, .table-wrap td { padding: .5rem .6rem; }
+    /* タブは1列にして、列だけを横にずらす (端は少しはみ出させて、続きがあると分かるように) */
+    .cat-tabs { flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto;
+                -webkit-overflow-scrolling: touch; scrollbar-width: none;
+                padding: 2px 0 4px; }
+    .cat-tabs::-webkit-scrollbar { display: none; }
   }
   /* スマホは1行=1カードに縦積みして横スクロールを無くす */
   @media (max-width: 640px) {
@@ -418,7 +450,6 @@
       <option value="archived">対応不要</option>
       <option value="">すべて</option>
     </select>
-    <select id="filter-cat" class="flt" aria-label="種類"><option value="">種類：すべて</option></select>
     <select id="filter-asg" class="flt" aria-label="担当"><option value="">担当：すべて</option></select>
     <select id="filter-acct" class="flt" aria-label="アドレス" hidden><option value="">アドレス：すべて</option></select>
     <button id="fetch-now" class="ghost" style="margin-left:.6rem">今すぐ受信</button>
@@ -430,7 +461,10 @@
   <p id="approval-banner" class="appr-banner" hidden><span id="approval-banner-text"></span>
     <button id="approval-show" class="ghost">確認待ちを見る</button></p>
   <p id="staff-help" class="staff-help" hidden></p>
-  <p><small>受信メールを優先度順（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）に表示します。
+  <p><small>受信メールを新しい順（届いた日時の新しいものが上）に表示します。一覧の上の「並び順」で
+  「重要度順」（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）にもできます。
+  一覧のすぐ上のタブで、問い合わせの種類ごとや「重要（高）」だけに分けて見られます
+  （タブの数字は、未対応と確認待ちのメールの数です）。
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
@@ -442,6 +476,13 @@
   <span id="admin-help">受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
   <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
   理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
+  <div class="inbox-bar">
+    <div id="cat-tabs" class="cat-tabs" role="tablist" aria-label="種類で分ける"></div>
+    <div class="sort-tg" role="group" aria-label="並び順">並び順
+      <button type="button" id="sort-date" data-sort="date" aria-pressed="true">新しい順</button>
+      <button type="button" id="sort-priority" data-sort="priority" aria-pressed="false">重要度順</button>
+    </div>
+  </div>
   <div class="table-wrap"><table id="mail-table">
     <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th></tr></thead>
     <tbody></tbody>
@@ -658,7 +699,7 @@
       <label style="display:block;margin:.2rem 0;font-size:.9rem" for="set-mail-categories">種類の一覧（1行に1つ）</label>
       <textarea id="set-mail-categories" rows="7"></textarea>
       <p class="set-help"><small>届いたメールを、この中のどれか1つに自動で仕分けます。
-      上から順に、受信箱と返信画面の選択欄に並びます。
+      上から順に、受信箱のタブと返信画面の選択欄に並びます。
       「その他」（どれにも当てはまらないとき）は、消しても最後に自動で入ります。</small></p>
       <label style="display:block;margin:.5rem 0 .2rem;font-size:.9rem" for="set-mail-category-keywords">種類を決める言葉</label>
       <textarea id="set-mail-category-keywords" rows="8"
@@ -674,7 +715,7 @@
       担当が自動で入ります（1つの種類に1人まで。書いていない種類は担当なし）。
       名前は、このサーバに登録されている人の名前と同じにしてください。
       <span id="asg-names"></span></small></p>
-      <p><small>種類と担当は、受信箱の上の「種類」「担当」で絞り込めます。返信画面で
+      <p><small>種類は受信箱のタブで分けて見られ、担当は受信箱の上の「担当」で絞り込めます。返信画面で
       メールごとに変えることもできます（担当がいないメールの種類を変えると、その種類の担当が入ります）。
       この機能を入れる前に届いたメールは「未分類」と出ます。
       変えた内容は下の「保存」を押すと保存され、これから届くメールから使われます。</small></p>
@@ -994,9 +1035,9 @@ async function showApp() {
   $("app").hidden = false;
   applyRole();
   if (isAdmin()) fillSettings(appSettings);
-  else renderCategoryFilter();
+  else renderTabs();
   loadAssignees();   // 担当の選択肢は後から入る (受信箱を開くのを待たせない)
-  showInbox();
+  showInbox().then(revealActiveTab, () => {});   // 覚えていたタブが見えるようにする
   schedulePoll();    // 開いたままでも、新しいメールが届いたら受信箱を新しくする
 }
 
@@ -1035,16 +1076,19 @@ let connLost = false;    // サーバに聞けなかった (通信が切れた�
 // (一番新しいメール・未対応の数) が変わっていたら true を返す。
 // ログインが切れていたら api() がログイン画面に切り替えて "auth" で投げる
 async function checkStatus() {
-  const r = await api("/api/mail/status");
+  // タブの数は、受信箱で選んでいる「担当」「アドレス」で絞り込んで数えてもらう
+  const r = await api("/api/mail/status" + scopeQuery());
   if (!r.ok) throw new Error("status " + r.status);
   const s = await r.json();
   // 受信するアドレスを足した・消した・名前を変えたときも、受信箱 (宛先の表示) を取り直す
   const acctSig = x => (x.accounts || []).map(a => `${a.id}:${a.label}`).join("\n") +
     "|" + (x.deleted_mail_count || 0);
-  // 確認待ちの数が変わった (確認のお願いが来た・送った・差し戻した) ときも取り直す
+  // 確認待ちの数が変わった (確認のお願いが来た・送った・差し戻した) ときも取り直す。
+  // タブの数が変わった (ほかの画面で種類を変えた など) ときも取り直す
   const changed = !!mailStatus &&
     (s.newest_id !== mailStatus.newest_id || s.unhandled !== mailStatus.unhandled ||
-     s.pending_approval !== mailStatus.pending_approval || acctSig(s) !== acctSig(mailStatus));
+     s.pending_approval !== mailStatus.pending_approval || acctSig(s) !== acctSig(mailStatus) ||
+     JSON.stringify(s.tabs || {}) !== JSON.stringify(mailStatus.tabs || {}));
   mailStatus = s;
   connLost = false;
   renderStatus();
@@ -1110,6 +1154,7 @@ function renderStatus() {
     : "";
   $("fetch-error").hidden = !err;
   renderAccountFilter();
+  renderTabs();
 }
 
 /* ---------- 受信箱 ---------- */
@@ -1144,13 +1189,17 @@ async function showInbox(opts = {}) {
     connLost = true;
     renderStatus();
   }
-  // 絞り込み (状態・種類・担当)。値は URLSearchParams で URL に入れる
+  // 絞り込み (状態・タブ・担当・アドレス) と並び順。値は URLSearchParams で URL に入れる
   const q = new URLSearchParams();
-  for (const [key, id] of [["status", "filter"], ["category", "filter-cat"], ["assignee", "filter-asg"],
-                           ["account", "filter-acct"]]) {
+  if ($("filter").value) q.set("status", $("filter").value);
+  if (activeTab === TAB_HIGH) q.set("priority", "1");
+  else if (activeTab === TAB_NONE) q.set("category", "none");
+  else if (activeTab.startsWith(TAB_CAT)) q.set("category", activeTab.slice(TAB_CAT.length));
+  for (const [key, id] of [["assignee", "filter-asg"], ["account", "filter-acct"]]) {
     if ($(id).value) q.set(key, $(id).value);
   }
-  const path = "/api/mail" + (q.toString() ? "?" + q : "");
+  q.set("sort", sortMode);
+  const path = "/api/mail?" + q;
   let list;
   if (opts.auto) {
     try {
@@ -1217,7 +1266,7 @@ function renderInbox(list, keepPlace) {
     seenId = newest || Math.max(0, ...list.map(m => Number(m.id)));
     saveSeen(seenId, reset);
   }
-  const filtered = $("filter-cat").value || $("filter-asg").value || $("filter-acct").value;
+  const filtered = activeTab !== TAB_ALL || $("filter-asg").value || $("filter-acct").value;
   tbody.innerHTML = list.map(m => {
     const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
     return `
@@ -1232,7 +1281,7 @@ function renderInbox(list, keepPlace) {
     </tr>`;
   }).join("") ||
     (filtered
-      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の「種類」「担当」「アドレス」を「すべて」に戻すと全部見られます）</small></td></tr>`
+      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上のタブや「担当」「アドレス」を「すべて」に戻すと全部見られます）</small></td></tr>`
       : isAdmin()
         ? `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`
         : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
@@ -1244,13 +1293,15 @@ function renderInbox(list, keepPlace) {
   rememberShown(list);
 }
 $("filter").onchange = () => showInbox();
-// 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱の横の「確認待ち」から)
+// 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱の横の「確認待ち」から)。
+// 種類に関係なく全部の確認待ちを見せるため、タブは「すべて」にする
 function showPending() {
   $("filter").value = "pending_approval";
+  setTab(TAB_ALL);
+  renderTabs();
   showInbox();
 }
 $("approval-show").onclick = () => showPending();
-$("filter-cat").onchange = () => showInbox();
 $("filter-asg").onchange = () => showInbox();
 $("filter-acct").onchange = () => showInbox();
 
@@ -1285,11 +1336,121 @@ function setOptions(sel, opts, value) {
   sel.value = opts.some(([v]) => v === value) ? value : opts[0][0];
 }
 
-function renderCategoryFilter() {
-  setOptions($("filter-cat"),
-    [["", "種類：すべて"], ...categories().map(c => [c, c]), ["none", "未分類"]],
-    $("filter-cat").value);
+/* ---------- 受信箱のタブ (すべて・重要（高）・種類ごと・未分類) と並び順 ---------- */
+// 選んでいるタブ: TAB_ALL / TAB_HIGH (優先度[高]だけ) / TAB_NONE (未分類) / TAB_CAT + 種類の名前。
+// 選んだタブと並び順はこのブラウザに覚えておく (覚えておけないブラウザでも動く)
+const TAB_ALL = "all", TAB_HIGH = "high", TAB_NONE = "none", TAB_CAT = "cat:";
+const TAB_KEY = "zatsumu_mail_tab", SORT_KEY = "zatsumu_mail_sort";
+const SORTS = ["date", "priority"];   // 新しい順 (既定)・重要度順
+function loadPref(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
 }
+function savePref(key, v) {
+  try { localStorage.setItem(key, v); } catch {}
+}
+let activeTab = loadPref(TAB_KEY) || TAB_ALL;
+let sortMode = SORTS.includes(loadPref(SORT_KEY)) ? loadPref(SORT_KEY) : "date";
+function setTab(t) {
+  activeTab = t;
+  savePref(TAB_KEY, t);
+}
+
+// 受信の様子 (/api/mail/status) に付ける「担当」「アドレス」の絞り込み (タブの数を数える用)
+function scopeQuery() {
+  const q = new URLSearchParams();
+  for (const [key, id] of [["assignee", "filter-asg"], ["account", "filter-acct"]]) {
+    if ($(id).value) q.set(key, $(id).value);
+  }
+  return q.toString() ? "?" + q : "";
+}
+
+// タブを出す。数はサーバが数えた、対応が要るメール (未対応と確認待ち) の数。
+// 1分ごとに呼ばれるので、タブの顔ぶれが変わったときだけ作り直し、いつもは数と選択だけ直す
+// (横にずらしていたタブの列の位置も動かさない)。種類の名前は textContent で入れる
+function renderTabs() {
+  const box = $("cat-tabs");
+  const t = (mailStatus && mailStatus.tabs) || null;
+  const byCat = (t && t.categories) || {};
+  const tabs = [[TAB_ALL, "すべて", t && t.all], [TAB_HIGH, "重要（高）", t && t.high],
+                ...categories().map(c => [TAB_CAT + c, c, t && (byCat[c] || 0)])];
+  // 未分類は、未分類のメールがあるときだけ (選んでいる間は、無くなっても残す)
+  if ((t && t.has_uncategorized) || activeTab === TAB_NONE) {
+    tabs.push([TAB_NONE, "未分類", t && t.uncategorized]);
+  }
+  // 選んでいたタブが無くなった (設定で種類を消した) ときは「すべて」に戻す
+  // (受信箱は、次の確認か受信箱に戻ったときに取り直す)
+  if (!tabs.some(([k]) => k === activeTab)) {
+    setTab(TAB_ALL);
+    inboxStale = true;
+  }
+  const sig = JSON.stringify(tabs.map(([k]) => k));
+  if (box.dataset.sig !== sig) {
+    const left = box.scrollLeft;
+    box.textContent = "";
+    for (const [key, label] of tabs) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ctab" + (key === TAB_HIGH ? " hi" : "");
+      b.setAttribute("role", "tab");
+      b.dataset.tab = key;
+      const name = document.createElement("span");
+      name.textContent = label;
+      const cnt = document.createElement("span");
+      cnt.className = "cnt";
+      b.append(name, cnt);
+      b.onclick = () => {
+        if (activeTab === key) return;
+        setTab(key);
+        renderTabs();
+        showInbox();
+      };
+      box.appendChild(b);
+    }
+    box.dataset.sig = sig;
+    box.scrollLeft = left;
+  }
+  const counts = new Map(tabs.map(([k, , n]) => [k, n]));
+  const moved = box.dataset.shown !== activeTab;   // 選んでいるタブが変わった
+  for (const b of box.children) {
+    const on = b.dataset.tab === activeTab;
+    b.setAttribute("aria-selected", on ? "true" : "false");
+    const n = counts.get(b.dataset.tab);
+    const cnt = b.querySelector(".cnt");
+    cnt.hidden = n === null || n === undefined;   // 数をまだ聞けていない
+    cnt.textContent = String(Number(n) || 0);
+    cnt.classList.toggle("zero", !n);
+    b.title = n === null || n === undefined ? "" : `未対応と確認待ちのメール ${Number(n) || 0} 件`;
+  }
+  // 「確認待ち」を押して「すべて」に戻ったときなど、選んだタブが列の外にあれば見えるところへ
+  // (選んだタブが変わらない1分ごとの更新では、横にずらした位置を動かさない)
+  box.dataset.shown = activeTab;
+  if (moved) revealActiveTab();
+}
+// 選んだタブが見えるように、タブの列を横にずらす (スマホで、列の外にあるタブを選んでいたとき)
+// (ページは縦にも横にも動かさない)
+function revealActiveTab() {
+  const box = $("cat-tabs");
+  const b = box.querySelector('.ctab[aria-selected="true"]');
+  if (!b) return;
+  const br = box.getBoundingClientRect(), r = b.getBoundingClientRect();
+  if (r.left < br.left || r.right > br.right) box.scrollLeft += r.left - br.left - 16;
+}
+
+function renderSort() {
+  for (const b of document.querySelectorAll(".sort-tg button")) {
+    b.setAttribute("aria-pressed", b.dataset.sort === sortMode ? "true" : "false");
+  }
+}
+for (const b of document.querySelectorAll(".sort-tg button")) {
+  b.onclick = () => {
+    if (sortMode === b.dataset.sort) return;
+    sortMode = b.dataset.sort;
+    savePref(SORT_KEY, sortMode);
+    renderSort();
+    showInbox();
+  };
+}
+renderSort();
 
 async function loadAssignees() {
   try {
@@ -2417,7 +2578,7 @@ function fillSettings(s) {
   $("set-mail-categories").value = s.mail_categories;
   $("set-mail-category-keywords").value = s.mail_category_keywords;
   $("set-mail-category-assignees").value = s.mail_category_assignees;
-  renderCategoryFilter();   // 種類の一覧を変えたら、受信箱の絞り込みもそろえる
+  renderTabs();   // 種類の一覧を変えたら、受信箱のタブもそろえる
   $("set-smtp-host").value = s.smtp_host;
   $("set-smtp-port").value = s.smtp_port;
   $("set-smtp-user").value = s.smtp_user;
