@@ -109,6 +109,10 @@ def _set_state(conn, key: str, value) -> None:
 def _strip_html(s: str) -> str:
     s = re.sub(r"(?is)<(script|style).*?>.*?</\1>", "", s)
     s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+    # 表のセルはタブで区切る (フォームの「お名前 | 山田」の表を「お名前<TAB>山田」の1行にする。
+    # 区切りが無いと「お名前山田」とつながり、項目と値を分けられない)。セルの前後の改行は詰める
+    s = re.sub(r"(?i)</t[dh]\s*>\s*", "\t", s)
+    s = re.sub(r"(?i)[ \r\n]*<t[dh]\b[^>]*>\s*", "", s)
     s = re.sub(r"(?is)</(p|div|tr|li|h[1-6])>", "\n", s)
     s = re.sub(r"(?s)<[^>]+>", "", s)
     return html_.unescape(s)
@@ -1302,7 +1306,9 @@ def split_addresses(value) -> list[str]:
 # 本文の「メールアドレス: …」の行にある。差出人のままだと、別々のお客様のメールが
 # 「同じ相手とのやり取り」にまとまり、返信もフォームの送信元に届いてしまう (お客様に届かない)。
 # そこで受信したときに、メールごとに相手 (contact_addr・contact_name) を決めて覚える:
-#   1. Reply-To があり、自分たちのアドレスでなければ、その人 (contact_source='reply_to')
+#   1. Reply-To がお客様のアドレスとして使えれば、その人 (contact_source='reply_to')。
+#      自社のアドレス・自社のドメイン (webmaster@ など)・noreply@ は使わない。ふつうの人の
+#      メールでは、差出人と同じドメインのときだけ (メーリングリストの Reply-To でまとめない)
 #   2. 差出人がフォームの送信元なら、本文に書かれたお客様のアドレスと名前 ('body')
 #   3. それ以外は差出人 ('from')
 
@@ -1342,11 +1348,13 @@ _FREE_MAIL_DOMAINS = frozenset((
 # 本文からアドレスを探す形 (見つけたものは valid_address でも確かめる)
 _ADDR_SCAN_RE = re.compile(
     r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
-# 「お名前：山田」「【お名前】山田」「■お名前 : 山田」などの1行 (全角の記号は NFKC で半角にしてから読む)
+# 「お名前：山田」「【お名前】山田」「■お名前 : 山田」「お名前<TAB>山田」(HTMLの表のフォーム) などの
+# 1行 (全角の記号は NFKC で半角にしてから読む)
 _LABEL_LINE_RE = re.compile(
     r"^[\s■□●○◆◇・*\-–—•▼▽▶▷►>※◎〇]*"
     r"(?:[【\[〔《〈<「『]\s*([^】\]〕》〉>」』:]{1,40}?)\s*[】\]〕》〉>」』]\s*:?\s*(.*)"
-    r"|([^:<>@\[\]【】]{1,40}?)\s*:\s*(.*))$")
+    r"|([^:<>@\[\]【】\t]{1,40}?)\s*:\s*(.*)"
+    r"|([^:<>@\[\]【】\t]{1,40}?)\s*\t\s*(.*))$")
 # 項目の名前の後ろの (確認用)・※必須 など
 _LABEL_NOTE_RE = re.compile(r"\([^)]*\)|※.*$|必須|任意|\*")
 # お客様のメールアドレスの項目 (小文字・空白なしにして比べる)
@@ -1357,6 +1365,18 @@ _ADDR_LABELS = frozenset((
     "返信先", "返信先メールアドレス", "pcメールアドレス", "携帯メールアドレス",
     "yourmail", "youremail", "your-email",
 ))
+# 上のうち、アドレス専用とは限らない広い項目 (取引先が「連絡先: 紹介する人」と書くことがある)。
+# 必ずフォームと分かる送信元 (wordpress@ など) のときだけ使う
+_BROAD_ADDR_LABELS = frozenset(("メール", "mail", "ご連絡先", "連絡先", "返信先"))
+# 一覧に無い項目でも、必ずフォームと分かる送信元なら、この形の項目はアドレスの項目とみなす
+# (「ご返信先アドレス」「携帯メール」など)
+_ADDR_LABEL_LIKE_RE = re.compile(r"mail|メール|アドレス$")
+# お問い合わせの内容の項目 (ここから下はお客様が自由に書いた文。ほかの人のアドレスが書かれることがある)
+_MESSAGE_LABEL_RE = re.compile(
+    r"内容|本文|メッセージ|message|質問|用件|相談|要望|備考|comment|詳細|body")
+# 必ずフォームとは分からない送信元 (contact@ など) で、項目の行より前にあってよい、ふつうの文の行の数
+# (「ホームページからお問い合わせがありました。」の1行まで。挨拶から始まる紹介のメールなどは使わない)
+_FORM_PREAMBLE_MAX_LINES = 1
 # 転送されたメールの差出人の行 (Contact Form 7 の既定の本文「差出人: 名前 <アドレス>」もこれ)。
 # フォームだと確かなときだけ使う (社内の人が転送したメールを、お客様からのメールと取り違えないように)
 _FROM_LABELS = frozenset(("差出人", "from", "送信者"))
@@ -1488,6 +1508,18 @@ class ContactRules:
             return False
         return not self.automated(a)
 
+    def form_reply_to(self, addr) -> bool:
+        """この差出人のメールの Reply-To は、フォームが入れたお客様のアドレスとみなすか.
+
+        自分たちのアドレス (差出人を自社にしたフォーム)・必ずフォームの送信元・自社のドメイン・
+        返事を受け取らない送信元 (noreply@ の外のフォームなど)。ふつうの人のメールの Reply-To は
+        メーリングリストのこともあるので、フォームとはみなさない。
+        """
+        a = str(addr or "").strip().lower()
+        kind = self.form_kind(a)
+        return a in self.own or kind in ("form", "own_domain") or (
+            kind == "maybe" and self.automated(a))
+
 
 def _label_key(label: str) -> str:
     """項目の名前を比べる形 (「メールアドレス（確認用）※必須」→「メールアドレス」)."""
@@ -1505,44 +1537,77 @@ def _clean_contact_name(value) -> str:
 
 
 def _label_lines(body: str):
-    """本文の「項目: 値」の行を順に (項目の比べる形, 項目の元の形, 値) で返す.
+    """本文の「項目: 値」の行を順に (行の番号, 項目の比べる形, 項目の元の形, 値, その前の文の行数) で返す.
 
     値が空の項目 (「【メールアドレス】」だけの行) は、次の空でない行を値にする。
+    「その前の文の行数」は、それより前にある、項目でも項目の値でもない空でない行の数。
     """
     text = unicodedata.normalize("NFKC", normalize_newlines(body)[:CONTACT_BODY_SCAN_CHARS])
     lines = text.split("\n")
+    prose, used = 0, set()
     for i, line in enumerate(lines):
         mt = _LABEL_LINE_RE.match(line.strip())
         if not mt:
+            if line.strip() and i not in used:
+                prose += 1
             continue
-        label = (mt.group(1) if mt.group(1) is not None else mt.group(3)) or ""
-        value = (mt.group(2) if mt.group(1) is not None else mt.group(4)) or ""
-        value = value.strip()
+        g = next(k for k in (1, 3, 5) if mt.group(k) is not None)
+        label, value = mt.group(g) or "", (mt.group(g + 1) or "").strip()
         if not value:
-            for nxt in lines[i + 1:i + 3]:
-                if nxt.strip():
-                    if not _LABEL_LINE_RE.match(nxt.strip()) or "@" in nxt:
-                        value = nxt.strip()
+            for k in range(i + 1, min(i + 3, len(lines))):
+                nxt = lines[k].strip()
+                if nxt:
+                    if not _LABEL_LINE_RE.match(nxt) or "@" in nxt:
+                        value = nxt
+                        used.add(k)
                     break
-        yield _label_key(label), label, value
+        yield i, _label_key(label), label, value, prose
 
 
-def contact_from_body(body, rules: ContactRules, sender: str, sure: bool) -> tuple[str, str]:
+def _scan_lines(body: str) -> list[str]:
+    """本文の先頭 (相手を探す範囲) を、_label_lines と同じ行の番号で分けたもの."""
+    return unicodedata.normalize(
+        "NFKC", normalize_newlines(body)[:CONTACT_BODY_SCAN_CHARS]).split("\n")
+
+
+def contact_from_body(body, rules: ContactRules, sender: str, sure: bool,
+                      shaped: bool = False) -> tuple[str, str]:
     """フォームのメールの本文から、お客様の (アドレス, 名前) を読む (無ければ "").
 
-    アドレスは「メールアドレス: …」のような項目の行から (sure なら「差出人: 名前 <…>」の行も)。
-    項目の行が無く sure (必ずフォームの送信元) なら、本文の最初の使えるアドレスにする。
+    アドレスは「メールアドレス: …」のような項目の行から。sure (必ずフォームの送信元) なら、
+    「差出人: 名前 <…>」の行・「連絡先」のような広い項目・一覧に無い「…アドレス」の項目も使い、
+    項目の行が無ければ、お問い合わせの内容より前に書かれたアドレスが1つだけのとき、それにする
+    (内容の中のアドレスは、紹介者などほかの人のことがある。2つ以上あればどれか分からないので空)。
+    sure でないときは「メールアドレス」のようなアドレス専用の項目だけ。shaped なら、さらに
+    本文がフォームの形 (項目の行より前の文が1行まで) のときだけ使う (取引先の contact@ からの
+    「下記のお客様をご紹介します」のようなメールで、紹介された人を相手にしないように)。
     名前は「お名前」「氏名」などの行 (「会社名」もあれば「会社名 お名前」)。
     """
     sender = str(sender or "").strip().lower()
-    addr, from_name, person, company = "", "", "", ""
-    for key, label, value in _label_lines(str(body or "")):
-        if key in _ADDR_LABELS or (sure and key in _FROM_LABELS):
-            if not addr:
+    body = str(body or "")
+    addr, like_addr, from_name, person, company = "", "", "", "", ""
+    message_line = None
+    for i, key, label, value, prose in _label_lines(body):
+        if message_line is None and _MESSAGE_LABEL_RE.search(key):
+            message_line = i
+        if sure:
+            is_addr = key in _ADDR_LABELS or key in _FROM_LABELS
+            # 一覧に無い「…アドレス」の項目は、一覧の項目が無いときだけ使う
+            # (「紹介者メール: …」の後に「メールアドレス: …」があれば、そちら)
+            is_like = not is_addr and bool(_ADDR_LABEL_LIKE_RE.search(key))
+        else:
+            is_addr = key in _ADDR_LABELS and key not in _BROAD_ADDR_LABELS and not (
+                shaped and prose > _FORM_PREAMBLE_MAX_LINES)
+            is_like = False
+        if is_addr or is_like:
+            if not (addr if is_addr else like_addr):
                 for found in _ADDR_SCAN_RE.findall(value):
                     found = found.strip(".")
                     if rules.usable(found, sender):
-                        addr = found
+                        if is_like:
+                            like_addr = found
+                        else:
+                            addr = found
                         if key in _FROM_LABELS:
                             # 「差出人: 山田 太郎 <yamada@…>」の名前
                             from_name = _clean_contact_name(
@@ -1554,18 +1619,27 @@ def contact_from_body(body, rules: ContactRules, sender: str, sure: bool) -> tup
             person = _clean_contact_name(value)
         elif key in _COMPANY_LABELS and not company:
             company = _clean_contact_name(value)
+    addr = addr or like_addr
     if not addr and sure:
-        text = unicodedata.normalize("NFKC", str(body or "")[:CONTACT_BODY_SCAN_CHARS])
-        for found in _ADDR_SCAN_RE.findall(text):
-            found = found.strip(".")
-            if rules.usable(found, sender):
-                addr = found
-                break
+        head = "\n".join(_scan_lines(body)[:message_line])
+        found = {}
+        for a in _ADDR_SCAN_RE.findall(head):
+            a = a.strip(".")
+            if rules.usable(a, sender):
+                found.setdefault(a.lower(), a)
+        if len(found) == 1:
+            addr = next(iter(found.values()))
     if company and person and person not in company:
         name = f"{company} {person}"
     else:
         name = person or company or from_name
     return addr, name[:CONTACT_NAME_MAX_CHARS].rstrip()
+
+
+def _same_org(a: str, b: str) -> bool:
+    """2つのアドレスが同じ会社などのドメインか (Gmail などは別の人なので同じとはみなさない)."""
+    da, db_ = a.rpartition("@")[2].lower(), b.rpartition("@")[2].lower()
+    return bool(da) and da == db_ and da not in _FREE_MAIL_DOMAINS
 
 
 def decide_contact(mail: dict, rules: ContactRules) -> dict:
@@ -1574,24 +1648,36 @@ def decide_contact(mail: dict, rules: ContactRules) -> dict:
     {"contact_addr", "contact_name", "contact_source", "contact_via_form"} を返す。
     フォームから届いたのに本文にお客様のアドレスが無ければ contact_addr は空
     (ほかのフォームのメールとまとめない。返信するときは宛先を入れてもらう)。
+    Reply-To は、お客様のアドレスとして使えるときだけ使う (自社のアドレス・自社のドメイン
+    (webmaster@ など)・noreply@ のように、送信のプラグインがどのメールにも同じものを付ける
+    ことがあるものは使わない)。ふつうの人のメールでは、差出人と同じドメインのときだけ
+    (メーリングリストは、どの人のメールにも同じ Reply-To が付くので、まとめてしまわないように)。
     Reply-To が分からない (前からあるメール) ときは、本文と差出人で決める。
     """
     frm = str(mail.get("from_addr") or "").strip()
     from_name = _one_line(mail.get("from_name"))
     kind = rules.form_kind(frm)
     own_sender = frm.lower() in rules.own
+    via_rt = rules.form_reply_to(frm)
+    body = mail.get("body")
     rt = str(mail.get("reply_to_addr") or "").strip()
-    if rt and valid_address(rt) and rt.lower() not in rules.own and rt.lower() != frm.lower():
-        via = own_sender or kind in ("form", "own_domain")
+    if rt and rules.usable(rt, frm.lower()) and (via_rt or _same_org(rt, frm)):
         name = _one_line(mail.get("reply_to_name"))[:CONTACT_NAME_MAX_CHARS]
-        if not name and via:
-            name = contact_from_body(mail.get("body"), rules, frm, kind == "form")[1]
-        if not name and not via:
+        if not name and via_rt:
+            name = contact_from_body(body, rules, frm, kind == "form")[1]
+        if not name and not via_rt:
             name = from_name   # 同じ人が、返事は別のアドレスにと指定している
         return {"contact_addr": rt, "contact_name": name, "contact_source": "reply_to",
-                "contact_via_form": int(via)}
+                "contact_via_form": int(via_rt)}
+    if own_sender and rt:
+        # 差出人を自分たちのアドレスにしたフォームで、Reply-To がお客様ではない (webmaster@ など)。
+        # 本文のお客様にする (見つからなければ空。自分たちを相手にはしない)
+        addr, name = contact_from_body(body, rules, frm, True)
+        return {"contact_addr": addr, "contact_name": name, "contact_source": "body",
+                "contact_via_form": 1}
     if kind:
-        addr, name = contact_from_body(mail.get("body"), rules, frm, kind == "form")
+        addr, name = contact_from_body(body, rules, frm, kind == "form",
+                                       shaped=kind != "form" and not rules.automated(frm))
         if addr or kind == "form":
             return {"contact_addr": addr, "contact_name": name, "contact_source": "body",
                     "contact_via_form": 1}
@@ -1635,12 +1721,12 @@ _CONTACT_BODY_BATCH = 200
 def _redecide(conn, rows, rules: ContactRules) -> list[tuple]:
     """rows (id, from_addr, from_name) の相手を決め直し、UPDATE に渡す値の一覧にする.
 
-    フォームかもしれない差出人のメールだけ本文を読む (ふつうの人のメールは差出人のまま)。
-    Reply-To は前からあるメールでは分からないので使わない。
+    フォームかもしれない差出人のメールと、Reply-To を覚えているメールだけ本文を読む
+    (ふつうの人のメールは差出人のまま)。Reply-To は前の版が入れたメールでは分からない (空)。
     """
     out, need_body = [], []
     for r in rows:
-        if rules.form_kind(r["from_addr"]):
+        if rules.form_kind(r["from_addr"]) or r["reply_to"]:
             need_body.append(r["id"])
         else:
             out.append((str(r["from_addr"] or "").strip(), _one_line(r["from_name"]),
@@ -1648,7 +1734,10 @@ def _redecide(conn, rows, rules: ContactRules) -> list[tuple]:
     for i in range(0, len(need_body), _CONTACT_BODY_BATCH):
         part = need_body[i:i + _CONTACT_BODY_BATCH]
         for r in conn.execute(
-                "SELECT id, from_addr, from_name, substr(body, 1, ?) AS body FROM mails"
+                "SELECT id, from_addr, from_name, reply_to AS reply_to_addr,"
+                # Reply-To の名前は覚えていないので、Reply-To で決めていたときの相手の名前
+                " CASE WHEN contact_source = 'reply_to' THEN contact_name ELSE '' END"
+                " AS reply_to_name, substr(body, 1, ?) AS body FROM mails"
                 f" WHERE id IN ({_marks(part)})", (CONTACT_BODY_SCAN_CHARS, *part)):
             c = decide_contact(dict(r), rules)
             out.append((c["contact_addr"], c["contact_name"], c["contact_source"],
@@ -1671,7 +1760,7 @@ def fill_missing_contacts(conn, settings: dict | None = None) -> int:
     if newest <= upto:
         return 0
     rows = conn.execute(
-        "SELECT id, from_addr, from_name FROM mails WHERE id > ? AND id <= ?"
+        "SELECT id, from_addr, from_name, reply_to FROM mails WHERE id > ? AND id <= ?"
         " AND contact_source = ''", (upto, newest)).fetchall()
     updates = _redecide(conn, rows, contact_rules(conn, settings))
     conn.executemany(
@@ -1685,9 +1774,9 @@ def fill_missing_contacts(conn, settings: dict | None = None) -> int:
 def redecide_form_contacts(conn, settings: dict, before: dict) -> int:
     """設定「フォームの送信元」を変えたとき、変えた送信元から届いたメールの相手を決め直す.
 
-    足した送信元のメールは本文のお客様に、外した送信元のメールは差出人に戻す (ほかの決め方で
-    フォームと分かるものはそのまま)。Reply-To で決めたメールは、フォーム経由かの印だけ直す。
-    コミットは呼び出し側 (設定の保存と一緒)。決め直した数を返す。
+    足した送信元のメールは本文のお客様 (か Reply-To) に、外した送信元のメールは差出人に戻す
+    (ほかの決め方でフォームと分かるものはそのまま)。受信したときと同じ決め方 (decide_contact) で、
+    覚えている Reply-To も使う。コミットは呼び出し側 (設定の保存と一緒)。決め直した数を返す。
     """
     old_a, old_d = _form_sender_rules(before)
     new_a, new_d = _form_sender_rules(settings)
@@ -1701,16 +1790,12 @@ def redecide_form_contacts(conn, settings: dict, before: dict) -> int:
         return a in addrs or _in_domains(a.rpartition("@")[2], domains)
 
     rows = [r for r in conn.execute(
-        "SELECT id, from_addr, from_name, contact_source FROM mails"
+        "SELECT id, from_addr, from_name, reply_to, contact_source FROM mails"
         " WHERE contact_source IN ('from', 'body', 'reply_to')") if touched(r["from_addr"])]
-    updates = _redecide(conn, [r for r in rows if r["contact_source"] != "reply_to"], rules)
+    updates = _redecide(conn, rows, rules)
     conn.executemany(
         "UPDATE mails SET contact_addr = ?, contact_name = ?, contact_source = ?,"
         " contact_via_form = ? WHERE id = ?", updates)
-    conn.executemany(
-        "UPDATE mails SET contact_via_form = ? WHERE id = ?",
-        [(int(rules.form_kind(r["from_addr"]) in ("form", "own_domain")), r["id"])
-         for r in rows if r["contact_source"] == "reply_to"])
     return len(rows)
 
 
@@ -3298,10 +3383,12 @@ APPROVAL_NOTE_NOTIFY_CHARS = 200
 
 
 def approval_request_message(settings: dict, mail: dict, requested_by: str,
-                             note: str = "") -> tuple[str, str]:
+                             note: str = "", to: str = "") -> tuple[str, str]:
     """「確認をお願いする」が押されたときの、管理者へのお知らせの (件名, 本文).
 
     返信文そのものは載せない (お客様あての文を Slack などに広げない。返信画面で見てもらう)。
+    to は送る宛先。メール担当者が相手と違う宛先に直していれば、そのことも載せる
+    (管理者が、お客様ではないところに送ろうとしていないか気付けるように)。
     外から来た文字 (件名・差出人) と、メール担当者の名前・ひとことは _remind_part で無害な1行にする。
     """
     who = _remind_part(requested_by, REMIND_NAME_MAX_CHARS) or "メール担当者"
@@ -3312,6 +3399,10 @@ def approval_request_message(settings: dict, mail: dict, requested_by: str,
     sender = f"{name}（{addr}）" if name and addr else (name or addr or "差出人不明")
     lines = [f"📝 {who}さんから、メールの返信の確認のお願いが届きました",
              f"・{subject} — {sender}"]
+    to = str(to or "").strip()
+    if to and to.lower() != caddr.strip().lower():
+        lines.append(f"・宛先を直しています: {_remind_part(to, 100)}"
+                     f"（元の相手: {addr or 'なし'}）")
     note = _remind_part(note, APPROVAL_NOTE_NOTIFY_CHARS)
     if note:
         lines.append(f"・ひとこと: {note}")

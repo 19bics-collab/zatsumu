@@ -250,11 +250,16 @@ def test_decide_contact_form_body_and_reply_to():
     # 自分たちのアドレスの Reply-To・差出人と同じ Reply-To は使わない
     c = mail.decide_contact({**base, "body": CF7_BRACKETS, "reply_to_addr": OWN}, rules)
     assert (c["contact_addr"], c["contact_source"]) == ("ken.kobayashi@example.org", "body")
-    # ふつうの人の Reply-To (返事は別のアドレスに) は、名前は差出人のまま。フォームではない
+    # ふつうの人の Reply-To (返事は同じ会社の別のアドレスに) は、名前は差出人のまま。フォームではない
+    c = mail.decide_contact({"from_addr": "taro@example.com", "from_name": "太郎", "body": "",
+                             "reply_to_addr": "taro.sales@example.com", "reply_to_name": ""}, rules)
+    assert c == {"contact_addr": "taro.sales@example.com", "contact_name": "太郎",
+                 "contact_source": "reply_to", "contact_via_form": 0}
+    # ふつうの人のメールで、Reply-To が別のドメイン (メーリングリストなど) なら差出人のまま
     c = mail.decide_contact({"from_addr": "taro@example.com", "from_name": "太郎", "body": "",
                              "reply_to_addr": "taro.home@example.org", "reply_to_name": ""}, rules)
-    assert c == {"contact_addr": "taro.home@example.org", "contact_name": "太郎",
-                 "contact_source": "reply_to", "contact_via_form": 0}
+    assert (c["contact_addr"], c["contact_source"], c["contact_via_form"]) == \
+        ("taro@example.com", "from", 0)
     c = mail.decide_contact({"from_addr": "taro@example.com", "from_name": "太郎",
                              "body": "メールアドレス: other@example.org",
                              "reply_to_addr": "TARO@example.com"}, rules)
@@ -753,6 +758,197 @@ def test_approval_flow_keeps_the_chosen_to(client, users, tmp_path, sent):
     assert _detail(client, staff, mid2)["reply_default_to"] == "ken.kobayashi@example.org"
 
 
+# ---------- フォームの送り方のいろいろ (Reply-To・HTMLの表・紹介のメールなど) ----------
+
+def _html_form(msgid, frm, name, addr, spaced=False):
+    """表の形のHTMLだけのフォームのメール (formrun など)."""
+    sep = "\n  " if spaced else ""
+    m = EmailMessage()
+    m["From"], m["To"], m["Subject"] = frm, OWN, "お問い合わせ"
+    m["Message-ID"], m["Date"] = msgid, "Tue, 11 Aug 2026 10:00:00 +0900"
+    m.set_content(
+        f"<p>フォームに回答がありました</p><table>{sep}<tr>{sep}<th>お名前</th>{sep}"
+        f"<td>{name}</td>{sep}</tr>{sep}<tr><th class=\"l\">メールアドレス</th>{sep}"
+        f"<td>{addr}</td></tr><tr><th>内容</th><td>見積もり</td></tr></table>", subtype="html")
+    return m.as_bytes()
+
+
+@pytest.mark.parametrize("reply_to", ["webmaster@bics.co.jp", "noreply@bics.co.jp",
+                                      "no-reply@forms.example", WP])
+def test_form_reply_to_that_is_not_a_customer_is_ignored(
+        client, users, tmp_path, monkeypatch, sent, reply_to):
+    """送信のプラグインが、どのメールにも同じ Reply-To (自社の webmaster@・noreply@ など) を付けても、
+    お客様ごとに分かれ、返信もお客様に届く."""
+    _, admin = users
+    _fetch(tmp_path, monkeypatch, {
+        1: _raw("<rt1@x>", WP, body="お名前: 山田\nメールアドレス: yamada@ex.net\n内容: A",
+                reply_to=reply_to),
+        2: _raw("<rt2@x>", WP, body="お名前: 佐藤\nメールアドレス: sato@ex.org\n内容: B",
+                reply_to=reply_to),
+    })
+    a, b = _id_of(tmp_path, "<rt1@x>"), _id_of(tmp_path, "<rt2@x>")
+    rows = _list(client, admin)
+    assert [(rows[i]["contact_addr"], rows[i]["contact_name"], rows[i]["via_form"],
+             rows[i]["thread_count"]) for i in (a, b)] == [
+        ("yamada@ex.net", "山田", True, 0), ("sato@ex.org", "佐藤", True, 0)]
+    assert _detail(client, admin, a)["reply_default_to"] == "yamada@ex.net"
+    r = client.post(f"/api/mail/{a}/send", headers=auth(admin), json={"body": "回答です"})
+    assert r.status_code == 200, r.text
+    assert sent[0]["rcpts"] == ["yamada@ex.net"]
+
+
+def test_own_sender_form_with_unusable_reply_to(client, users, tmp_path, monkeypatch):
+    """差出人を自分たちのアドレスにしたフォームで Reply-To が webmaster@ でも、本文のお客様にする
+    (見つからなければ空。自分たちを相手にしない)."""
+    _, admin = users
+    _fetch(tmp_path, monkeypatch, {
+        1: _raw("<os1@x>", OWN, body="お名前: 森\nメールアドレス: mori@ex.net\n内容: A",
+                reply_to="webmaster@bics.co.jp"),
+        2: _raw("<os2@x>", OWN, body=CF7_NO_ADDRESS, reply_to="webmaster@bics.co.jp"),
+    })
+    a, b = _id_of(tmp_path, "<os1@x>"), _id_of(tmp_path, "<os2@x>")
+    assert [(_row(tmp_path, i)["contact_addr"], _row(tmp_path, i)["contact_via_form"])
+            for i in (a, b)] == [("mori@ex.net", 1), ("", 1)]
+    assert _detail(client, admin, b)["reply_default_to"] == ""
+
+
+@pytest.mark.parametrize("frm", ["noreply@formrun.example", "noreply@bics.co.jp"])
+@pytest.mark.parametrize("spaced", [False, True])
+def test_html_table_form_is_split_by_customer(client, users, tmp_path, monkeypatch, frm, spaced):
+    """表の形のHTMLだけのフォーム (区切りもコロンも無い) でも、お客様ごとに分かれる."""
+    from server import mail
+    _, admin = users
+    _fetch(tmp_path, monkeypatch, {1: _html_form("<h1@x>", frm, "山田", "yamada@ex.net", spaced),
+                                   2: _html_form("<h2@x>", frm, "佐藤", "sato@ex.org", spaced)})
+    a, b = _id_of(tmp_path, "<h1@x>"), _id_of(tmp_path, "<h2@x>")
+    assert "お名前\t山田" in _row(tmp_path, a)["body"]
+    rows = _list(client, admin)
+    assert [(rows[i]["contact_addr"], rows[i]["contact_name"], rows[i]["via_form"],
+             rows[i]["thread_count"]) for i in (a, b)] == [
+        ("yamada@ex.net", "山田", True, 0), ("sato@ex.org", "佐藤", True, 0)]
+    assert _detail(client, admin, a)["reply_default_to"] == "yamada@ex.net"
+    # 表でないHTMLはこれまでどおり
+    assert mail._strip_html("<p>こんにちは<br>山田です</p>") == "こんにちは\n山田です\n"
+
+
+def test_partner_referral_from_contact_address_is_not_a_form():
+    """取引先の contact@ からの「下記のお客様をご紹介します」は、紹介された人を相手にしない."""
+    from server import mail
+    rules = _rules()
+    frm = "contact@partner.example.jp"
+    for body in (
+            "いつもお世話になっております。\n下記のお客様をご紹介します。\nお名前: 田中様\n"
+            "連絡先: tanaka@third.example.jp\nよろしくお願いします。",
+            "お名前: 田中様\n連絡先: tanaka@third.example.jp",
+            "いつもお世話になっております。\n下記のお客様をご紹介します。\nお名前: 田中様\n"
+            "メールアドレス: tanaka@third.example.jp"):
+        c = mail.decide_contact({"from_addr": frm, "from_name": "鈴木", "body": body}, rules)
+        assert (c["contact_addr"], c["contact_source"], c["contact_via_form"]) == \
+            (frm, "from", 0), body
+    # フォームの形 (見出し1行と項目) なら、contact@ からでも本文のお客様にする
+    c = mail.decide_contact({"from_addr": frm, "from_name": "HP", "body":
+                             "ホームページからお問い合わせがありました。\nお名前: 田中\n"
+                             "メールアドレス: tanaka@third.example.jp\n内容: A"}, rules)
+    assert (c["contact_addr"], c["contact_via_form"]) == ("tanaka@third.example.jp", 1)
+    # 返事を受け取らない送信元 (noreply@) は、前に文があっても「メールアドレス」の項目を使う
+    c = mail.decide_contact({"from_addr": "noreply@formrun.example", "from_name": "formrun",
+                             "body": "回答がありました。\nご確認ください。\nお名前: 田中\n"
+                                     "メールアドレス: tanaka@third.example.jp"}, rules)
+    assert (c["contact_addr"], c["contact_via_form"]) == ("tanaka@third.example.jp", 1)
+    # 「連絡先」のような広い項目は、必ずフォームと分かる送信元のときだけ
+    c = mail.decide_contact({"from_addr": "noreply@formrun.example", "from_name": "formrun",
+                             "body": "お名前: 田中\n連絡先: tanaka@third.example.jp"}, rules)
+    assert (c["contact_addr"], c["contact_source"]) == ("noreply@formrun.example", "from")
+
+
+@pytest.mark.parametrize("body, addr", [
+    # アドレスの項目が無いフォームで、内容の中に別の人のアドレス (紹介者など) → 空 (宛先を入れてもらう)
+    ("お名前: 山田\n電話: 03-0000-0000\n内容: 以前 sato@other.example.jp さんから紹介されました", ""),
+    ("お名前: 山田\nメッセージ本文:\nsato@other.example.jp さんの紹介です", ""),
+    # 一覧に無い「…アドレス」の項目
+    ("お名前: 山田\n内容: 以前 sato@other.example.jp さんから紹介されました\n"
+     "ご返信先アドレス: yamada@ex.net", "yamada@ex.net"),
+    # 一覧の項目があれば、そちらを先に使う
+    ("紹介者メール: ref@other.example.jp\nメールアドレス: yamada@ex.net", "yamada@ex.net"),
+    # 項目の行が無く、アドレスが2つ以上 → どれか分からないので空
+    ("山田です。sato@other.example.jp さんの紹介で yamada@ex.net から送っています", ""),
+    # 項目の行が無く、内容より前にアドレスが1つ
+    ("山田 yamada@ex.net\n内容: よろしくお願いします", "yamada@ex.net"),
+])
+def test_sure_form_without_address_field_does_not_pick_other_people(body, addr):
+    from server import mail
+    assert mail.contact_from_body(body, _rules(), WP, True)[0] == addr
+
+
+def test_mailing_list_reply_to_does_not_merge_people(client, users, tmp_path, monkeypatch):
+    """メーリングリスト (どの人のメールにも同じ Reply-To) で、別々の人を1つにまとめない."""
+    _, admin = users
+    _fetch(tmp_path, monkeypatch, {
+        1: _raw("<ml1@x>", "Alice <alice@ex.net>", body="a", reply_to="group@googlegroups.com"),
+        2: _raw("<ml2@x>", "Bob <bob@ex2.net>", body="b", reply_to="group@googlegroups.com"),
+    })
+    a, b = _id_of(tmp_path, "<ml1@x>"), _id_of(tmp_path, "<ml2@x>")
+    rows = _list(client, admin)
+    assert [(rows[i]["contact_addr"], rows[i]["via_form"], rows[i]["thread_count"])
+            for i in (a, b)] == [("alice@ex.net", False, 0), ("bob@ex2.net", False, 0)]
+    assert _row(tmp_path, a)["reply_to"] == "group@googlegroups.com"
+
+
+def test_redecide_keeps_form_mark_of_mail_from_our_own_address(client, users, tmp_path, monkeypatch):
+    """設定「フォームの送信元」に自社のドメインを足しても外しても、自社のアドレスから届いた
+    フォームのメール (Reply-To がお客様) の「HPフォーム経由」の印は消えない."""
+    _, admin = users
+    _fetch(tmp_path, monkeypatch, {
+        1: _raw("<k1@x>", OWN, body="お名前: 山田\n内容: A", reply_to="山田 <yamada@ex.net>")})
+    a = _id_of(tmp_path, "<k1@x>")
+    for value in ("@bics.co.jp", ""):
+        r = client.patch("/api/settings", headers=auth(admin), json={"mail_form_senders": value})
+        assert r.status_code == 200, r.text
+        row = _row(tmp_path, a)
+        assert (row["contact_addr"], row["contact_name"], row["contact_source"],
+                row["contact_via_form"]) == ("yamada@ex.net", "山田", "reply_to", 1), value
+
+
+def test_redecide_uses_the_remembered_reply_to(client, users, tmp_path, monkeypatch):
+    """送信元を足したとき、覚えている Reply-To のお客様にする (本文にアドレスが無くても)."""
+    _, admin = users
+    _fetch(tmp_path, monkeypatch, {
+        1: _raw("<rr1@x>", "site@shop.example", body="お名前: 山田\n内容: A",
+                reply_to="yamada@ex.net")})
+    a = _id_of(tmp_path, "<rr1@x>")
+    assert (_row(tmp_path, a)["contact_addr"], _row(tmp_path, a)["contact_via_form"]) == \
+        ("site@shop.example", 0)
+    r = client.patch("/api/settings", headers=auth(admin),
+                     json={"mail_form_senders": "site@shop.example"})
+    assert r.status_code == 200, r.text
+    row = _row(tmp_path, a)
+    assert (row["contact_addr"], row["contact_name"], row["contact_source"],
+            row["contact_via_form"]) == ("yamada@ex.net", "山田", "reply_to", 1)
+
+
+def test_approval_notice_shows_the_changed_to(client, users, tmp_path, sent, monkeypatch):
+    """メール担当者が宛先を直して確認をお願いしたら、管理者へのお知らせにも出る."""
+    from server import mail, notify
+    staff, admin = users
+    got = []
+    monkeypatch.setattr(notify, "deliver_async", lambda s, message, subject=None: got.append(message))
+    mid = _form_mail(tmp_path, 1, CF7_FIELDS)
+    r = client.post(f"/api/mail/{mid}/request-approval", headers=auth(staff),
+                    json={"body": "山田 様", "to": "hanako@example.jp"})
+    assert r.status_code == 200, r.text
+    assert "・宛先を直しています: hanako@example.jp（元の相手: hanako.yamada@example.net）" in got[0]
+    # 直していなければ出ない
+    mid2 = _form_mail(tmp_path, 2, CF7_BRACKETS)
+    r = client.post(f"/api/mail/{mid2}/request-approval", headers=auth(staff), json={"body": "x"})
+    assert r.status_code == 200, r.text
+    assert "宛先を直しています" not in got[1]
+    # アドレスが分からないフォームのメールで宛先を入れたとき
+    _, text = mail.approval_request_message(
+        {}, {"subject": "s", "contact_source": "body", "contact_addr": "", "contact_name": "中村"},
+        "田中", to="naka@example.jp")
+    assert "・宛先を直しています: naka@example.jp（元の相手: なし）" in text
+
+
 # ---------- 前にフォームの送信元へ送ってしまった返信 ----------
 
 def test_misdirected_reply_notice_and_settings_count(client, users, tmp_path):
@@ -798,7 +994,10 @@ def test_mail_page_has_contact_ui(client):
                    "お客様に届いていない可能性があります。",
                    "body: JSON.stringify({ body: text, cc, bcc, to,",
                    "mail_form_senders: $(\"set-mail-form-senders\").value",
-                   "/misdirect-checked"):
+                   "/misdirect-checked",
+                   # 確認をお願いした後の宛先の注意・承認のときの確認に、直した宛先を出す
+                   "renderControls(modal.mail);\n    renderToNote(modal.mail);",
+                   "（担当者が直した宛先。元の相手: ${c}）"):
         assert marker in page, marker
     # 外から来た文字 (お客様の名前・アドレス) は esc() か textContent で入れる
     assert "${esc(contactLabel(m))}" in page and 'title="HPのお問い合わせフォームから届いたメールです（差出人: ${esc(m.from_addr)}）' in page

@@ -1717,10 +1717,14 @@ function toValue() {
   }
   return to;
 }
-// 宛先を直したときに、送る前の確認に添える文
+// 宛先を直したときに、送る前の確認に添える文。メール担当者が確認をお願いしたときに直した宛先
+// (既定の宛先になっている) も、相手と違えば知らせる (承認する管理者が気付けるように)
 const toChangedText = to => {
-  const d = (modal.defaultTo || "").toLowerCase();
-  return d && to.toLowerCase() !== d ? `（直した宛先。元の相手: ${modal.defaultTo}）` : "";
+  const t = to.toLowerCase(), d = (modal.defaultTo || "").toLowerCase();
+  const c = String(modal.mail ? contactAddr(modal.mail) : "");
+  if (d && t !== d) return `（直した宛先。元の相手: ${modal.defaultTo}）`;
+  if (c && t !== c.toLowerCase()) return `（担当者が直した宛先。元の相手: ${c}）`;
+  return "";
 };
 
 $("m-send").onclick = async () => {
@@ -1828,6 +1832,7 @@ $("m-request").onclick = async () => {
                                 draft_cc: cc, draft_bcc: bcc, draft_to: to, return_note: "" });
     modal.defaultTo = to;
     renderControls(modal.mail);
+    renderToNote(modal.mail);   // 宛先の注意も、直した宛先のことに変える
     $("m-status").textContent = "確認をお願いしました ✓（管理者が確かめて送ります）" +
       ((r.notified || []).length ? "" : "（お知らせの送り先が未設定のため、管理者に一声かけてください）");
     showInbox();

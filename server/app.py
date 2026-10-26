@@ -3807,7 +3807,7 @@ def mail_request_approval(
         detail += f" note={_audit_note(note)}"
     _audit(conn, user, "mail_approval_request", detail=detail)
     conn.commit()   # お知らせを送る前に確定する
-    subject, message = mail.approval_request_message(s, dict(r), user["name"], note)
+    subject, message = mail.approval_request_message(s, dict(r), user["name"], note, to)
     notify.deliver_async(s, message, subject)
     return {"updated": mail_id, "status": "pending_approval", "requested_by": user["name"],
             "requested_at": now, "notified": notify.channels(s)}
