@@ -300,6 +300,32 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
         " approval_note = ? WHERE id = ?",
         ("田中", (now_utc - timedelta(minutes=10)).isoformat(),
          "遅い時間のチェックインで大丈夫か、確かめてください", pending_id))
+    # HPのお問い合わせフォーム (WordPress の Contact Form 7) から届いたメールの確認用。
+    # 差出人はどれも wordpress@ だが、相手は本文に書かれたお客様 (別々の人としてまとめない)
+    form_footer = ("\n\n-- \nこのメールは ビックス (https://example.com) の"
+                   "お問い合わせフォームから送信されました")
+    add_mail(35, "WordPress", "wordpress@example.com", "【HPお問い合わせ】民泊の運営代行について",
+             "差出人: 山田 花子 <hanako.yamada@example.net>\n題名: 民泊の運営代行について\n\n"
+             "会社名：株式会社やまだ不動産\nお名前：山田 花子\n"
+             "メールアドレス：hanako.yamada@example.net\n電話番号：03-1234-5678\n\n"
+             "メッセージ本文:\n都内で2部屋の民泊を始めたいと考えています。\n"
+             "運営代行の料金を教えてください。" + form_footer,
+             2, "通常", category="運営代行のご相談")
+    add_mail(60, "WordPress", "wordpress@example.com", "【HPお問い合わせ】清掃のご依頼",
+             "【お名前】\n小林 健\n【メールアドレス】\nken.kobayashi@example.org\n"
+             "【お問い合わせ内容】\n来月から週2回の清掃をお願いしたいです。" + form_footer,
+             2, "通常", category="清掃のご依頼")
+    add_mail(130, "WordPress", "wordpress@example.com", "【HPお問い合わせ】お電話でのご相談希望",
+             "お名前：中村 様\n電話番号：090-0000-1111\n\n"
+             "メッセージ本文:\nメールより電話で相談したいです。夕方に電話をください。" + form_footer,
+             2, "通常", category="その他")
+    # 前の版で、返信がフォームの送信元 (wordpress@) に送られていたメール (お客様に届いていない)
+    add_mail(5200, "WordPress", "wordpress@example.com", "【HPお問い合わせ】料金表がほしいです",
+             "差出人: 加藤 真理 <mari.kato@example.net>\n題名: 料金表がほしいです\n\n"
+             "メッセージ本文:\n清掃の料金表を送っていただけますか。" + form_footer,
+             2, "通常", status="replied", category="清掃のご依頼",
+             reply=("加藤 様\n\nお問い合わせありがとうございます。\n料金表を添付いたします。",
+                    5100, "管理者", ""))
     add_mail(1500, "高橋", "takahashi@example.com",
              "先日の打ち合わせのお礼",
              "先日はお時間をいただきありがとうございました。",

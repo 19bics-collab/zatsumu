@@ -196,6 +196,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             conn.rollback()
             print(f"メールのつながりを記録できませんでした: {e}")
+        # 前からあるメール (この機能より前・前の版に戻っていた間に取り込んだもの) の相手を決める
+        # (HPのフォームから届いたメールは本文のお客様)。前の回に調べ終えたメールは調べない。
+        # 失敗しても起動は止めない (それまでは差出人を相手として扱う)
+        try:
+            filled = mail.fill_missing_contacts(conn)
+            if filled:
+                print(f"メール {filled} 通の相手（お客様）を記録しました")
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            print(f"メールの相手を記録できませんでした: {e}")
         # 自動更新で前の版 (受信するアドレスが1つだけの版) に戻っていた間に取り込んだメールに、
         # 届いたアドレス (旧設定から作ったもの) を付ける。失敗しても起動は止めない
         try:
@@ -476,6 +486,7 @@ class SettingsPatch(BaseModel):
     notion_property_map: str | None = None
     notion_ai_fill: bool | None = None
     mail_require_approval: bool | None = None
+    mail_form_senders: str | None = None
 
 
 class MailPatch(BaseModel):
@@ -499,6 +510,8 @@ class MailSendBody(BaseModel):
     subject: str | None = None  # 省略時は「Re: 元の件名」
     cc: list[str] | None = None   # CC のアドレス (全員に返信。省略時は CC なし)
     bcc: list[str] | None = None  # BCC のアドレス (ヘッダには出ない)
+    # 宛先 (画面で直したとき。省略時は相手 = Reply-To か、フォームの本文のお客様か、差出人)
+    to: str | None = None
     # 「承認して送信」のとき、画面で見ていた確認のお願いの時刻 (requested_at)。
     # null なら自分の返信として送る (確認待ちのメールなら 409。見ていない下書きを承認したことにしない)。
     # 項目ごと無い (この項目を知らない、更新前に開いた画面) ときは確かめない (今までどおり)
@@ -510,6 +523,7 @@ class MailApprovalBody(BaseModel):
     body: str
     cc: list[str] | None = None
     bcc: list[str] | None = None
+    to: str | None = None        # 宛先 (画面で直したとき。管理者もこの宛先に送る)
     note: str = ""               # 管理者へのひとこと (任意。例:「料金のところを見てください」)
 
 
@@ -961,6 +975,14 @@ def _mask_settings(s: dict, conn) -> dict:
     # 次に週ごとのまとめを送る日時 (UTC ISO。送る設定がオフなら null)
     nxt = mail.next_report_at(s, datetime.now(timezone.utc), mail.report_last_sent(conn))
     s["mail_report_next_at"] = tz.utc_iso(nxt) if nxt else None
+    # HPのフォームの送信元に返信してしまっていた (お客様に届いていない) メールの数と、
+    # 新しいものから10通 (読み取り専用。設定画面から開いて、お客様に連絡し直してもらう)
+    misdirected = conn.execute(
+        f"SELECT m.id, m.subject, m.replied_at, m.from_addr, m.contact_addr FROM mails m"
+        f" WHERE {mail.MISDIRECTED_SQL} ORDER BY m.replied_at DESC LIMIT 10").fetchall()
+    s["mail_form_misdirected_count"] = conn.execute(
+        f"SELECT COUNT(*) FROM mails m WHERE {mail.MISDIRECTED_SQL}").fetchone()[0]
+    s["mail_form_misdirected"] = [dict(r) for r in misdirected]
     for key in ("smtp_pass", "imap_pass", "anthropic_api_key", "notion_token"):
         s[f"{key}_set"] = bool(s.get(key))
         s[key] = ""
@@ -1087,7 +1109,8 @@ def patch_settings(
                        ("mail_page_url", mail.clean_page_url),
                        ("notion_token", notion.clean_token),
                        ("notion_database_id", notion.clean_database_id),
-                       ("notion_property_map", notion.clean_property_map)):
+                       ("notion_property_map", notion.clean_property_map),
+                       ("mail_form_senders", mail.clean_form_senders)):
         if key in changes:
             try:
                 changes[key] = clean(changes[key])
@@ -1126,6 +1149,10 @@ def patch_settings(
         mail.clear_fetch_error(conn)
     for key, val in changes.items():
         db.set_setting(conn, key, val)
+    if "mail_form_senders" in changes and \
+            changes["mail_form_senders"] != current.get("mail_form_senders", ""):
+        # 足した・外した送信元から届いていたメールの相手を決め直す (設定の保存と一緒に確定する)
+        mail.redecide_form_contacts(conn, db.get_settings(conn), current)
     secret = {"slack_webhook_url", "smtp_pass", "smtp_user",
               "imap_pass", "imap_user", "anthropic_api_key", "notion_token"}
     _audit(conn, admin, "settings_update", detail=", ".join(
@@ -2369,6 +2396,7 @@ def audit_csv(
         "mail_approval_request": "メール返信の確認のお願い",
         "mail_approval_return": "メール返信の差し戻し",
         "mail_staff": "メール担当者の変更",
+        "mail_misdirect_checked": "フォームの送信元に送った返信の確認",
         "device_code_sent": "端末確認コード送信",
         "device_code_send_fail": "端末確認コード送信失敗",
         "device_verify_ok": "端末確認成功",
@@ -2410,24 +2438,26 @@ def purge_now(_admin=Depends(require_admin), conn=Depends(get_conn)):
 
 # 一覧・詳細で使う SELECT (担当の人の名前と、添付ファイルの数も一緒に取る。
 # 添付は保存しなかったものも数える。一覧で 📎 を出す用)。
+# 「同じ相手」は相手のアドレス (contact_addr。HPのフォームから届いたメールは本文のお客様)。
 # 一覧用 (_MAIL_LIST_SELECT) は「やり取り N件」を1行ずつ数えない。同じ相手から何千通も
 # 届いていると、絞り込みに合う全部の行で数えることになり、一覧がとても遅くなるため
 # (並べ替えより先に数える)。一覧は出す行の相手ごとにまとめて数える (_thread_counts)
 _MAIL_LIST_SELECT = (
-    "SELECT m.*, u.name AS assignee_name, lower(m.from_addr) AS from_key,"
+    "SELECT m.*, u.name AS assignee_name, lower(m.contact_addr) AS contact_key,"
     " ac.label AS account_label,"
     " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count"
     " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
     " LEFT JOIN mail_accounts ac ON ac.id = m.account_id"
 )
-# 1通だけ取るとき用。thread_count は同じ相手 (差出人のアドレス。大文字・小文字は区別しない)
-# から届いたほかのメールの数 (「やり取り N件」用。索引 idx_mails_from_lower で数える)。
+# 1通だけ取るとき用。thread_count は同じ相手 (相手のアドレス。大文字・小文字は区別しない)
+# のほかのメールの数 (「やり取り N件」用。索引 idx_mails_contact_lower で数える)。
+# 相手のアドレスが空 (フォームから届いて本文にアドレスが無い) なら 0。
 # account_label は届いたアドレスの名前 (そのアドレスを削除していれば NULL)
 _MAIL_SELECT = (
     "SELECT m.*, u.name AS assignee_name, ac.label AS account_label,"
     " (SELECT COUNT(*) FROM mail_attachments a WHERE a.mail_id = m.id) AS attachment_count,"
-    " CASE WHEN m.from_addr = '' THEN 0 ELSE (SELECT COUNT(*) FROM mails t"
-    " WHERE lower(t.from_addr) = lower(m.from_addr) AND t.id != m.id) END AS thread_count"
+    " CASE WHEN m.contact_addr = '' THEN 0 ELSE (SELECT COUNT(*) FROM mails t"
+    " WHERE lower(t.contact_addr) = lower(m.contact_addr) AND t.id != m.id) END AS thread_count"
     " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
     " LEFT JOIN mail_accounts ac ON ac.id = m.account_id"
 )
@@ -2436,17 +2466,17 @@ _MAIL_SELECT = (
 def _thread_counts(conn, rows) -> dict:
     """一覧に出す行の相手ごとに、届いたメールの数を1回でまとめて数える.
 
-    {lower(差出人のアドレス): 通数} を返す (このメール自身も入る。使う側で1を引く)。
-    相手ごとに索引 idx_mails_from_lower の範囲を1回読むだけなので、同じ相手から
+    {lower(相手のアドレス): 通数} を返す (このメール自身も入る。使う側で1を引く)。
+    相手ごとに索引 idx_mails_contact_lower の範囲を1回読むだけなので、同じ相手から
     たくさん届いていても、数える量はメールの数を超えない。
     """
-    keys = sorted({r["from_key"] for r in rows if r["from_key"]})
+    keys = sorted({r["contact_key"] for r in rows if r["contact_key"]})
     counts = {}
     for i in range(0, len(keys), 400):   # SQLite の ? の数の上限より少なく区切る
         part = keys[i:i + 400]
         counts.update(conn.execute(
-            "SELECT lower(from_addr), COUNT(*) FROM mails WHERE lower(from_addr) IN ("
-            + ",".join("?" * len(part)) + ") GROUP BY lower(from_addr)", part).fetchall())
+            "SELECT lower(contact_addr), COUNT(*) FROM mails WHERE lower(contact_addr) IN ("
+            + ",".join("?" * len(part)) + ") GROUP BY lower(contact_addr)", part).fetchall())
     return counts
 
 
@@ -2457,6 +2487,12 @@ def _mail_summary(r, thread_count: int | None = None) -> dict:
         "id": r["id"],
         "from_addr": r["from_addr"],
         "from_name": r["from_name"],
+        # 相手 (HPのフォームから届いたメールは本文のお客様。アドレスが分からなければ空) と、
+        # フォームから届いたか (受信箱の「HPフォーム経由」)
+        "contact_addr": mail.counterpart(r)[1],
+        "contact_name": mail.counterpart(r)[0],
+        "contact_source": r["contact_source"],
+        "via_form": bool(r["contact_via_form"]),
         "subject": r["subject"],
         "received_at": r["received_at"],
         "priority": r["priority"],
@@ -2587,8 +2623,8 @@ def list_mail(
     sql += " ORDER BY m.priority, m.received_at DESC LIMIT 500"
     rows = conn.execute(sql, params).fetchall()
     counts = _thread_counts(conn, rows)
-    return [_mail_summary(r, max(0, counts.get(r["from_key"], 1) - 1) if r["from_key"] else 0)
-            for r in rows]
+    return [_mail_summary(r, max(0, counts.get(r["contact_key"], 1) - 1)
+                          if r["contact_key"] else 0) for r in rows]
 
 
 @app.post("/api/mail/fetch")
@@ -3134,6 +3170,15 @@ def mail_detail(
         # 届いたアドレスと、返信の差出人 (届いたアドレス。削除したアドレスなら共通の差出人)
         "account_address": mail.sender_address(acc["from_addr"]) if acc else "",
         "reply_from": mail.reply_sender(s, acc),
+        # 返信の宛先の既定 (相手。HPのフォームから届いたメールは本文のお客様。分からなければ空)
+        # と、届いたメールの Reply-To。送った返信の宛先 (空なら前の版が差出人に送った)。
+        # メール担当者が「確認をお願いする」で選んだ宛先
+        "reply_default_to": mail.reply_default_to(r),
+        "reply_to": r["reply_to"],
+        "reply_sent_to": (r["reply_sent_to"] or r["from_addr"]) if r["replied_at"] else "",
+        "draft_to": r["draft_to"],
+        # この返信は、フォームの送信元に送られていた (お客様に届いていないかもしれない)
+        "misdirected": mail.misdirected(r),
         # 「全員に返信」で CC に入れる候補 (元の To・Cc の人。自分たち (受信するアドレス全部) と
         # 差出人は除く)
         "reply_cc_candidates": mail.reply_all_cc(s, dict(r), accounts),
@@ -3475,6 +3520,41 @@ def _check_send_approval(r, approve_request: str | None) -> None:
                  "閉じて開き直し、下書きを確かめてください")
 
 
+def _reply_to(r, requested: str | None) -> tuple[str, str]:
+    """返信の宛先を決めて (宛先, 既定の宛先) を返す (決められなければ 400).
+
+    既定は相手 (Reply-To か、HPのフォームから届いたメールは本文のお客様か、差出人)。
+    メール担当者が「確認をお願いする」で選んだ宛先があれば、それ。
+    requested (画面で直した宛先) は CC と同じように確かめる。フォームの送信元
+    (お客様に届かない) には送らない。
+    """
+    default = mail.reply_default_to(r)
+    if requested is None:
+        if "@" not in default:
+            if r["contact_via_form"]:
+                raise HTTPException(
+                    400, "HPのお問い合わせフォームから届いたメールで、本文にお客様のメールアドレスが"
+                         "見つかりませんでした。宛先の欄にお客様のメールアドレスを入れてください")
+            raise HTTPException(400, "差出人アドレスが不明なため返信できません")
+        return default, default
+    try:
+        to = mail.check_reply_to(requested)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if r["contact_via_form"] and to.lower() == str(r["from_addr"] or "").strip().lower():
+        raise HTTPException(
+            400, f"宛先（{to}）はHPのお問い合わせフォームの送信元です。ここに送ってもお客様には"
+                 "届きません。お客様のメールアドレスを入れてください")
+    return to, default
+
+
+def _to_changed(to: str, default: str) -> str:
+    """宛先を画面で直したときに、操作の記録に足す文 (直していなければ空)."""
+    if to.lower() == default.strip().lower():
+        return ""
+    return f" to_changed_from={default or '(なし)'}"
+
+
 @app.post("/api/mail/{mail_id}/send")
 def mail_send(
     mail_id: int, body: MailSendBody, admin=Depends(require_admin),
@@ -3482,6 +3562,8 @@ def mail_send(
 ):
     """返信を送信する。宛先は元メールの差出人・スレッドが繋がるヘッダ付き.
 
+    宛先は相手 (Reply-To か、HPのフォームから届いたメールは本文のお客様か、差出人。
+    フォームの送信元には送らない)。画面で直したときは to で渡す (確かめて、記録にも残す)。
     cc / bcc を渡すと CC・BCC にも送る (全員に返信)。アドレスはここで確かめ、
     おかしなものがあれば何も送らずに 400 を返す。
     差出人は元メールが届いたアドレス (kurosu@ に届いたら kurosu@ から返す)。送信のログインは
@@ -3504,10 +3586,9 @@ def mail_send(
     text = (body.body or "").strip()
     if not text:
         raise HTTPException(400, "返信本文を入力してください")
-    if "@" not in (r["from_addr"] or ""):
-        raise HTTPException(400, "差出人アドレスが不明なため返信できません")
+    to, default_to = _reply_to(r, body.to)
     try:
-        cc, bcc = mail.check_reply_recipients(r["from_addr"], body.cc, body.bcc)
+        cc, bcc = mail.check_reply_recipients(to, body.cc, body.bcc)
     except ValueError as e:
         raise HTTPException(400, str(e))
     s = db.get_settings(conn)
@@ -3528,12 +3609,12 @@ def mail_send(
     # お願いされた・差し戻されたときは書き込まない。下の 409)
     cur = conn.execute(
         "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
-        " reply_cc = ?, reply_bcc = ?, replied_at = ?, replied_by = ?,"
+        " reply_cc = ?, reply_bcc = ?, replied_at = ?, replied_by = ?, reply_sent_to = ?,"
         " approved_by = CASE WHEN status = 'pending_approval' THEN ? ELSE '' END"
         " WHERE id = ? AND status != 'replied' AND (? OR CASE WHEN ? IS NULL"
         " THEN status != 'pending_approval'"
         " ELSE status = 'pending_approval' AND COALESCE(requested_at, '') = ? END)",
-        (subject, text, ", ".join(cc), ", ".join(bcc), now_iso(), admin["name"],
+        (subject, text, ", ".join(cc), ", ".join(bcc), now_iso(), admin["name"], to,
          admin["name"], mail_id, int(not check), body.approve_request, body.approve_request),
     )
     if not cur.rowcount:
@@ -3552,14 +3633,14 @@ def mail_send(
             "UPDATE mails SET status = CASE WHEN approved_by != '' THEN 'pending_approval'"
             " ELSE 'unhandled' END, approved_by = '', reply_subject = '',"
             " reply_body = '', reply_cc = '', reply_bcc = '', replied_at = NULL,"
-            " replied_by = '', reply_message_id = '' WHERE id = ?",
+            " replied_by = '', reply_message_id = '', reply_sent_to = '' WHERE id = ?",
             (mail_id,),
         )
 
     refused: list[str] = []
     try:
         raw = mail.send_reply(
-            send_settings, r["from_addr"], subject, text,
+            send_settings, to, subject, text,
             in_reply_to=r["message_id"], references=r["references_hdr"],
             cc=cc, bcc=bcc, sender=sender,
         )
@@ -3577,8 +3658,8 @@ def mail_send(
             reason = f"{hint}（送信サーバの返事: {reason}）"
         raise HTTPException(502, f"送信に失敗しました: {reason}")
     refused_keys = {a.strip().lower() for a in refused}
-    if r["from_addr"].strip().lower() in refused_keys:
-        # 肝心の相手 (元メールの差出人) に届いていない。CC・BCC の人には届いているが、
+    if to.strip().lower() in refused_keys:
+        # 肝心の相手 (宛先) に届いていない。CC・BCC の人には届いているが、
         # 「返信済み」にすると対応が終わったと思われてしまうので、未対応に戻して知らせる
         delivered = [a for a in (*cc, *bcc) if a.lower() not in refused_keys]
         # CC・BCC の人には届いているので、何を送ったかが分かるよう控えは残す
@@ -3594,11 +3675,11 @@ def mail_send(
                 saved = " saved=failed"
         back_to_unhandled()
         _audit(conn, admin, "mail_send_refused",
-               detail=f"to={r['from_addr']} refused={','.join(refused)}"
+               detail=f"to={to} refused={','.join(refused)}"
                       f" delivered={','.join(delivered)} subject={subject}{saved}")
         conn.commit()
         raise HTTPException(
-            502, f"送信できませんでした: 宛先（{r['from_addr']}）は相手のメールサーバに"
+            502, f"送信できませんでした: 宛先（{to}）は相手のメールサーバに"
                  "受け取りを断られました。アドレスを確かめてください"
                  + (f"（CC・BCC の {len(delivered)}件には届いています。"
                     "送り直すと、その人たちには2通目が届きます）" if delivered else ""))
@@ -3626,7 +3707,8 @@ def mail_send(
         except Exception as e:  # noqa: BLE001  管理者向けに原因を返す(社内利用)
             save_error = notify.safe_error(e, copy_settings, secrets)
     # 誰に送ったかを後から確かめられるよう、差出人と CC・BCC のアドレスと合計の件数も残す
-    detail = f"to={r['from_addr']} from={mail.sender_address(sender) or sender}"
+    detail = (f"to={to}{_to_changed(to, default_to)}"
+              f" from={mail.sender_address(sender) or sender}")
     if cc:
         detail += f" cc={','.join(cc)}"
     if bcc:
@@ -3642,11 +3724,31 @@ def mail_send(
     elif save_error:
         detail += " saved=failed"
     _audit(conn, admin, "mail_send", detail=detail)
-    return {"sent": r["from_addr"], "cc": cc, "bcc": bcc, "refused": refused,
+    return {"sent": to, "cc": cc, "bcc": bcc, "refused": refused,
             "subject": subject, "from": sender,
             "saved_to_sent": bool(sent_folder), "sent_folder": sent_folder,
             "sent_save_error": save_error,
             "approved_by": approval["approved_by"] if approval else ""}
+
+
+@app.post("/api/mail/{mail_id}/misdirect-checked")
+def mail_misdirect_checked(
+    mail_id: int, user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """「フォームの送信元に返信していた」注意を消す (お客様に連絡し直した・確かめた).
+
+    設定画面の「フォームの送信元に送ってしまった返信」の数からも外れる。記録に残す。
+    """
+    r = _mail_or_404(conn, mail_id)
+    if not mail.misdirected(r):
+        return {"updated": mail_id, "misdirected": False}
+    conn.execute("UPDATE mails SET misdirect_checked_at = ?, misdirect_checked_by = ?"
+                 " WHERE id = ? AND misdirect_checked_at IS NULL",
+                 (now_iso(), user["name"], mail_id))
+    _audit(conn, user, "mail_misdirect_checked",
+           detail=f"mail={mail_id} sent_to={r['reply_sent_to'] or r['from_addr']}"
+                  f" contact={mail.counterpart(r)[1] or '(なし)'}")
+    return {"updated": mail_id, "misdirected": False}
 
 
 # ----- メール担当者の「確認をお願いする」と、管理者の「差し戻す」 -----
@@ -3673,10 +3775,9 @@ def mail_request_approval(
     text = (body.body or "").strip()
     if not text:
         raise HTTPException(400, "返信文を入力するか「返信文を生成」を押してください")
-    if "@" not in (r["from_addr"] or ""):
-        raise HTTPException(400, "差出人アドレスが不明なため返信できません")
+    to, default_to = _reply_to(r, body.to)
     try:
-        cc, bcc = mail.check_reply_recipients(r["from_addr"], body.cc, body.bcc)
+        cc, bcc = mail.check_reply_recipients(to, body.cc, body.bcc)
     except ValueError as e:
         raise HTTPException(400, str(e))
     note = _clean_note(body.note, "管理者へのひとこと")
@@ -3686,18 +3787,18 @@ def mail_request_approval(
         raise HTTPException(409, "このメールは、もう確認をお願いしています（管理者の確認を待っています）")
     now = now_iso()
     # 前の差し戻しのコメントは消す (直して頼み直した)。確かめた後に、ほかの画面が送った・
-    # 確認をお願いしたときは書き込まない (409)
+    # 確認をお願いしたときは書き込まない (409)。宛先も残す (管理者も同じ宛先に送る)
     cur = conn.execute(
         "UPDATE mails SET status = 'pending_approval', draft_reply = ?, draft_cc = ?,"
-        " draft_bcc = ?, requested_by = ?, requested_at = ?, approval_note = ?,"
+        " draft_bcc = ?, draft_to = ?, requested_by = ?, requested_at = ?, approval_note = ?,"
         " approved_by = '', returned_by = '', returned_at = NULL, return_note = ''"
         " WHERE id = ? AND status IN ('unhandled', 'archived')",
-        (text, ", ".join(cc), ", ".join(bcc), user["name"], now, note, mail_id),
+        (text, ", ".join(cc), ", ".join(bcc), to, user["name"], now, note, mail_id),
     )
     if not cur.rowcount:
         raise HTTPException(409, "このメールは、ほかの画面で返信したか、確認をお願いしたところです"
                                  "（閉じて開き直してください）")
-    detail = f"mail={mail_id} to={r['from_addr']}"
+    detail = f"mail={mail_id} to={to}{_to_changed(to, default_to)}"
     if cc:
         detail += f" cc={','.join(cc)}"
     if bcc:

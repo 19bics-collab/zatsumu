@@ -101,6 +101,12 @@
   .thr-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
                border-radius: 99px; background: #ede9fe; color: #5b21b6; margin-left: .35rem;
                white-space: nowrap; vertical-align: 1px; font-weight: normal; }
+  /* HPのお問い合わせフォームから届いたメール (一覧の相手の横・返信画面) */
+  .form-tag { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+              border-radius: 99px; background: #fef3c7; color: #92400e; margin-left: .35rem;
+              white-space: nowrap; vertical-align: 1px; font-weight: normal; }
+  .sender-sub { display: block; font-size: .75rem; color: #6b7280; font-weight: normal;
+                overflow-wrap: anywhere; }
   /* 設定 */
   .settings-grid { display: grid; gap: 1rem;
                    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
@@ -233,7 +239,23 @@
           font-size: .88rem; color: #374151; }
   .rcpt-row { display: flex; align-items: center; gap: .5rem; }
   .rcpt-row > span:first-child { flex: 0 0 2.9rem; color: #6b7280; }
-  #m-to, #m-from { min-width: 0; overflow-wrap: anywhere; }
+  #m-from { min-width: 0; overflow-wrap: anywhere; }
+  /* 宛先についての注意 (フォームから届いたメール・宛先が見つからないとき) */
+  .to-note { margin: 0 0 0 3.4rem; font-size: .8rem; line-height: 1.5; color: #92400e;
+             background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px;
+             padding: .35rem .55rem; overflow-wrap: anywhere; }
+  .to-note[hidden] { display: none; }
+  .to-note.warn { color: #991b1b; background: #fef2f2; border-color: #fecaca; }
+  /* フォームの送信元に返信してしまっていたメールの注意 (返信画面の上) */
+  .misdir { margin-top: .6rem; border: 1px solid #fecaca; background: #fef2f2; color: #991b1b;
+            border-radius: 6px; padding: .55rem .7rem; font-size: .88rem; line-height: 1.55;
+            display: flex; flex-direction: column; gap: .4rem; overflow-wrap: anywhere; }
+  .misdir[hidden] { display: none; }
+  .misdir button { align-self: flex-start; padding: .4rem .8rem; }
+  #form-misdir { font-size: .85rem; overflow-wrap: anywhere; }
+  #form-misdir[hidden] { display: none; }
+  #form-misdir ul { margin: .3rem 0 0; padding-left: 1.2rem; }
+  #form-misdir button { padding: .1rem .4rem; font-size: .85rem; text-align: left; }
   #m-from-row[hidden] { display: none; }
   .rcpt-row input { flex: 1; min-width: 0; padding: .4rem; border: 1px solid #ccc;
                     border-radius: 6px; font-size: .9rem; }
@@ -437,6 +459,8 @@
   問い合わせの種類（清掃のご依頼など）と担当は自動で入り、返信画面で変えられます。
   同じ相手からほかにもメールが届いているときは差出人の横に「やり取り」の件数が出て、
   返信画面の「この相手とのやり取り」で前のメールと送った返信を見られます。
+  HPのお問い合わせフォームから届いたメールは、本文に書かれたお客様の名前と「HPフォーム経由」が出て、
+  返信もお客様のアドレスに送ります。
   受信するメールアドレスが2つ以上あるときは、件名の前にどのアドレスに届いたか（宛先）が出て、
   上の「アドレス」で絞り込めます（返信は、届いたアドレスから送ります）。
   <span id="admin-help">受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
@@ -532,6 +556,16 @@
       <p><small>「受信するメールアドレス」のメールボックスを定期的に受信し、「受信箱」に優先度順で
       表示します。初めて受信するアドレスは「初回に遡る日数」の分だけ前のメールから取り込みます。
       添付ファイルもこのサーバに保存し、「メール保存日数」を過ぎるとメールと一緒に消えます。</small></p>
+      <label for="set-mail-form-senders" style="display:block;margin:.8rem 0 .2rem;font-size:.9rem">HPのお問い合わせフォームの送信元（1行に1つ）</label>
+      <textarea id="set-mail-form-senders" spellcheck="false" autocapitalize="off"
+        placeholder="wordpress@example.co.jp&#10;@form.example.com"></textarea>
+      <p class="set-help" style="margin-top:.3rem"><small>HPのお問い合わせフォームから届くメールは、どのお客様の分も
+      差出人が同じアドレス（wordpress@… など）になります。このアドレスから届いたメールは、本文の
+      「メールアドレス」の欄に書かれたお客様を相手にします（受信箱にはお客様の名前と「HPフォーム経由」が出て、
+      返信もお客様に届きます）。wordpress@・noreply@ のような送信元は、ここに書かなくても分かります。
+      それでも差出人のまま出てしまうフォームがあれば、その差出人のアドレスを書いてください
+      （「@example.co.jp」と書くと、そのドメインから届いたメール全部）。保存すると、届いていたメールも直します。</small></p>
+      <div id="form-misdir" class="error" hidden></div>
     </div>
     <div class="set-card" id="ai-card">
       <h3>AI返信（Claude）</h3>
@@ -786,6 +820,10 @@
     <button id="m-back" class="ghost" hidden>← 前のメールに戻る</button>
     <h2 id="m-subject" style="margin:.2rem 0"></h2>
     <div class="mail-meta" id="m-meta"></div>
+    <div class="misdir" id="m-misdir" hidden>
+      <div id="m-misdir-text"></div>
+      <button id="m-misdir-ok" class="ghost">お客様に連絡した（この注意を消す）</button>
+    </div>
     <div class="mail-body" id="m-body"></div>
     <div class="atts" id="m-atts" hidden></div>
     <details class="thread" id="m-thread" hidden>
@@ -827,7 +865,10 @@
     </div>
     <div class="rcpt">
       <div class="rcpt-row" id="m-from-row"><span>差出人</span><span id="m-from"></span></div>
-      <div class="rcpt-row"><span>宛先</span><span id="m-to"></span></div>
+      <label class="rcpt-row"><span>宛先</span>
+        <input type="text" id="m-to" inputmode="email" autocomplete="off" autocapitalize="off"
+          spellcheck="false" placeholder="お客様のメールアドレス（name@example.com）"></label>
+      <div class="to-note" id="m-to-note" hidden></div>
       <label class="rcpt-all" id="m-cc-all-row" hidden>
         <input type="checkbox" id="m-cc-all">CCの人にも送る（全員に返信）<span id="m-cc-count" style="font-size:.8rem;color:#6b7280"></span></label>
       <label class="rcpt-row"><span>CC</span>
@@ -1126,6 +1167,21 @@ const acctBadge = m => !showAccounts() ? "" : m.account_id
 const threadBadge = m => m.thread_count > 0
   ? ` <span class="thr-badge" title="この相手から届いたほかのメール（返信画面で見られます）">やり取り ${Number(m.thread_count)}件</span>`
   : "";
+// 相手 (HPのお問い合わせフォームから届いたメールは、本文に書かれたお客様。差出人はフォーム)。
+// サーバが相手を返さない (古い版の) ときは差出人
+const contactName = m => m.contact_name ?? m.from_name ?? "";
+const contactAddr = m => m.contact_addr ?? m.from_addr ?? "";
+const contactLabel = m => contactName(m) || contactAddr(m) ||
+  (m.via_form ? "お客様（アドレス不明）" : "差出人不明");
+// 「名前 <アドレス>」(textContent で入れる用。アドレスが分からなければ名前だけ)
+const contactLine = m => {
+  const name = contactName(m), addr = contactAddr(m);
+  return name && addr ? `${name} <${addr}>` : (name || (addr ? `<${addr}>` : "")) ||
+    (m.via_form ? "お客様（アドレス不明）" : "差出人不明");
+};
+const formTag = m => m.via_form
+  ? ` <span class="form-tag" title="HPのお問い合わせフォームから届いたメールです（差出人: ${esc(m.from_addr)}）。相手は本文に書かれたお客様です">HPフォーム経由</span>`
+  : "";
 
 let inboxSeq = 0;        // 受信箱を取り直した回数 (前の取り直しの結果で上書きしない用)
 let inboxStale = false;  // 返信画面・設定を開いている間に受信箱が変わった (戻ったときに取り直す)
@@ -1223,7 +1279,7 @@ function renderInbox(list, keepPlace) {
     return `
     <tr class="mail-row ${["unhandled", "pending_approval"].includes(m.status) ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
-      <td data-label="差出人"><strong>${esc(m.from_name || m.from_addr)}</strong>${threadBadge(m)}</td>
+      <td data-label="差出人"><strong>${esc(contactLabel(m))}</strong>${formTag(m)}${threadBadge(m)}</td>
       <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
       <td data-label="状態"><span class="st-${esc(m.status)}">${esc(ST[m.status] || m.status)}</span>${m.status === "pending_approval" && m.requested_by ? `<small>（${esc(m.requested_by)}）</small>` : ""}${m.returned ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : ""}</td>
@@ -1371,13 +1427,18 @@ async function openMail(id) {
   }
   const replied = m.status === "replied";
   modal = { ...EMPTY_MODAL, id, savedDraft: m.draft_reply || "",
-            ccCandidates: (m.reply_cc_candidates || []).join(", "), notion: notionOf(m), mail: m };
-  // 宛先は元メールの差出人。CC は最初は空にしておき、「CCの人にも送る」を選んだときだけ
+            ccCandidates: (m.reply_cc_candidates || []).join(", "), notion: notionOf(m), mail: m,
+            defaultTo: m.reply_default_to ?? m.from_addr ?? "" };
+  // 宛先は相手 (HPのフォームから届いたメールは、本文に書かれたお客様。フォームの送信元には
+  // 送らない)。欄で直せる (サーバも CC と同じように確かめる)。送信済みなら実際に送った宛先。
+  // CC は最初は空にしておき、「CCの人にも送る」を選んだときだけ
   // 候補を入れる (元メールの To・Cc は送り主が自由に書けるので、知らない人を黙って CC に
   // 入れて、鍵の番号などを送ってしまわないように)。
   // 送信済みなら、実際に送った CC・BCC を出す。確認待ち・差し戻したメールなら、
   // メール担当者が確認をお願いしたときの CC・BCC を出す。値は textContent / value で入れる
-  $("m-to").textContent = `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}>`;
+  $("m-to").value = replied ? (m.reply_sent_to || m.from_addr || "") : modal.defaultTo;
+  renderToNote(m);
+  renderMisdirect(m);
   // 差出人は、このメールが届いたアドレス (削除したアドレスなら共通の差出人メール)
   $("m-from").textContent = (m.reply_from || "（未設定）") +
     (!m.account_id && showAccounts() ? "（届いたアドレスは削除したため、共通の差出人で送ります）" : "");
@@ -1424,13 +1485,64 @@ async function openMail(id) {
   loadModalTemplates(id);   // 一覧は後から入る (開くのを待たせない)
 }
 
+// 宛先の注意。HPのお問い合わせフォームから届いたメールは、本文 (または Reply-To) の
+// お客様に送ることを知らせ、確かめてもらう。アドレスなどは textContent で入れる
+function renderToNote(m) {
+  const note = $("m-to-note");
+  let text = "", warn = false;
+  if (m.status === "replied") {
+    text = "";
+  } else if (m.via_form && !contactAddr(m) && !modal.defaultTo) {
+    warn = true;
+    text = "HPのお問い合わせフォームから届いたメールですが、本文にお客様のメールアドレスが" +
+      "見つかりませんでした。本文を見て、宛先にお客様のメールアドレスを入れてください" +
+      `（フォームの送信元 ${m.from_addr} に送っても、お客様には届きません）`;
+  } else if (m.via_form && m.contact_source === "reply_to") {
+    text = "HPのお問い合わせフォームから届いたメールです。フォームが指定した返信先" +
+      "（お客様のメールアドレス）宛てに返信します。宛先が正しいか確かめてください";
+  } else if (m.via_form) {
+    text = "HPのお問い合わせフォームから届いたメールです。本文に書かれたメールアドレス宛てに返信します。宛先が正しいか確かめてください";
+  }
+  if (m.status !== "replied" && m.draft_to && modal.defaultTo === m.draft_to &&
+      contactAddr(m) && m.draft_to.toLowerCase() !== contactAddr(m).toLowerCase()) {
+    text += (text ? "。" : "") + `宛先は、確認をお願いしたときに直したものです（元の相手: ${contactAddr(m)}）`;
+  }
+  note.textContent = text;
+  note.className = "to-note" + (warn ? " warn" : "");
+  note.hidden = !text;
+}
+
+// 前の版で、返信をフォームの送信元に送ってしまっていたメールの注意 (お客様に届いていない)
+function renderMisdirect(m) {
+  $("m-misdir").hidden = !m.misdirected;
+  if (!m.misdirected) return;
+  const addr = contactAddr(m);
+  $("m-misdir-text").textContent =
+    `この返信はフォームの送信元（${m.from_addr}）宛てに送られていました。お客様に届いていない可能性があります。` +
+    (addr ? `お客様のメールアドレス（${addr}）に、あらためて連絡してください` :
+      "本文からお客様の連絡先を確かめて、あらためて連絡してください") +
+    "（送った返信文は下の「返信文」にあります）。";
+}
+$("m-misdir-ok").onclick = async () => {
+  const id = modal.id;
+  if (!id || !confirm("お客様にあらためて連絡しましたか？\n\nこの注意を消します（設定画面の数からも外れます）。")) return;
+  try {
+    await apiJson(`/api/mail/${id}/misdirect-checked`, { method: "POST" });
+    if (modal.id !== id) return;
+    if (modal.mail) modal.mail.misdirected = false;
+    $("m-misdir").hidden = true;
+    // 設定画面から開いていたら、設定画面の一覧からも外す
+    if (viewName === "settings") renderFormMisdirected(await apiJson("/api/settings"));
+  } catch {}
+};
+
 // 返信画面のボタンと欄を、メールの状態と自分の役割 (管理者・メール担当者) に合わせる。
 // 送信・対応不要は管理者だけ、「確認をお願いする」はメール担当者だけ (サーバも確かめる)
 function renderControls(m) {
   const admin = isAdmin();
   const replied = m.status === "replied", pending = m.status === "pending_approval";
   $("m-meta").textContent =
-    `${m.from_name ? m.from_name + " " : ""}<${m.from_addr}> ・ ` +
+    contactLine(m) + (m.via_form ? `（HPフォーム経由・送信元: ${m.from_addr}）` : "") + " ・ " +
     `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${ST[m.status] || m.status}` +
     (!replied || !m.replied_by ? ""
       : m.approved_by && m.requested_by ? `（${m.requested_by} さんの下書きを ${m.approved_by} が確認して送信）`
@@ -1438,7 +1550,7 @@ function renderControls(m) {
   // 送信済みと、メール担当者が確認待ちの間は、返信文・CC・BCC を変えない (管理者が見ている文なので)
   const locked = replied || (!admin && pending);
   $("m-draft").readOnly = locked;
-  $("m-cc").readOnly = $("m-bcc").readOnly = locked;
+  $("m-cc").readOnly = $("m-bcc").readOnly = $("m-to").readOnly = locked;
   $("m-cc-all").disabled = locked;
   $("m-gen").disabled = locked;
   if (locked) $("m-tpl").disabled = true;
@@ -1474,7 +1586,7 @@ function renderApprovalBox(m) {
     head = `📝 ${m.requested_by || "メール担当者"} さんが確認をお願いしています` +
       (m.requested_at ? `（${fmtDate(m.requested_at)}）` : "");
     note = m.approval_note ? "ひとこと: " + m.approval_note : "";
-    help = admin ? "返信文・CC・BCC を確かめて（直してもかまいません）「承認して送信」を押してください。" +
+    help = admin ? "宛先・返信文・CC・BCC を確かめて（直してもかまいません）「承認して送信」を押してください。" +
       "直してほしいところがあるときは、下にコメントを書いて「差し戻す」を押してください。" : "";
   } else if (returned) {
     head = "↩ 差し戻されました" +
@@ -1595,17 +1707,35 @@ const splitAddrs = v => {
     .filter(Boolean);
 };
 
+// 宛先の欄 (1つだけ。日本語入力の全角の英数字は半角に直す。正しい形かはサーバが確かめる)。
+// 空なら知らせて止める
+function toValue() {
+  const to = $("m-to").value.normalize("NFKC").trim();
+  if (!to) {
+    alert("宛先にお客様のメールアドレスを入れてください");
+    $("m-to").focus();
+  }
+  return to;
+}
+// 宛先を直したときに、送る前の確認に添える文
+const toChangedText = to => {
+  const d = (modal.defaultTo || "").toLowerCase();
+  return d && to.toLowerCase() !== d ? `（直した宛先。元の相手: ${modal.defaultTo}）` : "";
+};
+
 $("m-send").onclick = async () => {
   const text = $("m-draft").value.trim();
   if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
   const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
+  const to = toValue();
+  if (!to) return;
   // 誰に届くかを送る前に見せる (全員に返信のつもりが無かった、などに気付けるように)
   const approving = !!modal.mail && modal.mail.status === "pending_approval";
   if (!confirm((approving
       ? `${modal.mail.requested_by || "メール担当者"} さんの下書きを、この内容で送信しますか？（承認して送信）\n\n`
       : "この内容で返信を送信しますか？\n\n") +
       ($("m-from-row").hidden ? "" : "差出人: " + $("m-from").textContent + "\n") +
-      "宛先: " + $("m-to").textContent +
+      "宛先: " + to + toChangedText(to) +
       (cc.length ? "\nCC: " + cc.join(", ") : "") +
       (bcc.length ? "\nBCC: " + bcc.join(", ") : "") +
       (cc.length || bcc.length
@@ -1617,7 +1747,7 @@ $("m-send").onclick = async () => {
   try {
     const r = await apiJson(`/api/mail/${id}/send`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body: text, cc, bcc,
+      body: JSON.stringify({ body: text, cc, bcc, to,
                              approve_request: approving ? (modal.mail.requested_at || "") : null }),
     });
     if (modal.id !== id) { showInbox(); return; }
@@ -1650,7 +1780,9 @@ $("m-send").onclick = async () => {
     $("m-archive").disabled = true;
     $("m-cc").value = sentCc.join(", ");
     $("m-bcc").value = sentBcc.join(", ");
-    $("m-cc").readOnly = $("m-bcc").readOnly = true;
+    $("m-to").value = r.sent || to;
+    $("m-cc").readOnly = $("m-bcc").readOnly = $("m-to").readOnly = true;
+    $("m-to-note").hidden = true;
     $("m-cc-all").disabled = true;
     showInbox();
   } catch {
@@ -1675,8 +1807,10 @@ $("m-request").onclick = async () => {
   const text = $("m-draft").value.trim();
   if (!text) { alert("返信文を入力するか「返信文を生成」を押してください"); return; }
   const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
+  const to = toValue();
+  if (!to) return;
   if (!confirm("この返信文で、管理者に確認をお願いしますか？\n\n" +
-      "宛先: " + $("m-to").textContent +
+      "宛先: " + to + toChangedText(to) +
       (cc.length ? "\nCC: " + cc.join(", ") : "") +
       (bcc.length ? "\nBCC: " + bcc.join(", ") : "") +
       "\n\n管理者が確かめてから送ります。確認待ちの間は、返信文を変えられません。")) return;
@@ -1685,13 +1819,14 @@ $("m-request").onclick = async () => {
   try {
     const r = await apiJson(`/api/mail/${id}/request-approval`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body: text, cc, bcc, note: $("m-req-note").value }),
+      body: JSON.stringify({ body: text, cc, bcc, to, note: $("m-req-note").value }),
     });
     if (modal.id !== id) { showInbox(); return; }
     modal.savedDraft = text;
     Object.assign(modal.mail, { status: "pending_approval", requested_by: r.requested_by,
                                 requested_at: r.requested_at, approval_note: $("m-req-note").value.trim(),
-                                draft_cc: cc, draft_bcc: bcc, return_note: "" });
+                                draft_cc: cc, draft_bcc: bcc, draft_to: to, return_note: "" });
+    modal.defaultTo = to;
     renderControls(modal.mail);
     $("m-status").textContent = "確認をお願いしました ✓（管理者が確かめて送ります）" +
       ((r.notified || []).length ? "" : "（お知らせの送り先が未設定のため、管理者に一声かけてください）");
@@ -1789,11 +1924,11 @@ function renderThread(m) {
   const list = m.thread || [];
   if (!list.length) return;
   const total = Math.max(Number(m.thread_total) || 0, list.length);
-  const self = String(m.from_addr || "").toLowerCase();
+  const self = String(contactAddr(m)).toLowerCase();
   $("m-thread-title").textContent = `この相手とのやり取り（${total}件）`;
   $("m-thread-list").innerHTML = list.map(t => {
-    const other = String(t.from_addr || "").toLowerCase() !== self;
-    const who = `${t.from_name ? t.from_name + " " : ""}<${t.from_addr || "不明"}>`;
+    const other = String(contactAddr(t)).toLowerCase() !== self;
+    const who = contactLine(t) + (t.via_form ? "（HPフォーム経由）" : "");
     return `
     <details class="thr-item" data-thr="${Number(t.id)}">
       <summary>
@@ -2413,6 +2548,8 @@ function fillSettings(s) {
   $("set-mail-signature").value = s.mail_signature;
   $("set-mail-instructions").value = s.mail_reply_instructions;
   $("set-mail-vip").value = s.mail_vip_addresses;
+  $("set-mail-form-senders").value = s.mail_form_senders || "";
+  renderFormMisdirected(s);
   $("set-mail-keywords").value = s.mail_urgent_keywords;
   $("set-mail-categories").value = s.mail_categories;
   $("set-mail-category-keywords").value = s.mail_category_keywords;
@@ -2438,6 +2575,37 @@ function fillSettings(s) {
 
 /* ---------- 返事をしていないメールのお知らせ (設定) ---------- */
 // 「お知らせしない時間帯」は設定では "21-8" の形 (空 = なし)。画面では2つの選択欄で選ぶ
+// 前の版で、返信をフォームの送信元に送ってしまっていたメール (お客様に届いていない)。
+// 新しいものから10通まで並べ、押すとそのメールを開く。件名は textContent で入れる
+function renderFormMisdirected(s) {
+  const box = $("form-misdir");
+  const count = Number(s.mail_form_misdirected_count) || 0;
+  box.hidden = !count;
+  box.textContent = "";
+  if (!count) return;
+  const head = document.createElement("div");
+  head.textContent = `⚠ HPのお問い合わせフォームのメールへの返信が ${count}通、フォームの送信元に` +
+    "送られていました。お客様に届いていない可能性があります。開いてお客様のアドレスを確かめ、" +
+    "あらためて連絡してください（連絡したら、返信画面の「お客様に連絡した」を押すと、ここから消えます）。";
+  box.appendChild(head);
+  const ul = document.createElement("ul");
+  for (const m of s.mail_form_misdirected || []) {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.className = "ghost";
+    b.textContent = `${m.subject || "（件名なし）"}（${m.replied_at ? fmtDate(m.replied_at) + " に返信" : ""}）`;
+    b.onclick = () => openMail(Number(m.id));
+    li.appendChild(b);
+    ul.appendChild(li);
+  }
+  if (count > (s.mail_form_misdirected || []).length) {
+    const li = document.createElement("li");
+    li.textContent = `ほか ${count - s.mail_form_misdirected.length}通（上のものを連絡し終えると出てきます）`;
+    ul.appendChild(li);
+  }
+  box.appendChild(ul);
+}
+
 function fillQuietSelects(value) {
   const from = $("set-remind-quiet-from"), to = $("set-remind-quiet-to");
   if (!from.options.length) {
@@ -2787,6 +2955,7 @@ $("set-save").onclick = async () => {
     mail_signature: $("set-mail-signature").value,
     mail_reply_instructions: $("set-mail-instructions").value,
     mail_vip_addresses: $("set-mail-vip").value,
+    mail_form_senders: $("set-mail-form-senders").value,
     mail_urgent_keywords: $("set-mail-keywords").value,
     mail_categories: $("set-mail-categories").value,
     mail_category_keywords: $("set-mail-category-keywords").value,

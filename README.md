@@ -178,7 +178,15 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   返事のヘッダ（Message-ID・In-Reply-To・References）でつながるメール ― 別のアドレスからの
   同じ話の返事など ― を、こちらが送った返信と一緒に新しい順に30件まで。押すと開き、
   1通ずつ全文を見たり、そのメールを開いたりできる。受信箱では差出人の横に
-  「やり取り N件」（同じアドレスから届いたほかのメールの数）が出る）。
+  「やり取り N件」（同じ相手から届いたほかのメールの数）が出る）。
+  **HPのお問い合わせフォーム**（WordPress の Contact Form 7 など）から届くメールは、差出人が
+  どのお客様の分も同じ（wordpress@… など）なので、Reply-To か本文の「メールアドレス: …」の
+  お客様を相手にします（受信箱にはお客様の名前と「HPフォーム経由」が出て、別々のお客様が
+  同じやり取りにまとまらない。返信もお客様のアドレスに送り、返信画面の宛先の欄で確かめて
+  直せる。本文にアドレスが無いときは、宛先を入れてもらう）。wordpress@・noreply@ などは
+  自動で分かり、分からないフォームは設定画面の「メールの受信」の
+  「HPのお問い合わせフォームの送信元」に書く。前の版で返信がフォームの送信元に送られていた
+  メールには、返信画面と設定画面に注意が出る）。
   届いてから決めた時間（既定: 優先度[高]は2時間・[中]と[低]は24時間）がたっても「未対応」の
   ままのメールは、**Slack・メールでまとめてお知らせ**します（1通につき1回。夜21時〜朝8時は
   止めておき、終わった後にまとめて送る。送り先・時間・時間帯は設定画面の
@@ -297,8 +305,9 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | POST | `/api/mail/{id}/notion` | admin | このメールを Notion のデータベースに1行で登録（本文・添付ファイル付き。登録済みなら 409、`{"again": true}` でもう1行作る） |
 | PATCH | `/api/mail/{id}` | admin・メール担当者 | 下書き保存・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更（メール担当者は状態を変えられず、確認待ちの下書きも変えられない。`seen_request` に画面を開いたときの `requested_at` を渡すと、開いた後に確認をお願いされていたら下書きを上書きせず 409） |
 | GET | `/api/mail/assignees` | admin・メール担当者 | 担当に選べる人（有効な人の番号と名前） |
-| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は元メールの差出人。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る。確認待ちのメールは `approve_request` に画面で見ていた `requested_at` を渡すと「承認して送信」になり `approved_by` を残す。null・食い違うときは 409（見ていない下書きを承認したことにしない）） |
-| POST | `/api/mail/{id}/request-approval` | admin・メール担当者 | 「確認をお願いする」（`body` `cc` `bcc` `note`。確認待ちにして Slack・通知先メールに知らせる。設定 `mail_require_approval` がオフなら 400） |
+| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は相手 ― Reply-To か、HPのフォームから届いたメールは本文のお客様か、差出人。`to` で直せる（1つだけ・CC と同じように確かめる・フォームの送信元は不可・直したことを記録に残す）。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る。確認待ちのメールは `approve_request` に画面で見ていた `requested_at` を渡すと「承認して送信」になり `approved_by` を残す。null・食い違うときは 409（見ていない下書きを承認したことにしない）） |
+| POST | `/api/mail/{id}/request-approval` | admin・メール担当者 | 「確認をお願いする」（`body` `cc` `bcc` `to` `note`。宛先も残し、管理者も同じ宛先に送る。確認待ちにして Slack・通知先メールに知らせる。設定 `mail_require_approval` がオフなら 400） |
+| POST | `/api/mail/{id}/misdirect-checked` | admin・メール担当者 | 前の版で返信がHPのフォームの送信元に送られていたメールの注意を消す（お客様に連絡し直した。記録に残す） |
 | POST | `/api/mail/{id}/send-back` | admin | 確認待ちを「差し戻す」（`note` が必要。未対応に戻し、コメントをメール担当者に見せる） |
 | GET | `/api/mail/me` | admin・メール担当者 | ログインした人の役割（`admin` / `staff`）と、画面の表示に使う設定（秘密は入れない） |
 | GET | `/api/mail/staff` | admin | メール担当者にできる人の一覧 |

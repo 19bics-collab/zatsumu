@@ -456,8 +456,8 @@ def find_phone(text) -> str:
 
 def mail_values(row: dict) -> dict:
     """メールから「列に入れるもの」の値を作る (row は mails の行。担当の名前 assignee_name 入り)."""
-    name = mail._one_line(row.get("from_name"))
-    addr = mail._one_line(row.get("from_addr"))
+    # 相手 (HPのフォームから届いたメールは、フォームの送信元ではなく本文のお客様)
+    name, addr = (mail._one_line(v) for v in mail.counterpart(row))
     received = _received(row)
     return {
         "subject": mail_events.clean_subject(row.get("subject")),

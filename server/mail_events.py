@@ -192,9 +192,11 @@ def default_title(subject, kind: str = "") -> str:
 
 
 def base_note(mail_row: dict) -> str:
-    """メモの既定値 (差出人と件名。本文は入れない)."""
-    name = mail._one_line(mail_row.get("from_name"))
-    addr = mail._one_line(mail_row.get("from_addr"))
+    """メモの既定値 (差出人と件名。本文は入れない).
+
+    差出人は相手 (HPのフォームから届いたメールは、本文のお客様)。
+    """
+    name, addr = (mail._one_line(v) for v in mail.counterpart(mail_row))
     who = f"{name} <{addr}>" if name and addr else (name or addr)
     subject = mail._one_line(mail_row.get("subject"))
     lines = ([f"差出人: {who}"] if who else []) + ([f"件名: {subject}"] if subject else [])

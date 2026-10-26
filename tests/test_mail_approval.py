@@ -116,6 +116,7 @@ MATRIX = [
     ("POST", "/api/mail/{mid}/events", None, True),
     ("PATCH", "/api/mail/{mid}", {"priority": 1}, True),
     ("POST", "/api/mail/{mid}/request-approval", {"body": "本文"}, True),
+    ("POST", "/api/mail/{mid}/misdirect-checked", None, True),
     # ここから管理者だけ
     ("POST", "/api/mail/{mid}/send", {"body": "本文"}, False),
     ("POST", "/api/mail/{mid}/send-back", {"note": "直してください"}, False),

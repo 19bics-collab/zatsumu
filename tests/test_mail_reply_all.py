@@ -439,14 +439,15 @@ def test_mail_page_has_reply_all_ui(client):
                    "m.reply_cc_candidates"):
         assert marker in page, marker
     # 差出人名やアドレス (外から来た文字) は textContent / value で入れる
-    assert '$("m-to").textContent = ' in page
+    # 宛先は直せる欄 (HPのフォームから届いたメールで、お客様のアドレスを確かめて直せるように)
+    assert '$("m-to").value = ' in page
     assert 'innerHTML = `${m.' not in page
     for field in ("m-to", "m-cc", "m-bcc"):
         assert f'$("{field}").innerHTML' not in page
     # スマホでもアドレスを打ちやすく (自動の大文字化・修正をしない)
     assert page.count('inputmode="email"') >= 2
-    # 送信後は CC・BCC も変えられない
-    assert '$("m-cc").readOnly = $("m-bcc").readOnly = true;' in page
+    # 送信後は宛先・CC・BCC も変えられない
+    assert '$("m-cc").readOnly = $("m-bcc").readOnly = $("m-to").readOnly = true;' in page
 
 
 def test_reply_all_cc_is_off_until_chosen(client):

@@ -141,7 +141,27 @@ CREATE TABLE IF NOT EXISTS mails (
     -- 管理者が「差し戻す」した人・時刻・コメント (スタッフの返信画面に出す。次に頼んだら消す)
     returned_by TEXT NOT NULL DEFAULT '',
     returned_at TEXT,
-    return_note TEXT NOT NULL DEFAULT ''
+    return_note TEXT NOT NULL DEFAULT '',
+    -- 相手 (お客様)。HPのお問い合わせフォームから届くメールは、どのお客様の分も差出人が同じ
+    -- (wordpress@… など) なので、受信したときに Reply-To か本文の「メールアドレス: …」から
+    -- お客様を決めて覚える (server/mail.py の decide_contact)。やり取りのまとまり・返信の宛先に使う。
+    -- reply_to は届いたメールの Reply-To のアドレス。contact_source は相手をどこから決めたか
+    -- ('reply_to' / 'body' / 'from'。'' = まだ決めていない。前の版が入れたメール)。
+    -- contact_via_form はフォームから届いたメールか (受信箱の「HPフォーム経由」)。
+    -- contact_addr が空のフォームのメール (本文にアドレスが無い) は、ほかのメールとまとめない
+    reply_to TEXT NOT NULL DEFAULT '',
+    contact_addr TEXT NOT NULL DEFAULT '',
+    contact_name TEXT NOT NULL DEFAULT '',
+    contact_source TEXT NOT NULL DEFAULT '',
+    contact_via_form INTEGER NOT NULL DEFAULT 0,
+    -- 実際に返信を送った宛先 (空 = 前の版が送った。そのときは差出人 from_addr に送っている) と、
+    -- メール担当者が「確認をお願いする」ときに選んだ宛先 (管理者も同じ宛先に送る)
+    reply_sent_to TEXT NOT NULL DEFAULT '',
+    draft_to TEXT NOT NULL DEFAULT '',
+    -- フォームの送信元に返信してしまっていた (お客様に届いていない) メールの注意を、
+    -- 「お客様に連絡した」で消した時刻と人
+    misdirect_checked_at TEXT,
+    misdirect_checked_by TEXT NOT NULL DEFAULT ''
 );
 -- 受信するメールアドレス (kurosu@・info@ など。server/mail.py)。1つずつ IMAP で受信して
 -- 1つの受信箱にまとめ、返信は届いたアドレスを差出人にして送る。
@@ -352,6 +372,10 @@ STR_SETTINGS = {
     # 種類ごとの担当 (1行に「種類: 名前」)。その種類のメールが届いたら、登録されている
     # 同じ名前の人を担当にする (空なら担当は自動で入らない)
     "mail_category_assignees": "",
+    # HPのお問い合わせフォームの送信元 (1行に1つ。アドレスか「@ドメイン」)。ここから届いたメールは、
+    # 本文の「メールアドレス: …」の人を相手にする (返信もその人に送る)。wordpress@・noreply@ などは
+    # 書かなくても分かる (server/mail.py の form_sender_kind)
+    "mail_form_senders": "",
     # 返事をしていないメールのお知らせを止めておく時間帯 (「始まりの時-終わりの時」。
     # 集計と同じタイムゾーン=既定は日本時間。日をまたいでよい。空なら止めない)。
     # 止めている間の分は、時間帯が終わった後にまとめて送る
@@ -530,6 +554,35 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("requested_at", "returned_at"):
         if col not in mcols:
             conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT")
+    # 相手 (お客様) の列。前からあるメールは、まず差出人を相手にしておく (すぐ終わる)。
+    # フォームから届いたメールは、起動したときに本文から相手を読み直す
+    # (server/mail.py の fill_missing_contacts。contact_source が空のものだけ)
+    if "contact_addr" not in mcols:
+        for col in ("reply_to", "contact_addr", "contact_name", "contact_source"):
+            if col not in mcols:
+                conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE mails SET contact_addr = from_addr, contact_name = from_name")
+    if "contact_via_form" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN contact_via_form INTEGER NOT NULL DEFAULT 0")
+    for col in ("reply_sent_to", "draft_to", "misdirect_checked_by"):
+        if col not in mcols:
+            conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    if "misdirect_checked_at" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN misdirect_checked_at TEXT")
+    # 相手を決めずに入ったメール (自動更新で前の版に戻っていた間に受信したもの・手で入れたもの) は、
+    # 入ったときに差出人を相手にしておく (まとまり・件数がすぐ正しく出るように)。
+    # 相手の決め方 (contact_source) は空のままにし、次の起動のときに決め直す
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS trg_mails_contact_default AFTER INSERT ON mails"
+        " WHEN NEW.contact_source = '' AND NEW.contact_addr = ''"
+        " BEGIN UPDATE mails SET contact_addr = NEW.from_addr, contact_name = NEW.from_name"
+        " WHERE id = NEW.id; END")
+    # 同じ相手のメールを新しい順に探す・数える用
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_contact_lower"
+                 " ON mails(lower(contact_addr), received_at)")
+    # フォームから届いたメールだけの索引 (フォームの送信元に送ってしまった返信を数える用。小さい)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_via_form ON mails(replied_at)"
+                 " WHERE contact_via_form = 1")
     # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
     # アドレスでの絞り込み・アドレスを削除したときの付け替え用

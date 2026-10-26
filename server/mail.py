@@ -31,6 +31,9 @@ Slack・通知先メールへまとめてお知らせする (1通につき1回�
 1つの受信箱にまとめる (1つのアドレスが失敗しても、ほかのアドレスは受信する)。届いたメールには
 どのアドレスに届いたかを残し、返信はそのアドレスを差出人にして送り、控えもそのアドレスの
 送信済みフォルダに残す (送信のログインは、アドレスごとの設定が無ければ共通の SMTP 設定)。
+メールごとに「相手」(お客様) を受信したときに決めて覚える。HPのお問い合わせフォームから届く
+メールは差出人がどのお客様の分も同じ (wordpress@… など) なので、Reply-To か本文の
+「メールアドレス: …」の人を相手にし、やり取りのまとまり・返信の宛先などに使う (decide_contact)。
 """
 import base64
 import email
@@ -135,6 +138,23 @@ def _extract_body(msg) -> str:
     return text.strip()
 
 
+def _first_reply_to(msg) -> tuple[str, str]:
+    """Reply-To の最初の正しいアドレスと、その名前 (無ければ ("", "")).
+
+    Reply-To が複数あっても、1つのヘッダに何人書かれていても、送れる形の最初の1人だけ。
+    """
+    try:
+        values = [str(h) for h in msg.get_all("Reply-To", [])]
+        pairs = getaddresses(values)
+    except Exception:  # noqa: BLE001  壊れた Reply-To は無いものとする
+        return "", ""
+    for name, addr in pairs:
+        addr = addr.strip()
+        if valid_address(addr):
+            return _one_line(name), addr
+    return "", ""
+
+
 def parse_message(raw: bytes) -> dict:
     """RFC822 のバイト列を DB 保存用の dict に変換する."""
     msg = email.message_from_bytes(raw, policy=email.policy.default)
@@ -146,6 +166,7 @@ def parse_message(raw: bytes) -> dict:
             received = d if d.tzinfo else d.replace(tzinfo=timezone.utc)
     except Exception:  # noqa: BLE001  Date ヘッダ欠落/壊れは受信時刻で代用
         pass
+    reply_to_name, reply_to_addr = _first_reply_to(msg)
     message_id = str(msg.get("Message-ID", "")).strip()
     if not message_id:
         # Message-ID の無いメールは内容ハッシュで重複判定する
@@ -155,6 +176,9 @@ def parse_message(raw: bytes) -> dict:
         "message_id": message_id,
         "from_addr": from_addr,
         "from_name": from_name,
+        # 返信の宛先の指定 (HPのお問い合わせフォームは、ここにお客様のアドレスを入れることが多い)
+        "reply_to_addr": reply_to_addr,
+        "reply_to_name": reply_to_name,
         "to_addr": str(msg.get("To", "")),
         # 「全員に返信」の CC 候補に使う。Cc ヘッダが複数あってもまとめて1つにする
         "cc_addr": _header_text(", ".join(str(h) for h in msg.get_all("Cc", []))),
@@ -531,7 +555,8 @@ def rule_priority(settings: dict, mail: dict) -> tuple[int, str]:
     vips = [a.strip().lower()
             for a in str(settings.get("mail_vip_addresses", "")).split(",")
             if a.strip()]
-    if mail["from_addr"].lower() in vips:
+    # フォームから届いたメールは、本文のお客様のアドレスでも確かめる
+    if {mail["from_addr"].lower(), counterpart(mail)[1].lower()} & set(vips):
         return 1, "VIP差出人"
     kws = [k.strip().lower()
            for k in str(settings.get("mail_urgent_keywords", "")).split(",")
@@ -752,7 +777,7 @@ def rule_category(settings: dict, mail: dict) -> str:
     """
     text = _match_text(
         f"{mail.get('subject', '')}\n{str(mail.get('body') or '')[:2000]}\n"
-        f"{mail.get('from_name', '')} {mail.get('from_addr', '')}")
+        f"{mail.get('from_name', '')} {mail.get('from_addr', '')} {counterpart_text(mail)}")
     for category, words in category_keywords(settings):
         if any(w and w in text for w in map(_match_text, words)):
             return category
@@ -966,8 +991,13 @@ def test_ai(settings: dict) -> dict:
 
 
 def _mail_for_prompt(mail: dict) -> str:
+    sender = f"差出人: {mail['from_name']} <{mail['from_addr']}>\n"
+    if mail.get("contact_via_form"):
+        # HPのお問い合わせフォームから届いた (差出人はフォーム。お客様は本文の人)
+        sender = (f"差出人: HPのお問い合わせフォーム（{mail['from_addr']}）\n"
+                  f"お客様: {counterpart_text(mail) or '（本文にアドレスなし）'}\n")
     return (
-        f"差出人: {mail['from_name']} <{mail['from_addr']}>\n"
+        f"{sender}"
         f"件名: {mail['subject']}\n"
         f"本文:\n{mail['body'][:4000]}"
     )
@@ -1036,7 +1066,9 @@ def classify_mail(settings: dict, mail: dict) -> dict:
 
 def template_reply(settings: dict, mail: dict) -> str:
     """AI が使えない時の定型返信文."""
-    name = mail["from_name"] or mail["from_addr"] or "ご担当者"
+    # 相手の名前 (フォームから届いたメールで名前が分からなければ「ご担当者」)
+    cname, caddr = counterpart(mail)
+    name = cname or ("" if mail.get("contact_via_form") else caddr) or "ご担当者"
     subject = mail["subject"] or "ご連絡"
     company = settings.get("company_name") or "弊社"
     return (
@@ -1113,8 +1145,8 @@ def render_template(text: str, mail: dict, now: datetime | None = None) -> str:
     """
     n = (now or datetime.now(timezone.utc)).astimezone(tz.TZ)
     values = {
-        "相手の名前": (_one_line(mail.get("from_name"))
-                    or _one_line(mail.get("from_addr")) or "ご担当者"),
+        # 相手 (フォームから届いたメールは、本文のお客様。フォームの送信元の名前にはしない)
+        "相手の名前": (counterpart(mail)[0] or counterpart(mail)[1] or "ご担当者"),
         "件名": _one_line(mail.get("subject")) or "ご連絡",
         "日付": f"{n.year}年{n.month}月{n.day}日",
     }
@@ -1183,17 +1215,22 @@ def own_addresses(settings: dict, accounts=()) -> set[str]:
 def reply_all_cc(settings: dict, mail: dict, accounts=()) -> list[str]:
     """「全員に返信」で CC に入れる候補のアドレス.
 
-    元メールの To と Cc に入っていた人。返信の宛先 (元メールの差出人) と
-    自分たちのアドレス (受信するアドレス全部を含む) は除き、大文字・小文字の違いだけの
-    重複も1つにする。アドレスとして読めないもの (「undisclosed-recipients:;」等) は入れない。
+    元メールの To と Cc に入っていた人。返信の宛先 (相手) と元メールの差出人 (フォームの
+    送信元のこともある)、自分たちのアドレス (受信するアドレス全部を含む)、フォーム・自動送信の
+    送信元 (wordpress@・noreply@ など。送っても届かない・お客様ではない) は除き、
+    大文字・小文字の違いだけの重複も1つにする。アドレスとして読めないもの
+    (「undisclosed-recipients:;」等) は入れない。
     """
-    skip = own_addresses(settings, accounts) | {str(mail.get("from_addr") or "").strip().lower()}
+    rules = ContactRules(settings, accounts)
+    skip = rules.own | {str(mail.get("from_addr") or "").strip().lower(),
+                        counterpart(mail)[1].lower()}
     out = []
     # ヘッダごとに読む (片方が壊れていても、もう片方の候補は出せるように)
     for header in (mail.get("to_addr"), mail.get("cc_addr")):
         for _name, addr in getaddresses([str(header or "")]):
             addr = addr.strip()
-            if valid_address(addr) and addr.lower() not in skip:
+            if valid_address(addr) and addr.lower() not in skip \
+                    and not rules.automated(addr):
                 skip.add(addr.lower())
                 out.append(addr)
     return out
@@ -1256,6 +1293,476 @@ def check_reply_recipients(to_addr: str, cc=None, bcc=None) -> tuple[list[str], 
 def split_addresses(value) -> list[str]:
     """DB に「, 」区切りで保存した送り先を一覧に戻す."""
     return [a.strip() for a in str(value or "").split(",") if a.strip()]
+
+
+# ---------- 相手 (お客様) を決める ----------
+#
+# HPのお問い合わせフォーム (WordPress の Contact Form 7 など) から届くメールは、どのお客様の
+# 分でも差出人が同じ (wordpress@自社のドメイン など) で、お客様のアドレスは Reply-To か、
+# 本文の「メールアドレス: …」の行にある。差出人のままだと、別々のお客様のメールが
+# 「同じ相手とのやり取り」にまとまり、返信もフォームの送信元に届いてしまう (お客様に届かない)。
+# そこで受信したときに、メールごとに相手 (contact_addr・contact_name) を決めて覚える:
+#   1. Reply-To があり、自分たちのアドレスでなければ、その人 (contact_source='reply_to')
+#   2. 差出人がフォームの送信元なら、本文に書かれたお客様のアドレスと名前 ('body')
+#   3. それ以外は差出人 ('from')
+
+# 設定「HPのお問い合わせフォームの送信元」の最大文字数・件数
+FORM_SENDERS_MAX_CHARS = 2000
+FORM_SENDERS_MAX_COUNT = 50
+# 相手の名前の最大文字数 (本文から読んだ「会社名 お名前」が長すぎないように)
+CONTACT_NAME_MAX_CHARS = 60
+# 本文から相手を探すのは先頭のこの文字数まで (フォームの項目は先頭にある。長いメールで遅くならないように)
+CONTACT_BODY_SCAN_CHARS = 20000
+# 本文の書き方から見た「HPフォーム経由」(受信箱の印) の相手の決め方
+CONTACT_SOURCES = ("reply_to", "body", "from")
+
+# フォーム・自動送信の差出人 (@ の前)。必ずフォームとみなすもの (本文にアドレスの行が無くても、
+# 本文の最初のアドレスをお客様にする)
+_FORM_LOCAL_RE = re.compile(
+    r"wordpress|wp|wp[-_.]?(?:mail|form|admin|contact)|(?:web[-_.]?)?forms?"
+    r"|[a-z0-9]+[-_.]forms?|forms?[-_.][a-z0-9]+|form[-_.]?mail(?:er)?")
+# フォームかもしれないもの。本文に「メールアドレス: …」のような行があるときだけ、その人を相手にする
+# (お店や会社の contact@・Airbnb などの no-reply@ のお知らせは、行が無ければ差出人のまま)
+_MAYBE_FORM_LOCAL_RE = re.compile(
+    r"no[-_.]?reply|do[-_.]?not[-_.]?reply|contact(?:[-_.]?us)?|inquiry|enquiry"
+    r"|(?:o)?toiawase|webmaster|website")
+# 返事を受け取らない送信元 (送っても人に届かない)
+_NO_REPLY_LOCAL_RE = re.compile(
+    r"no[-_.]?reply|do[-_.]?not[-_.]?reply|mailer[-_.]?daemon|postmaster")
+# 誰でも作れるメールのドメイン。自分たちのアドレスがここにあっても、同じドメインの人を
+# 「自社のフォーム」とはみなさない (Gmail で受信していると、Gmail の人が全員フォームになるため)
+_FREE_MAIL_DOMAINS = frozenset((
+    "gmail.com", "googlemail.com", "yahoo.co.jp", "ymail.ne.jp", "yahoo.com", "outlook.com",
+    "outlook.jp", "hotmail.com", "hotmail.co.jp", "live.jp", "live.com", "msn.com",
+    "icloud.com", "me.com", "mac.com", "docomo.ne.jp", "ezweb.ne.jp", "au.com",
+    "softbank.ne.jp", "i.softbank.jp", "ymobile.ne.jp", "nifty.com", "biglobe.ne.jp",
+    "ocn.ne.jp", "so-net.ne.jp", "aol.com", "protonmail.com", "proton.me", "gmx.com",
+    "mail.com", "zoho.com",
+))
+# 本文からアドレスを探す形 (見つけたものは valid_address でも確かめる)
+_ADDR_SCAN_RE = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+# 「お名前：山田」「【お名前】山田」「■お名前 : 山田」などの1行 (全角の記号は NFKC で半角にしてから読む)
+_LABEL_LINE_RE = re.compile(
+    r"^[\s■□●○◆◇・*\-–—•▼▽▶▷►>※◎〇]*"
+    r"(?:[【\[〔《〈<「『]\s*([^】\]〕》〉>」』:]{1,40}?)\s*[】\]〕》〉>」』]\s*:?\s*(.*)"
+    r"|([^:<>@\[\]【】]{1,40}?)\s*:\s*(.*))$")
+# 項目の名前の後ろの (確認用)・※必須 など
+_LABEL_NOTE_RE = re.compile(r"\([^)]*\)|※.*$|必須|任意|\*")
+# お客様のメールアドレスの項目 (小文字・空白なしにして比べる)
+_ADDR_LABELS = frozenset((
+    "メールアドレス", "メール", "eメール", "eメールアドレス", "e-mail", "email", "mail",
+    "e-mailアドレス", "emailアドレス", "mailアドレス", "mailaddress", "emailaddress",
+    "e-mailaddress", "ご連絡先", "連絡先", "連絡先メールアドレス", "ご連絡先メールアドレス",
+    "返信先", "返信先メールアドレス", "pcメールアドレス", "携帯メールアドレス",
+    "yourmail", "youremail", "your-email",
+))
+# 転送されたメールの差出人の行 (Contact Form 7 の既定の本文「差出人: 名前 <アドレス>」もこれ)。
+# フォームだと確かなときだけ使う (社内の人が転送したメールを、お客様からのメールと取り違えないように)
+_FROM_LABELS = frozenset(("差出人", "from", "送信者"))
+_PERSON_LABELS = frozenset((
+    "お名前", "ご氏名", "氏名", "名前", "ご担当者名", "ご担当者様名", "担当者名", "ご担当者",
+    "担当者", "担当者様", "ご担当者様", "お名前(漢字)", "yourname", "your-name", "name",
+))
+_COMPANY_LABELS = frozenset((
+    "会社名", "貴社名", "御社名", "法人名", "会社名・団体名", "会社・団体名", "団体名", "企業名",
+    "社名", "屋号", "company", "companyname",
+))
+# 読み仮名の項目 (「お名前(フリガナ)」など。名前には使わない)
+_KANA_RE = re.compile(r"フリガナ|ふりがな|カナ|かな|よみ|ヨミ|kana", re.IGNORECASE)
+
+
+def clean_form_senders(text) -> str:
+    """設定「HPのお問い合わせフォームの送信元」を確かめて、1行に1つの形にそろえる.
+
+    1つずつ、アドレス (wordpress@example.co.jp) か「@ドメイン」(@example.co.jp。そのドメインの
+    アドレス全部)。「example.co.jp」のように @ を付け忘れたものはドメインとして受け付ける。
+    おかしなものがあれば、画面にそのまま出せる日本語の ValueError にする。
+    """
+    text = normalize_newlines(unicodedata.normalize("NFKC", str(text or "")))
+    if len(text) > FORM_SENDERS_MAX_CHARS:
+        raise ValueError(f"フォームの送信元は{FORM_SENDERS_MAX_CHARS}文字以内にしてください")
+    out = []
+    for item in _split_list(text):
+        item = item.strip().lower()
+        if "<" in item:
+            item = parseaddr(item)[1].strip().lower()
+        if "@" not in item:
+            item = "@" + item
+        local, _, domain = item.rpartition("@")
+        ok = valid_address(("x" if not local else local) + "@" + domain)
+        if not ok:
+            shown = item if len(item) <= 60 else item[:60] + "…"
+            raise ValueError(
+                f"フォームの送信元「{shown}」が正しくありません。"
+                "「wordpress@example.co.jp」か「@example.co.jp」の形で、1行に1つ入れてください")
+        if item not in out:
+            out.append(item)
+    if len(out) > FORM_SENDERS_MAX_COUNT:
+        raise ValueError(f"フォームの送信元は{FORM_SENDERS_MAX_COUNT}件までです")
+    return "\n".join(out)
+
+
+def _form_sender_rules(settings: dict) -> tuple[set[str], set[str]]:
+    """設定のフォームの送信元を (アドレス, ドメイン) に分ける (読めない行は飛ばす)."""
+    addrs, domains = set(), set()
+    for item in _split_list(unicodedata.normalize("NFKC", str(settings.get("mail_form_senders") or ""))):
+        item = item.strip().lower()
+        if "<" in item:
+            item = parseaddr(item)[1].strip().lower()
+        if "@" not in item:
+            item = "@" + item
+        local, _, domain = item.rpartition("@")
+        if not domain:
+            continue
+        if local:
+            addrs.add(item)
+        else:
+            domains.add(domain)
+    return addrs, domains
+
+
+def _in_domains(domain: str, domains) -> bool:
+    """domain がどれかのドメインか、その下 (www.example.co.jp は example.co.jp の下) か."""
+    return any(domain == d or domain.endswith("." + d) for d in domains)
+
+
+class ContactRules:
+    """相手を決めるのに使う、自分たちのアドレスとフォームの送信元 (受信の1回ごとに作る).
+
+    own は自分たちのアドレス (受信するアドレス・差出人・送信用のユーザー)、people は
+    登録されている人のメールアドレス (社内の人からのメールをフォームとみなさない)。
+    """
+
+    def __init__(self, settings: dict, accounts=(), people=()):
+        self.own = own_addresses(settings, accounts)
+        self.people = {str(p or "").strip().lower() for p in people if p}
+        self.own_domains = {a.rpartition("@")[2] for a in self.own} - _FREE_MAIL_DOMAINS
+        self.form_addrs, self.form_domains = _form_sender_rules(settings)
+
+    def form_kind(self, addr) -> str:
+        """差出人がフォーム・自動送信の送信元か.
+
+        'form' (設定に書いた送信元・wordpress@ など。必ずフォーム)、'own_domain' (自社の
+        ドメインだが受信するアドレスでも社内の人でもない。本文に項目があればフォーム)、
+        'maybe' (noreply@・contact@ など。本文に項目があればフォーム)、'' (ふつうの人)。
+        """
+        a = str(addr or "").strip().lower()
+        if "@" not in a or a in self.own:
+            return ""
+        local, _, domain = a.rpartition("@")
+        if a in self.form_addrs or _in_domains(domain, self.form_domains):
+            return "form"
+        if a in self.people:
+            return ""
+        local = local.split("+", 1)[0]
+        if _FORM_LOCAL_RE.fullmatch(local):
+            return "form"
+        if _in_domains(domain, self.own_domains):
+            return "own_domain"
+        if _MAYBE_FORM_LOCAL_RE.fullmatch(local):
+            return "maybe"
+        return ""
+
+    def automated(self, addr) -> bool:
+        """フォーム・自動送信の送信元か (設定に書いた送信元・wordpress@・noreply@ など).
+
+        返信しても人に届かないアドレス。お客様のアドレスや CC の候補にはしない。
+        """
+        a = str(addr or "").strip().lower()
+        local, _, domain = a.rpartition("@")
+        if a in self.form_addrs or _in_domains(domain, self.form_domains):
+            return True
+        local = local.split("+", 1)[0]
+        return bool(_FORM_LOCAL_RE.fullmatch(local) or _NO_REPLY_LOCAL_RE.fullmatch(local))
+
+    def usable(self, addr: str, sender: str) -> bool:
+        """本文で見つけたアドレスを、お客様のアドレスとして使えるか.
+
+        自分たち・フォームの送信元そのもの・自社のドメイン・noreply@ などは使わない。
+        """
+        a = addr.lower()
+        if not valid_address(addr) or a == sender or a in self.own:
+            return False
+        if _in_domains(a.rpartition("@")[2], self.own_domains):
+            return False
+        return not self.automated(a)
+
+
+def _label_key(label: str) -> str:
+    """項目の名前を比べる形 (「メールアドレス（確認用）※必須」→「メールアドレス」)."""
+    key = _LABEL_NOTE_RE.sub("", label)
+    return re.sub(r"\s+", "", key).lower()
+
+
+def _clean_contact_name(value) -> str:
+    """本文から読んだ名前を1行にして、後ろの「様」を除き、長すぎれば縮める."""
+    name = _one_line(value).strip(" 　:：")
+    name = re.sub(r"\s*(?:様|さま|殿)$", "", name)
+    if "@" in name:
+        return ""
+    return name[:CONTACT_NAME_MAX_CHARS].rstrip()
+
+
+def _label_lines(body: str):
+    """本文の「項目: 値」の行を順に (項目の比べる形, 項目の元の形, 値) で返す.
+
+    値が空の項目 (「【メールアドレス】」だけの行) は、次の空でない行を値にする。
+    """
+    text = unicodedata.normalize("NFKC", normalize_newlines(body)[:CONTACT_BODY_SCAN_CHARS])
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        mt = _LABEL_LINE_RE.match(line.strip())
+        if not mt:
+            continue
+        label = (mt.group(1) if mt.group(1) is not None else mt.group(3)) or ""
+        value = (mt.group(2) if mt.group(1) is not None else mt.group(4)) or ""
+        value = value.strip()
+        if not value:
+            for nxt in lines[i + 1:i + 3]:
+                if nxt.strip():
+                    if not _LABEL_LINE_RE.match(nxt.strip()) or "@" in nxt:
+                        value = nxt.strip()
+                    break
+        yield _label_key(label), label, value
+
+
+def contact_from_body(body, rules: ContactRules, sender: str, sure: bool) -> tuple[str, str]:
+    """フォームのメールの本文から、お客様の (アドレス, 名前) を読む (無ければ "").
+
+    アドレスは「メールアドレス: …」のような項目の行から (sure なら「差出人: 名前 <…>」の行も)。
+    項目の行が無く sure (必ずフォームの送信元) なら、本文の最初の使えるアドレスにする。
+    名前は「お名前」「氏名」などの行 (「会社名」もあれば「会社名 お名前」)。
+    """
+    sender = str(sender or "").strip().lower()
+    addr, from_name, person, company = "", "", "", ""
+    for key, label, value in _label_lines(str(body or "")):
+        if key in _ADDR_LABELS or (sure and key in _FROM_LABELS):
+            if not addr:
+                for found in _ADDR_SCAN_RE.findall(value):
+                    found = found.strip(".")
+                    if rules.usable(found, sender):
+                        addr = found
+                        if key in _FROM_LABELS:
+                            # 「差出人: 山田 太郎 <yamada@…>」の名前
+                            from_name = _clean_contact_name(
+                                value[:value.find(found)].strip().rstrip("<(").strip(' "'))
+                        break
+        elif _KANA_RE.search(label):
+            continue
+        elif key in _PERSON_LABELS and not person:
+            person = _clean_contact_name(value)
+        elif key in _COMPANY_LABELS and not company:
+            company = _clean_contact_name(value)
+    if not addr and sure:
+        text = unicodedata.normalize("NFKC", str(body or "")[:CONTACT_BODY_SCAN_CHARS])
+        for found in _ADDR_SCAN_RE.findall(text):
+            found = found.strip(".")
+            if rules.usable(found, sender):
+                addr = found
+                break
+    if company and person and person not in company:
+        name = f"{company} {person}"
+    else:
+        name = person or company or from_name
+    return addr, name[:CONTACT_NAME_MAX_CHARS].rstrip()
+
+
+def decide_contact(mail: dict, rules: ContactRules) -> dict:
+    """届いたメールの相手を決める (mail は parse_message の結果か、mails の行).
+
+    {"contact_addr", "contact_name", "contact_source", "contact_via_form"} を返す。
+    フォームから届いたのに本文にお客様のアドレスが無ければ contact_addr は空
+    (ほかのフォームのメールとまとめない。返信するときは宛先を入れてもらう)。
+    Reply-To が分からない (前からあるメール) ときは、本文と差出人で決める。
+    """
+    frm = str(mail.get("from_addr") or "").strip()
+    from_name = _one_line(mail.get("from_name"))
+    kind = rules.form_kind(frm)
+    own_sender = frm.lower() in rules.own
+    rt = str(mail.get("reply_to_addr") or "").strip()
+    if rt and valid_address(rt) and rt.lower() not in rules.own and rt.lower() != frm.lower():
+        via = own_sender or kind in ("form", "own_domain")
+        name = _one_line(mail.get("reply_to_name"))[:CONTACT_NAME_MAX_CHARS]
+        if not name and via:
+            name = contact_from_body(mail.get("body"), rules, frm, kind == "form")[1]
+        if not name and not via:
+            name = from_name   # 同じ人が、返事は別のアドレスにと指定している
+        return {"contact_addr": rt, "contact_name": name, "contact_source": "reply_to",
+                "contact_via_form": int(via)}
+    if kind:
+        addr, name = contact_from_body(mail.get("body"), rules, frm, kind == "form")
+        if addr or kind == "form":
+            return {"contact_addr": addr, "contact_name": name, "contact_source": "body",
+                    "contact_via_form": 1}
+    return {"contact_addr": frm, "contact_name": from_name, "contact_source": "from",
+            "contact_via_form": 0}
+
+
+def contact_rules(conn, settings: dict | None = None) -> ContactRules:
+    """DB の設定・受信するアドレス・登録されている人から ContactRules を作る (読むだけ)."""
+    s = settings if settings is not None else db.get_settings(conn)
+    people = [r[0] for r in conn.execute("SELECT email FROM users WHERE email != ''")]
+    return ContactRules(s, list_accounts(conn), people)
+
+
+def counterpart(mail) -> tuple[str, str]:
+    """メール (dict・行) の相手の (名前, アドレス).
+
+    相手を決める前の版が入れたメール (contact_source が空・列が無い) は差出人。
+    フォームから届いて本文にアドレスが無かったメールは、アドレスが空。
+    """
+    m = mail if isinstance(mail, dict) else dict(mail)
+    if m.get("contact_source") in CONTACT_SOURCES:
+        return _one_line(m.get("contact_name")), str(m.get("contact_addr") or "").strip()
+    return _one_line(m.get("from_name")), str(m.get("from_addr") or "").strip()
+
+
+def counterpart_text(mail, fmt: str = "{name} <{addr}>") -> str:
+    """相手を「名前 <アドレス>」の1行にする (片方しか無ければそれだけ)."""
+    name, addr = counterpart(mail)
+    if name and addr:
+        return fmt.format(name=name, addr=addr)
+    return name or addr
+
+
+# 起動のたびに、どの番号のメールまで相手を決め終えたか (settings の非公開キー)
+CONTACTS_FILLED_KEY = "mail_state_contacts_filled_upto"
+# 本文を読むのは1回にこの数まで (メールが多くても、メモリを使いすぎないように)
+_CONTACT_BODY_BATCH = 200
+
+
+def _redecide(conn, rows, rules: ContactRules) -> list[tuple]:
+    """rows (id, from_addr, from_name) の相手を決め直し、UPDATE に渡す値の一覧にする.
+
+    フォームかもしれない差出人のメールだけ本文を読む (ふつうの人のメールは差出人のまま)。
+    Reply-To は前からあるメールでは分からないので使わない。
+    """
+    out, need_body = [], []
+    for r in rows:
+        if rules.form_kind(r["from_addr"]):
+            need_body.append(r["id"])
+        else:
+            out.append((str(r["from_addr"] or "").strip(), _one_line(r["from_name"]),
+                        "from", 0, r["id"]))
+    for i in range(0, len(need_body), _CONTACT_BODY_BATCH):
+        part = need_body[i:i + _CONTACT_BODY_BATCH]
+        for r in conn.execute(
+                "SELECT id, from_addr, from_name, substr(body, 1, ?) AS body FROM mails"
+                f" WHERE id IN ({_marks(part)})", (CONTACT_BODY_SCAN_CHARS, *part)):
+            c = decide_contact(dict(r), rules)
+            out.append((c["contact_addr"], c["contact_name"], c["contact_source"],
+                        c["contact_via_form"], r["id"]))
+    return out
+
+
+def fill_missing_contacts(conn, settings: dict | None = None) -> int:
+    """相手をまだ決めていないメール (contact_source が空) の相手を決め、決めた数を返す (起動時).
+
+    この機能より前に取り込んだメールと、自動更新で前の版に戻っていた間に取り込んだメール。
+    前の回に調べ終えた番号より後のメールだけを見る (メールの番号は使い回されず増える一方なので、
+    何万通あっても、2回目からは新しい分しか読まない)。本文はフォームかもしれない差出人の分だけ読む。
+    """
+    try:
+        upto = int(_get_state(conn, CONTACTS_FILLED_KEY, "0") or 0)
+    except ValueError:
+        upto = 0
+    newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM mails").fetchone()[0]
+    if newest <= upto:
+        return 0
+    rows = conn.execute(
+        "SELECT id, from_addr, from_name FROM mails WHERE id > ? AND id <= ?"
+        " AND contact_source = ''", (upto, newest)).fetchall()
+    updates = _redecide(conn, rows, contact_rules(conn, settings))
+    conn.executemany(
+        "UPDATE mails SET contact_addr = ?, contact_name = ?, contact_source = ?,"
+        " contact_via_form = ? WHERE id = ? AND contact_source = ''", updates)
+    _set_state(conn, CONTACTS_FILLED_KEY, newest)
+    conn.commit()
+    return len(updates)
+
+
+def redecide_form_contacts(conn, settings: dict, before: dict) -> int:
+    """設定「フォームの送信元」を変えたとき、変えた送信元から届いたメールの相手を決め直す.
+
+    足した送信元のメールは本文のお客様に、外した送信元のメールは差出人に戻す (ほかの決め方で
+    フォームと分かるものはそのまま)。Reply-To で決めたメールは、フォーム経由かの印だけ直す。
+    コミットは呼び出し側 (設定の保存と一緒)。決め直した数を返す。
+    """
+    old_a, old_d = _form_sender_rules(before)
+    new_a, new_d = _form_sender_rules(settings)
+    addrs, domains = old_a ^ new_a, old_d ^ new_d
+    if not addrs and not domains:
+        return 0
+    rules = contact_rules(conn, settings)
+
+    def touched(addr) -> bool:
+        a = str(addr or "").strip().lower()
+        return a in addrs or _in_domains(a.rpartition("@")[2], domains)
+
+    rows = [r for r in conn.execute(
+        "SELECT id, from_addr, from_name, contact_source FROM mails"
+        " WHERE contact_source IN ('from', 'body', 'reply_to')") if touched(r["from_addr"])]
+    updates = _redecide(conn, [r for r in rows if r["contact_source"] != "reply_to"], rules)
+    conn.executemany(
+        "UPDATE mails SET contact_addr = ?, contact_name = ?, contact_source = ?,"
+        " contact_via_form = ? WHERE id = ?", updates)
+    conn.executemany(
+        "UPDATE mails SET contact_via_form = ? WHERE id = ?",
+        [(int(rules.form_kind(r["from_addr"]) in ("form", "own_domain")), r["id"])
+         for r in rows if r["contact_source"] == "reply_to"])
+    return len(rows)
+
+
+# フォームの送信元に返信を送ってしまっていた (お客様に届いていない) メールの条件 (mails の別名 m)。
+# 前の版は、差出人 (フォームの送信元) に返信していた (reply_sent_to が空)。
+# 「お客様に連絡した」を押したものは入れない
+MISDIRECTED_SQL = (
+    "m.contact_via_form = 1 AND m.replied_at IS NOT NULL AND m.from_addr != ''"
+    " AND (m.reply_sent_to = '' OR lower(m.reply_sent_to) = lower(m.from_addr))"
+    " AND m.misdirect_checked_at IS NULL")
+
+
+def misdirected(row) -> bool:
+    """このメールへの返信が、フォームの送信元に送られていたか (MISDIRECTED_SQL と同じ条件)."""
+    m = dict(row)
+    sent_to = str(m.get("reply_sent_to") or "").strip().lower()
+    frm = str(m.get("from_addr") or "").strip().lower()
+    return bool(m.get("contact_via_form") and m.get("replied_at") and frm
+                and (not sent_to or sent_to == frm) and not m.get("misdirect_checked_at"))
+
+
+def reply_default_to(row) -> str:
+    """返信の宛先の既定値 (相手のアドレス。フォームの送信元にはしない).
+
+    メール担当者が「確認をお願いする」で宛先を選んでいれば (確認待ち・差し戻し)、その宛先。
+    フォームから届いて本文にアドレスが無ければ空 (画面で入れてもらう)。
+    """
+    m = dict(row)
+    proposed = m.get("status") == "pending_approval" or (
+        m.get("status") != "replied" and bool(m.get("return_note")))
+    if proposed and str(m.get("draft_to") or "").strip():
+        return str(m["draft_to"]).strip()
+    return counterpart(m)[1]
+
+
+def check_reply_to(value) -> str:
+    """画面で直した返信の宛先を確かめて、アドレスだけにする (おかしければ日本語の ValueError).
+
+    CC と同じ確かめ方 (1つだけ・改行なし・「名前 <アドレス>」も可)。
+    """
+    if isinstance(value, (list, tuple)):
+        raise ValueError("宛先は1つだけ入れてください")
+    text = str(value or "")
+    if re.search(r"[\r\n\x00]", text):
+        raise ValueError("宛先のアドレスに改行は入れられません")
+    text = unicodedata.normalize("NFKC", text).strip()
+    if not text:
+        raise ValueError("宛先を入れてください（お客様のメールアドレス）")
+    if re.search(r"[,;、]", re.sub(r'"[^"]*"', "", text)):
+        raise ValueError("宛先は1つだけ入れてください（ほかの人は CC に入れてください）")
+    (addr,) = _clean_address_list([text], "宛先")
+    return addr
 
 
 # ---------- 返信送信 (SMTP) ----------
@@ -2117,6 +2624,8 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None,
     # パースと既知メールの除外 (まだ書き込まない)。自分たちが送ったメールの控えは、
     # どのアドレスから送ったものでも取り込まない (kurosu@ から info@ に CC したものなど)
     own = own_send_addresses(settings, list_accounts(conn))
+    # 相手 (お客様) を決めるのに使う、自分たちのアドレスとフォームの送信元 (読むだけ)
+    rules = contact_rules(conn, settings)
     parsed: list[tuple[int, dict, bytes]] = []
     for uid, raw in raws:
         try:
@@ -2124,8 +2633,13 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None,
         except Exception as e:  # noqa: BLE001  壊れたメールは飛ばす(再試行しても直らない)
             print(f"メールのパースに失敗 (UID {uid}): {e}")
             continue
-        if p["from_addr"].lower() in own:
-            continue  # 自分が送ったメールのコピーは取り込まない
+        reply_to = p["reply_to_addr"].lower()
+        if p["from_addr"].lower() in own and not (reply_to and reply_to not in rules.own):
+            # 自分が送ったメールのコピーは取り込まない。ただし Reply-To にほかの人が入って
+            # いるものは、差出人を自分たちのアドレスにしたHPのフォームからのメールなので取り込む
+            continue
+        # 相手 (Reply-To・本文のお客様・差出人)。分類・下書きにも使うので先に決める
+        p.update(decide_contact(p, rules))
         known = conn.execute(
             "SELECT 1 FROM mails WHERE message_id = ?", (p["message_id"],)
         ).fetchone()
@@ -2236,12 +2750,16 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
             " from_name, to_addr, cc_addr, subject, body, received_at, fetched_at,"
             " priority, priority_reason, priority_source, category,"
             " assignee_user_id, draft_reply, draft_source, draft_generated_at,"
-            " references_hdr, account_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " references_hdr, account_id, reply_to, contact_addr, contact_name,"
+            " contact_source, contact_via_form)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+            " ?, ?, ?, ?, ?)",
             (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
              p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
              reason, source, category, assignee, draft, draft_source, drafted_at,
-             p["references_hdr"], account_id),
+             p["references_hdr"], account_id, p.get("reply_to_addr", ""),
+             p.get("contact_addr", p["from_addr"]), p.get("contact_name", p["from_name"]),
+             p.get("contact_source", "from"), p.get("contact_via_form", 0)),
         )
         if not cur.rowcount:
             continue  # 同じメールが既にある (添付も保存しない)
@@ -2458,7 +2976,7 @@ def check_mail(conn, notifier=None, attachment_dir=None) -> int:
                 send(
                     s,
                     f"📧 優先度[高]のメールを受信しました: "
-                    f"{subj} ({_notify_text(row['from_addr'])})",
+                    f"{subj} ({_notify_text(counterpart(row)[1] or row['from_addr'])})",
                 )
     return len(added)
 
@@ -2613,7 +3131,8 @@ def _remind_part(value, limit: int) -> str:
 # 確認待ち (メール担当者の下書きが管理者の確認を待っている) も、お客様にはまだ返事をしていないので入れる
 _REMIND_SELECT = (
     "SELECT m.id, m.subject, m.from_addr, m.from_name, m.priority, m.category,"
-    " m.fetched_at, m.status, m.requested_by, u.name AS assignee_name"
+    " m.fetched_at, m.status, m.requested_by, u.name AS assignee_name,"
+    " m.contact_addr, m.contact_name, m.contact_source, m.contact_via_form"
     " FROM mails m LEFT JOIN users u ON u.id = m.assignee_user_id"
     " WHERE m.status IN ('unhandled', 'pending_approval')"
 )
@@ -2622,9 +3141,12 @@ _REMIND_SELECT = (
 def _remind_line(r, now: datetime) -> str:
     """お知らせの1通分 (2行)."""
     subject = _remind_part(r["subject"], REMIND_SUBJECT_MAX_CHARS) or "(件名なし)"
-    name = _remind_part(r["from_name"], REMIND_NAME_MAX_CHARS)
-    addr = _remind_part(r["from_addr"], 100)
+    cname, caddr = counterpart(r)
+    name = _remind_part(cname, REMIND_NAME_MAX_CHARS)
+    addr = _remind_part(caddr, 100)
     sender = f"{name}（{addr}）" if name and addr else (name or addr or "差出人不明")
+    if r["contact_via_form"]:
+        sender += "（HPフォーム経由）"
     try:
         waited = wait_text((now - datetime.fromisoformat(r["fetched_at"])).total_seconds())
     except (TypeError, ValueError):
@@ -2784,8 +3306,9 @@ def approval_request_message(settings: dict, mail: dict, requested_by: str,
     """
     who = _remind_part(requested_by, REMIND_NAME_MAX_CHARS) or "メール担当者"
     subject = _remind_part(mail.get("subject"), REMIND_SUBJECT_MAX_CHARS) or "(件名なし)"
-    name = _remind_part(mail.get("from_name"), REMIND_NAME_MAX_CHARS)
-    addr = _remind_part(mail.get("from_addr"), 100)
+    cname, caddr = counterpart(mail)
+    name = _remind_part(cname, REMIND_NAME_MAX_CHARS)
+    addr = _remind_part(caddr, 100)
     sender = f"{name}（{addr}）" if name and addr else (name or addr or "差出人不明")
     lines = [f"📝 {who}さんから、メールの返信の確認のお願いが届きました",
              f"・{subject} — {sender}"]
@@ -2879,7 +3402,8 @@ def weekly_stats(conn, start: datetime, end: datetime, now: datetime) -> dict:
     """
     lo, hi = tz.utc_iso(start), tz.utc_iso(end)
     received = conn.execute(
-        "SELECT priority, category, from_addr, from_name, priority_source FROM mails"
+        "SELECT priority, category, from_addr, from_name, priority_source, contact_addr,"
+        " contact_name, contact_source FROM mails"
         " WHERE fetched_at >= ? AND fetched_at < ? ORDER BY fetched_at, id", (lo, hi)).fetchall()
     by_priority = {p: 0 for p in PRIORITY_LABELS}
     by_category: dict[str, int] = {}
@@ -2887,12 +3411,13 @@ def weekly_stats(conn, start: datetime, end: datetime, now: datetime) -> dict:
     for r in received:
         by_priority[r["priority"] if r["priority"] in by_priority else 2] += 1
         by_category[r["category"] or ""] = by_category.get(r["category"] or "", 0) + 1
-        addr = (r["from_addr"] or "").strip()
+        # 相手 (フォームから届いたメールは本文のお客様。フォームの送信元でまとめない)
+        name, addr = counterpart(r)
         if addr:
             # 大文字・小文字の違いは同じ差出人。名前は一番新しいメールのもの
             s = senders.setdefault(addr.lower(), {"addr": addr, "name": "", "count": 0})
             s["count"] += 1
-            s["name"] = r["from_name"] or s["name"]
+            s["name"] = name or s["name"]
     top = sorted((s for s in senders.values() if s["count"] >= REPORT_SENDER_MIN_COUNT),
                  key=lambda s: (-s["count"], s["addr"].lower()))[:REPORT_SENDER_MAX]
     replied = conn.execute(
@@ -3293,6 +3818,8 @@ def _linked_by_headers(conn, seeds: list[int]) -> set[int]:
     同じメールへのほかの返事も2段目で見つかる。
     返事の元がここに無いメールどうし (Gmail などから大勢に送ったお知らせへの、別々の
     お客様からの返事など) は、同じメールを指していてもつなげない (別の人のやり取りが混ざるため)。
+    HPのフォーム・自動送信から届いたメール (contact_via_form) も、seeds でなければその先へは
+    たどらない (フォームの自動返信やお知らせに、別々のお客様が返事をしても混ざらないように)。
     どれも索引で探す (メール全部を読むことはしない)。
     """
     seen = set(seeds)
@@ -3330,7 +3857,12 @@ def _linked_by_headers(conn, seeds: list[int]) -> set[int]:
         seen.update(new)
         if len(found) >= THREAD_LINK_MAX:
             break
-        frontier = new
+        # フォームから届いたメールは、ほかのお客様の返事への「つなぎ」にしない
+        hubs = {row[0] for row in conn.execute(
+            f"SELECT id FROM mails WHERE id IN ({_marks(new)}) AND contact_via_form = 1", new)}
+        frontier = [i for i in new if i not in hubs]
+        if not frontier:
+            break
     return found
 
 
@@ -3342,31 +3874,33 @@ def _snippet(text, limit: int = THREAD_SNIPPET_CHARS) -> str:
 def mail_thread(conn, row, limit: int = THREAD_MAX) -> dict:
     """同じ相手とのやり取り (返信画面の履歴)。{"thread": [...], "thread_total": 件数}.
 
-    同じアドレス (大文字・小文字は区別しない) から届いたほかのメールと、それらとこのメールに
+    同じ相手 (contact_addr。大文字・小文字は区別しない。HPのフォームから届いたメールは本文の
+    お客様、それ以外は差出人) のほかのメールと、それらとこのメールに
     Message-ID・In-Reply-To・References でつながるメール (別のアドレスから届いた同じ話の
     返事など) を、新しい順に limit 件まで返す。このメール自身は入れない。
     それぞれに、こちらが送った返信 (本文・送った時刻・送った人・CC) も付ける。
     届いたメールの本文は書き出しだけ (全文は画面がそのメールを開いて読む)。
-    差出人が空のメールどうしは、同じ相手とはみなさない。
+    相手が空のメールどうし (差出人が無い・フォームから届いて本文にアドレスが無い) は、
+    同じ相手とはみなさない。
     thread_total は見つかった全部の件数 (limit より多いことがある)。
     """
-    mail_id, addr = row["id"], str(row["from_addr"] or "")
+    mail_id, addr = row["id"], counterpart(row)[1]
     total, same = 0, []
     if addr:
-        # 索引 (lower(from_addr), received_at) で探す (新しい順に並んでいるので並べ替えも要らない)
+        # 索引 (lower(contact_addr), received_at) で探す (新しい順に並んでいるので並べ替えも要らない)
         total = conn.execute(
-            "SELECT COUNT(*) FROM mails WHERE lower(from_addr) = lower(?) AND id != ?",
+            "SELECT COUNT(*) FROM mails WHERE lower(contact_addr) = lower(?) AND id != ?",
             (addr, mail_id)).fetchone()[0]
         same = [r[0] for r in conn.execute(
-            "SELECT id FROM mails WHERE lower(from_addr) = lower(?) AND id != ?"
+            "SELECT id FROM mails WHERE lower(contact_addr) = lower(?) AND id != ?"
             " ORDER BY received_at DESC LIMIT ?", (addr, mail_id, limit))]
     ids = set(same)
     linked = sorted(_linked_by_headers(conn, [mail_id, *same]))
     if linked:
-        # 同じアドレスのものは上で数えたので、別のアドレスから届いたものだけ足す
+        # 同じ相手のものは上で数えたので、別の相手 (アドレス) のものだけ足す
         others = [r[0] for r in conn.execute(
             f"SELECT id FROM mails WHERE id IN ({_marks(linked)})"
-            " AND (? = '' OR lower(from_addr) != lower(?))", (*linked, addr, addr))]
+            " AND (? = '' OR lower(contact_addr) != lower(?))", (*linked, addr, addr))]
         total += len(others)
         ids.update(others)
     if not ids:
@@ -3376,13 +3910,18 @@ def mail_thread(conn, row, limit: int = THREAD_MAX) -> dict:
     # DB の判断に任せると、メールの少ない DB で全部を読む並べ方になることがあるため)
     rows = conn.execute(
         "SELECT id, from_addr, from_name, subject, substr(body, 1, 400) AS head,"
-        " received_at, status, reply_body, replied_at, replied_by, reply_cc"
+        " received_at, status, reply_body, replied_at, replied_by, reply_cc,"
+        " contact_addr, contact_name, contact_source, contact_via_form, reply_sent_to"
         f" FROM mails WHERE id IN ({_marks(ids)})", ids).fetchall()
     rows = sorted(rows, key=lambda r: (r["received_at"], r["id"]), reverse=True)[:limit]
     return {"thread": [{
         "id": r["id"],
         "from_addr": r["from_addr"],
         "from_name": r["from_name"],
+        # 相手 (フォームから届いたメールは本文のお客様)
+        "contact_addr": counterpart(r)[1],
+        "contact_name": counterpart(r)[0],
+        "via_form": bool(r["contact_via_form"]),
         "subject": r["subject"],
         "received_at": r["received_at"],
         "status": r["status"],

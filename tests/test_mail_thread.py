@@ -451,7 +451,7 @@ def test_existing_db_gets_thread_columns(tmp_path):
         assert cols.count("reply_message_id") == 1
         indexes = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index'")}
-        assert {"idx_mails_from_lower", "idx_mails_reply_msgid",
+        assert {"idx_mails_from_lower", "idx_mails_contact_lower", "idx_mails_reply_msgid",
                 "idx_mail_refs_ref"} <= indexes
         assert not conn.in_transaction
         conn.close()
@@ -492,7 +492,7 @@ def test_thread_queries_use_indexes(tmp_path):
     # 一覧の「やり取り N件」は1行ごとに索引で数える
     plan = [r["detail"] for r in conn.execute(
         "EXPLAIN QUERY PLAN " + app_module._MAIL_SELECT + " WHERE m.status = 'unhandled'")]
-    assert any("idx_mails_from_lower" in p and p.startswith("SEARCH t") for p in plan), plan
+    assert any("idx_mails_contact_lower" in p and p.startswith("SEARCH t") for p in plan), plan
     conn.close()
 
 
@@ -567,5 +567,5 @@ def test_mail_page_has_thread_ui(client):
         assert safe in page, safe
     assert "${t.subject" not in page and "${t.snippet" not in page
     assert "${t.reply_body" not in page and '"・" + esc(t.replied_by)' in page
-    # 差出人は文字にまとめてから esc() を通す
-    assert 'const who = `${t.from_name ? t.from_name + " " : ""}<${t.from_addr || "不明"}>`;' in page
+    # 相手 (フォームから届いたメールは本文のお客様) は文字にまとめてから esc() を通す
+    assert 'const who = contactLine(t) + (t.via_form ? "（HPフォーム経由）" : "");' in page
