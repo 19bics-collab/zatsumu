@@ -166,7 +166,7 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   届いたメールは**問い合わせの種類**（清掃のご依頼・予約・宿泊のお問い合わせ・
   請求・お支払い・運営代行のご相談・営業・宣伝・その他）に自動で仕分け、
   種類ごとの**担当**も自動で入ります（AI を使うときは優先度と同じ1回の依頼で種類も選び、
-  使わないときは設定の言葉で決める。受信箱の**タブ**（すべて・重要（高）・種類ごと・未分類。数字は未対応と確認待ちの数で、1分ごとに新しくなる）で分けて見られ、「担当」で絞り込め、返信画面で変えられる。
+  使わないときは設定の言葉で決める。受信箱の**タブ**（すべて・重要（高）・種類ごと・未分類。数字は未対応と確認待ちの数（「状態」で未対応か確認待ちを選んでいるときはその数）で、1分ごとに新しくなる）で分けて見られ、「担当」で絞り込め、返信画面で変えられる。
   種類の一覧・言葉・担当は設定画面の「種類と担当」で変えられる）。
   新しいメールは**自動で受信**し（既定 5 分ごと。設定画面の「自動受信の間隔」で 1〜60 分。
   サーバを起動・更新したときは 30 秒ほどで1回目を受信）、**開いたままの受信箱も 1 分ごとに
@@ -284,11 +284,11 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
-| GET | `/api/mail` | admin・メール担当者 | 受信メール一覧（既定は新しい順。`sort=priority` で優先度順。差出人の付けた日付が取り込んだ時刻より1日を超えて先なら取り込んだ時刻で並べる。status（`pending_approval`=確認待ち）/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
+| GET | `/api/mail` | admin・メール担当者 | 受信メール一覧（既定は新しい順。`sort=priority` で優先度順。差出人の付けた日付が取り込んだ時刻より先なら取り込んだ時刻で並べる。status（`pending_approval`=確認待ち）/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
 | GET | `/api/mail/{id}` | admin・メール担当者 | メール詳細（確認のお願い・差し戻しの中身も。本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧・この相手とのやり取り `thread`（新しい順に30件まで。送った返信付き）と全部の件数 `thread_total`。`?thread=false` でやり取りを省く） |
 | GET | `/api/mail/{id}/attachments/{添付id}` | admin・メール担当者 | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
 | POST | `/api/mail/fetch` | admin・メール担当者 | 今すぐ IMAP から新着を取り込み（受信するアドレスを順に。一部のアドレスだけ失敗したら `errors` に理由。ほかの受信の途中で、少し待っても終わらなければ 409） |
-| GET | `/api/mail/status` | admin・メール担当者 | 受信の様子（未対応・確認待ちの数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗とどのアドレスか・アドレスごとの様子 `accounts`・受信箱のタブの数 `tabs`（種類ごと・重要（高）・未分類の、未対応と確認待ちの数。`assignee`/`account` を付けるとタブの数だけ絞り込む））。メール画面が 1 分ごとに呼ぶ |
+| GET | `/api/mail/status` | admin・メール担当者 | 受信の様子（未対応・確認待ちの数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗とどのアドレスか・アドレスごとの様子 `accounts`・受信箱のタブの数 `tabs`（種類ごと・重要（高）・未分類の、未対応と確認待ちの数。`status=unhandled`/`pending_approval` を付けるとその状態だけを数え、`assignee`/`account` を付けると絞り込む。どれもタブの数だけに効く））。メール画面が 1 分ごとに呼ぶ |
 | GET/POST | `/api/mail/accounts` | admin | 受信するメールアドレスの一覧・追加（パスワードは返さず `imap_pass_set` などだけ） |
 | PATCH/DELETE | `/api/mail/accounts/{id}` | admin | アドレスの変更・止める（`enabled`）・並べ替え（`move: up/down`）・削除（届いたメールは残す） |
 | POST | `/api/mail/accounts/{id}/test` | admin | そのアドレスの保存済みの受信サーバに接続テスト |

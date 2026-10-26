@@ -272,7 +272,8 @@ def test_status_counts_and_newest(client, users, tmp_path):
                  "last_error": "", "last_error_at": None, "last_error_account": "",
                  "error_count": 0, "fetching": False, "accounts": [], "deleted_mail_count": 0,
                  "tabs": {"all": 0, "high": 0, "categories": {}, "uncategorized": 0,
-                          "has_uncategorized": False},
+                          "has_uncategorized": False,
+                          "statuses": ["unhandled", "pending_approval"]},
                  "imap_set": False, "auto_fetch": False, "interval_min": 5}
     _add_mail(tmp_path, n=1)
     _add_mail(tmp_path, n=2, status="replied")

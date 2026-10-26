@@ -534,6 +534,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
     # アドレスでの絞り込み・アドレスを削除したときの付け替え用
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_account ON mails(account_id)")
+    # 種類での絞り込み (受信箱のタブ) と、1分ごとの「未分類のメールがあるか」の確かめ用
+    # (未分類が1通もないと、索引がなければ表を全部読んでしまう)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_category ON mails(category)")
     # 送った返信への返事を探す用 (この列も後から足したので、ここで作る)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_reply_msgid ON mails(reply_message_id)")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)

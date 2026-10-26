@@ -2531,12 +2531,12 @@ def _audit_note(note: str) -> str:
 
 
 # 一覧の並び順 (sort)。SQL に入れるのはこの表の文だけ (送られてきた値は入れない)。
-# 並べる時刻は差出人が付ける日付 (received_at) だが、取り込んだ時刻 (fetched_at) より
-# 1日を超えて先の日付 (迷惑メールが一番上に居座ろうとして付ける未来の日付など) は、
-# 取り込んだ時刻で並べる。日付が読めないときも取り込んだ時刻で並べる
+# 並べる時刻は、差出人が付ける日付 (received_at) と取り込んだ時刻 (fetched_at) の早い方。
+# メールは取り込む前に届いているので、ふつうは差出人の日付で並ぶ。取り込んだ時刻より先の日付
+# (迷惑メールが一番上に居座ろうとして付ける未来の日付・送り主の時計の進み) は、取り込んだ時刻で
+# 並べる。日付が読めないときも取り込んだ時刻で並べる
 _MAIL_SORT_TIME = (
-    "COALESCE(CASE WHEN julianday(m.received_at) > julianday(m.fetched_at) + 1"
-    " THEN julianday(m.fetched_at) ELSE julianday(m.received_at) END,"
+    "MIN(COALESCE(julianday(m.received_at), julianday(m.fetched_at)),"
     " julianday(m.fetched_at))"
 )
 MAIL_SORTS = {
@@ -2665,21 +2665,29 @@ def fetch_mail_now(_user=Depends(require_mail_user), conn=Depends(get_conn)):
 # ----- 受信の様子 (メール画面が1分ごとに聞く) -----
 # /api/mail/{mail_id} より先に宣言する (後にすると "status" が mail_id として読まれ、422 になる)
 
-def _mail_tab_counts(conn, user, assignee: str | None, account: str | None) -> dict:
+def _mail_tab_counts(conn, user, status: str | None, assignee: str | None,
+                     account: str | None) -> dict:
     """受信箱のタブ (種類ごと・重要) に出す、対応が要るメール (未対応・確認待ち) の数.
 
+    受信箱の「状態」で未対応か確認待ちを選んでいるとき (status) は、その状態だけを数える
+    (タブの数と、押したときに出る一覧の通数をそろえる)。ほかの状態・すべてのときは、
+    未対応と確認待ちを合わせて数える。statuses は数えた状態。
     担当・届いたアドレスの絞り込み (受信箱で選んでいるもの) は一覧と同じに効かせる。
     categories は種類の名前ごとの数 (未分類は入れず uncategorized に)、high は優先度[高]の数、
     has_uncategorized は未分類のメールが (返信済みなども含めて) 1通でもあるか (「未分類」の
     タブを出すか決める用)。
     """
+    if status and status not in mail.MAIL_STATUSES:
+        raise HTTPException(400, f"不明な状態です: {status}")
+    statuses = (status,) if status in _OPEN_STATUSES else _OPEN_STATUSES
     where, params = [], []
     _mail_scope_filters(user, assignee, account, where, params)
     extra = "".join(" AND " + w for w in where)
+    marks = ", ".join("?" for _ in statuses)
     rows = conn.execute(
         "SELECT m.category, COUNT(*), COALESCE(SUM(m.priority = 1), 0) FROM mails m"
-        " WHERE m.status IN (?, ?)" + extra + " GROUP BY m.category",
-        (*_OPEN_STATUSES, *params)).fetchall()
+        f" WHERE m.status IN ({marks})" + extra + " GROUP BY m.category",
+        (*statuses, *params)).fetchall()
     cats = {r[0]: r[1] for r in rows if r[0]}
     has_none = conn.execute(
         "SELECT EXISTS (SELECT 1 FROM mails m WHERE m.category = ''" + extra + ")",
@@ -2690,11 +2698,13 @@ def _mail_tab_counts(conn, user, assignee: str | None, account: str | None) -> d
         "categories": cats,
         "uncategorized": sum(r[1] for r in rows if not r[0]),
         "has_uncategorized": bool(has_none),
+        "statuses": list(statuses),
     }
 
 
 @app.get("/api/mail/status")
 def mail_status(
+    status: str | None = None,
     assignee: str | None = None,
     account: str | None = None,
     user=Depends(require_mail_user),
@@ -2706,10 +2716,11 @@ def mail_status(
     最後に受信できた時刻、直近の受信が失敗していればその理由 (分かりやすい言葉) を返す。
     受信するアドレスが複数あるときは、アドレスごとの様子 (accounts) も返す (mail.fetch_state)。
     受信箱のタブ (種類ごと・重要) の数 (tabs) も返す。tabs だけは、受信箱で選んでいる
-    担当 (assignee)・アドレス (account) で絞り込む (一覧の /api/mail と同じ書き方)。
+    状態 (status)・担当 (assignee)・アドレス (account) で絞り込む (一覧の /api/mail と同じ
+    書き方。状態は未対応・確認待ちのときだけ効く。_mail_tab_counts)。
     1分ごと・タブごとに呼ばれるので、DB は読むだけにする (書き込みのロックを取らない)。
     """
-    tabs = _mail_tab_counts(conn, user, assignee, account)
+    tabs = _mail_tab_counts(conn, user, status, assignee, account)
     s = db.get_settings(conn)
     unhandled, pending, newest = conn.execute(
         "SELECT (SELECT COUNT(*) FROM mails WHERE status = 'unhandled'),"

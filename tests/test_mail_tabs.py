@@ -2,8 +2,11 @@
 
 - GET /api/mail の sort (date=新しい順が既定 / priority=重要度順。ほかの値は 400)
 - 未来の日付を付けたメール (迷惑メールなど) が、新しい順の一番上に居座らないこと
+  (少しだけ先の日付でも、後から届いた本物の新着より上に出ないこと)
 - 新しい順で500通を超えるときは、新しい方の500通を出すこと
-- GET /api/mail/status の tabs (種類ごと・重要・未分類の、未対応と確認待ちの数) と権限
+- GET /api/mail/status の tabs (種類ごと・重要・未分類の、未対応と確認待ちの数。
+  「状態」で未対応か確認待ちを選んでいるときはその状態だけ) と権限
+- 未分類のメールが無くても、タブの数を数えるのに表を全部読まないこと (種類の索引)
 - 画面にタブと並び順の切り替えがあること
 """
 from datetime import datetime, timedelta, timezone
@@ -106,18 +109,36 @@ def test_future_dated_mail_does_not_pin_itself_to_top(client, users, tmp_path):
                       fetched_at=iso(now - timedelta(hours=1)))
     older = _add_mail(tmp_path, n=3, received_at=iso(now - timedelta(hours=5)),
                       fetched_at=iso(now - timedelta(hours=5)))
-    # 時計が少し進んでいる送り主 (1日以内の先の日付) は、付けた日付のまま並べる
-    skew = _add_mail(tmp_path, n=4, received_at=iso(now + timedelta(hours=2)),
+    # 少しだけ先の日付 (取り込んだ時刻の20時間後) も、取り込んだ時刻で並べる
+    near = _add_mail(tmp_path, n=4, received_at=iso(now + timedelta(hours=16)),
                      fetched_at=iso(now - timedelta(hours=4)))
     # 日付が読めない行は、取り込んだ時刻で並べる (一覧から消えない)
     broken = _add_mail(tmp_path, n=5, received_at="garbage",
                        fetched_at=iso(now - timedelta(hours=2)))
-    assert _ids(client, admin) == [skew, newer, broken, spam, older]
+    assert _ids(client, admin) == [newer, broken, spam, near, older]
     # 重要度順でも同じ考え方 (同じ優先度の中で)
-    assert _ids(client, admin, "?sort=priority") == [skew, newer, broken, spam, older]
+    assert _ids(client, admin, "?sort=priority") == [newer, broken, spam, near, older]
     # 一覧に出す日付は、届いたメールに付いていたまま
     rows = {r["id"]: r for r in client.get("/api/mail", headers=auth(admin)).json()}
     assert rows[spam]["received_at"].startswith("2027-10-26")
+
+
+def test_slightly_future_date_stays_below_real_new_mail(client, users, tmp_path):
+    """日付を「取り込みの20時間後」にした迷惑メールが、後から届いた本物の新着より上に出ない."""
+    _, admin, _ = users
+    now = datetime(2026, 10, 26, 3, 0, tzinfo=timezone.utc)
+    iso = lambda d: d.isoformat()  # noqa: E731
+    spam = _add_mail(tmp_path, n=1, received_at=iso(now + timedelta(hours=17)),
+                     fetched_at=iso(now - timedelta(hours=3)))
+    new1 = _add_mail(tmp_path, n=2, received_at=iso(now - timedelta(minutes=6)),
+                     fetched_at=iso(now - timedelta(minutes=5)))
+    new2 = _add_mail(tmp_path, n=3, received_at=iso(now - timedelta(minutes=2)),
+                     fetched_at=iso(now - timedelta(minutes=1)))
+    assert _ids(client, admin) == [new2, new1, spam]
+    # 送り主の時計が数分進んでいても、取り込んだ時刻の順で並ぶ (本物どうしの順は変わらない)
+    fast = _add_mail(tmp_path, n=4, received_at=iso(now + timedelta(minutes=3)),
+                     fetched_at=iso(now - timedelta(seconds=30)))
+    assert _ids(client, admin) == [fast, new2, new1, spam]
 
 
 def test_limit_keeps_newest_when_sorting_by_date(client, users, tmp_path):
@@ -160,7 +181,8 @@ def test_sort_works_with_tab_filters(client, users, tmp_path):
 def test_tab_counts_by_category_high_and_status(client, users, tmp_path):
     _, admin, _ = users
     assert _tabs(client, admin) == {"all": 0, "high": 0, "categories": {},
-                                    "uncategorized": 0, "has_uncategorized": False}
+                                    "uncategorized": 0, "has_uncategorized": False,
+                                    "statuses": ["unhandled", "pending_approval"]}
     m1 = _add_mail(tmp_path, n=1, priority=1)                           # 清掃・高・未対応
     m2 = _add_mail(tmp_path, n=2, status="pending_approval")            # 清掃・確認待ち
     m3 = _add_mail(tmp_path, n=3, status="replied", priority=1)         # 清掃・返信済み (数えない)
@@ -173,7 +195,8 @@ def test_tab_counts_by_category_high_and_status(client, users, tmp_path):
     t = _tabs(client, admin)
     assert t == {"all": 3, "high": 2,
                  "categories": {"清掃のご依頼": 2, "予約・宿泊のお問い合わせ": 1},
-                 "uncategorized": 0, "has_uncategorized": False}
+                 "uncategorized": 0, "has_uncategorized": False,
+                 "statuses": ["unhandled", "pending_approval"]}
     # 未分類 (この機能より前に届いたメール)。返信済みだけでも「未分類」のタブは出す
     m6 = _add_mail(tmp_path, n=6, status="replied")
     t = _tabs(client, admin)
@@ -211,7 +234,8 @@ def test_tab_counts_follow_assignee_and_account_filters(client, users, tmp_path)
     assert t["all"] == 1 and t["categories"] == {"清掃のご依頼": 1}
     t = _tabs(client, staff, "?assignee=me")
     assert t == {"all": 1, "high": 1, "categories": {"清掃のご依頼": 1},
-                 "uncategorized": 0, "has_uncategorized": False}
+                 "uncategorized": 0, "has_uncategorized": False,
+                 "statuses": ["unhandled", "pending_approval"]}
     t = _tabs(client, admin, f"?assignee=none&account={acct}")
     assert t["all"] == 1 and t["categories"] == {"営業・宣伝": 1}
     # 受信箱の上の数 (未対応・確認待ち) は絞り込みに関係なく全部
@@ -220,6 +244,68 @@ def test_tab_counts_follow_assignee_and_account_filters(client, users, tmp_path)
     # おかしな値は 400 (一覧と同じ)
     for q in ("?account=abc", "?assignee=x1", "?account=1 OR 1=1"):
         assert client.get("/api/mail/status" + q, headers=auth(admin)).status_code == 400
+
+
+def test_tab_counts_follow_status_filter(client, users, tmp_path):
+    """「状態」が未対応なら、タブの数も未対応だけ (押したときの一覧の通数とそろえる)."""
+    _, admin, staff = users
+    a = _add_mail(tmp_path, n=1, priority=1)                           # 清掃・高・未対応
+    b = _add_mail(tmp_path, n=2, status="pending_approval")            # 清掃・確認待ち
+    c = _add_mail(tmp_path, n=3, status="pending_approval", priority=1)  # 予約・高・確認待ち
+    d = _add_mail(tmp_path, n=4, status="replied")                     # 予約・返信済み
+    for mid in (a, b):
+        _set(tmp_path, mid, category="清掃のご依頼")
+    for mid in (c, d):
+        _set(tmp_path, mid, category="予約・宿泊のお問い合わせ")
+    for user in (admin, staff):
+        t = _tabs(client, user, "?status=unhandled")
+        assert t["statuses"] == ["unhandled"]
+        assert t["all"] == 1 and t["high"] == 1
+        assert t["categories"] == {"清掃のご依頼": 1}
+        # タブの数と、そのタブを押したときの一覧の通数が同じ
+        q = "?status=unhandled&category=" + "清掃のご依頼"
+        assert len(_ids(client, user, q)) == t["categories"]["清掃のご依頼"]
+        assert _ids(client, user, "?status=unhandled&category=予約・宿泊のお問い合わせ") == []
+        assert len(_ids(client, user, "?status=unhandled")) == t["all"]
+        t = _tabs(client, user, "?status=pending_approval")
+        assert t["statuses"] == ["pending_approval"]
+        assert t["all"] == 2 and t["high"] == 1
+        assert t["categories"] == {"清掃のご依頼": 1, "予約・宿泊のお問い合わせ": 1}
+        assert len(_ids(client, user, "?status=pending_approval")) == t["all"]
+    # 返信済み・対応不要・すべてのときは、未対応と確認待ちを合わせて数える
+    for q in ("?status=replied", "?status=archived", "?status=", ""):
+        t = _tabs(client, admin, q)
+        assert t["all"] == 3 and t["statuses"] == ["unhandled", "pending_approval"]
+    # 担当の絞り込みと合わせても効く
+    _set(tmp_path, b, assignee_user_id=staff["id"])
+    t = _tabs(client, staff, "?status=pending_approval&assignee=me")
+    assert t["all"] == 1 and t["categories"] == {"清掃のご依頼": 1}
+    # おかしな状態は 400 (一覧と同じ)
+    for bad in ("bogus", "unhandled' OR 1=1"):
+        r = client.get("/api/mail/status", params={"status": bad}, headers=auth(admin))
+        assert r.status_code == 400
+
+
+def test_tab_counts_use_category_index(client, users, tmp_path):
+    """未分類のメールが1通もなくても、「未分類があるか」を表を全部読まずに確かめる.
+
+    新しく届くメールには必ず種類が付くので、未分類0通がふつうになる。索引がないと
+    1分ごとの /api/mail/status が、メールが増えるほど遅くなる (受信の書き込みも待たされる)。
+    """
+    from server import db
+    _, admin, _ = users
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        names = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'mails'")}
+        assert "idx_mails_category" in names
+        plan = " ".join(r[3] for r in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT EXISTS (SELECT 1 FROM mails m WHERE m.category = '')"))
+        assert "idx_mails_category" in plan and "SCAN m" not in plan
+        # 何度起動しても (移行をもう一度しても) 困らない
+        db._migrate(conn)
+    _add_mail(tmp_path, n=1)
+    _set(tmp_path, 1, category="その他")
+    assert _tabs(client, admin)["has_uncategorized"] is False
 
 
 def test_tab_counts_permissions(client, users, tmp_path):
@@ -267,6 +353,10 @@ def test_mail_page_has_tabs_and_sort_toggle(client):
     assert "try { localStorage.setItem(key, v); } catch {}" in page
     # タブの数は1分ごとの軽い問い合わせ (受信の様子) から。種類の名前は textContent で入れる
     assert 'api("/api/mail/status" + scopeQuery())' in page
+    # タブの数は「状態」(未対応・確認待ち) にもそろえる。何も出ないときは「状態」も案内する
+    assert '[["status", "filter"], ["assignee", "filter-asg"], ["account", "filter-acct"]]' in page
+    assert '[[$("filter").value, "「状態」"]' in page
+    assert "上の${narrowed}を「すべて」に戻すと全部見られます" in page
     assert "name.textContent = label;" in page
     # 狭い画面ではタブの列だけを横にずらす
     assert "flex-wrap: nowrap; overflow-x: auto;" in page

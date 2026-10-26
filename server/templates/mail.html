@@ -464,7 +464,8 @@
   <p><small>受信メールを新しい順（届いた日時の新しいものが上）に表示します。一覧の上の「並び順」で
   「重要度順」（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）にもできます。
   一覧のすぐ上のタブで、問い合わせの種類ごとや「重要（高）」だけに分けて見られます
-  （タブの数字は、未対応と確認待ちのメールの数です）。
+  （タブの数字は、まだ対応していないメールの数です。上の「状態」が「未対応」なら未対応の数、
+  「確認待ち」なら確認待ちの数で、ほかを選んでいるときは未対応と確認待ちを合わせた数です）。
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
@@ -1267,6 +1268,10 @@ function renderInbox(list, keepPlace) {
     saveSeen(seenId, reset);
   }
   const filtered = activeTab !== TAB_ALL || $("filter-asg").value || $("filter-acct").value;
+  // 何も出ないときの案内で「すべて」に戻すとよいもの (選んでいるものだけを挙げる)
+  const narrowed = [[$("filter").value, "「状態」"], [activeTab !== TAB_ALL, "タブ"],
+                    [$("filter-asg").value, "「担当」"], [$("filter-acct").value, "「アドレス」"]]
+    .filter(([on]) => on).map(([, name]) => name).join("・");
   tbody.innerHTML = list.map(m => {
     const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
     return `
@@ -1281,7 +1286,7 @@ function renderInbox(list, keepPlace) {
     </tr>`;
   }).join("") ||
     (filtered
-      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上のタブや「担当」「アドレス」を「すべて」に戻すと全部見られます）</small></td></tr>`
+      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の${narrowed}を「すべて」に戻すと全部見られます）</small></td></tr>`
       : isAdmin()
         ? `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`
         : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
@@ -1355,16 +1360,18 @@ function setTab(t) {
   savePref(TAB_KEY, t);
 }
 
-// 受信の様子 (/api/mail/status) に付ける「担当」「アドレス」の絞り込み (タブの数を数える用)
+// 受信の様子 (/api/mail/status) に付ける「状態」「担当」「アドレス」の絞り込み (タブの数を数える用。
+// 状態が未対応・確認待ちのときは、タブの数もその状態だけになり、押したときの一覧の通数とそろう)
 function scopeQuery() {
   const q = new URLSearchParams();
-  for (const [key, id] of [["assignee", "filter-asg"], ["account", "filter-acct"]]) {
+  for (const [key, id] of [["status", "filter"], ["assignee", "filter-asg"], ["account", "filter-acct"]]) {
     if ($(id).value) q.set(key, $(id).value);
   }
   return q.toString() ? "?" + q : "";
 }
 
-// タブを出す。数はサーバが数えた、対応が要るメール (未対応と確認待ち) の数。
+// タブを出す。数はサーバが数えた、対応が要るメール (未対応と確認待ち。「状態」で未対応か
+// 確認待ちを選んでいるときはその状態だけ) の数。
 // 1分ごとに呼ばれるので、タブの顔ぶれが変わったときだけ作り直し、いつもは数と選択だけ直す
 // (横にずらしていたタブの列の位置も動かさない)。種類の名前は textContent で入れる
 function renderTabs() {
@@ -1410,6 +1417,9 @@ function renderTabs() {
     box.scrollLeft = left;
   }
   const counts = new Map(tabs.map(([k, , n]) => [k, n]));
+  // 数えた状態 (タブを指したときの説明用)
+  const countWhat = ((t && t.statuses) || ["unhandled", "pending_approval"])
+    .map(x => x === "unhandled" ? "未対応" : "確認待ち").join("と");
   const moved = box.dataset.shown !== activeTab;   // 選んでいるタブが変わった
   for (const b of box.children) {
     const on = b.dataset.tab === activeTab;
@@ -1419,7 +1429,7 @@ function renderTabs() {
     cnt.hidden = n === null || n === undefined;   // 数をまだ聞けていない
     cnt.textContent = String(Number(n) || 0);
     cnt.classList.toggle("zero", !n);
-    b.title = n === null || n === undefined ? "" : `未対応と確認待ちのメール ${Number(n) || 0} 件`;
+    b.title = n === null || n === undefined ? "" : `${countWhat}のメール ${Number(n) || 0} 件`;
   }
   // 「確認待ち」を押して「すべて」に戻ったときなど、選んだタブが列の外にあれば見えるところへ
   // (選んだタブが変わらない1分ごとの更新では、横にずらした位置を動かさない)
