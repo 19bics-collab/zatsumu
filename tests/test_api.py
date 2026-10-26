@@ -2108,7 +2108,11 @@ def test_mail_list_sort_and_filters(client, users, tmp_path):
                             received_at="2026-08-20T00:00:00+00:00")
     mid_replied = _add_mail(tmp_path, n=5, priority=2, status="replied")
     rows = client.get("/api/mail", headers=auth(admin)).json()
-    # 優先度[高]が先頭・同一優先度は新しい順
+    # 既定は届いた日時の新しい順 (優先度に関係なく)
+    assert [r["id"] for r in rows] == [
+        mid_mid_new, mid_replied, mid_high, mid_low, mid_mid_old]
+    # sort=priority: 優先度[高]が先頭・同一優先度は新しい順
+    rows = client.get("/api/mail?sort=priority", headers=auth(admin)).json()
     assert [r["id"] for r in rows] == [
         mid_high, mid_mid_new, mid_replied, mid_mid_old, mid_low]
     # status フィルタ
