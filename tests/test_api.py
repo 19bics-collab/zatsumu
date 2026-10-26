@@ -2392,7 +2392,9 @@ def test_mail_page_refetches_shared_smtp_settings(client):
     # 設定を開くたびにサーバから取り直す
     assert "async function openSettings()" in page
     assert 'await apiJson("/api/settings")' in page
-    assert '$("nav-settings").onclick = () => openSettings();' in page
+    # 設定のボタンは、ブラウザの「戻る」で戻れるよう履歴に残してから設定を開く (renderState → openSettings)
+    assert '$("nav-settings").onclick = () => navTo({ v: "settings" });' in page
+    assert 'else if (st.v === "settings" && isAdmin()) await openSettings();' in page
     # 共有の SMTP キーは、画面で変更したときだけ送る
     assert 'if (v !== (loaded[key] ?? "")) body[key] = v;' in page
 

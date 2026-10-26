@@ -523,7 +523,7 @@ def test_clearing_the_key_stops_ai_and_its_warning(client, users):
     assert 'id="ai-card"' in page
     i = page.index('$("ai-warn-link").onclick')
     link = page[i:page.index("\n};\n", i)]
-    assert "await openSettings();" in link and '$("ai-card").scrollIntoView' in link
+    assert 'await navTo({ v: "settings" });' in link and '$("ai-card").scrollIntoView' in link
 
 
 # ---------- 下書きの生成 (画面) ----------

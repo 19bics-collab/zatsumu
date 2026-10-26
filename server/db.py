@@ -161,8 +161,34 @@ CREATE TABLE IF NOT EXISTS mails (
     -- フォームの送信元に返信してしまっていた (お客様に届いていない) メールの注意を、
     -- 「お客様に連絡した」で消した時刻と人
     misdirect_checked_at TEXT,
-    misdirect_checked_by TEXT NOT NULL DEFAULT ''
+    misdirect_checked_by TEXT NOT NULL DEFAULT '',
+    -- 取引先ごとのまとめ用 (server/clients.py)。contact_domain は相手のアドレスの @ の後ろ
+    -- (小文字)。DB のトリガーで、メールを入れたとき・相手を決め直したときに自動で入る
+    -- (前の版のコードが入れたメールにも入る)。contact_company はHPのフォームの「会社名」
+    -- (フォームから届いたメールだけ。取引先の名前の候補)
+    contact_domain TEXT NOT NULL DEFAULT '',
+    contact_company TEXT NOT NULL DEFAULT ''
 );
+-- 取引先 (管理者が名前を付けた・まとめたもの。server/clients.py)。名前を付けていない取引先は
+-- 表に入れず、メールの相手のアドレスから決まった分け方で毎回まとめる (会社のドメインごと・
+-- 個人のメールはアドレスごと)。取引先を消しても、メールは変えない (決まった分け方に戻るだけ)
+CREATE TABLE IF NOT EXISTS clients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',    -- メモ (担当者・物件など。管理者が書く)
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- 取引先にまとめるアドレス・ドメイン。pattern は「taro@abc.co.jp」(そのアドレス) か
+-- 「@abc.co.jp」(そのドメインのアドレス全部)。同じものを2つの取引先には入れない。
+-- アドレスの決まりはドメインの決まりより強い (会社の中の1人だけを別の取引先に分けられる)
+CREATE TABLE IF NOT EXISTS client_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    pattern TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_client_rules_client ON client_rules(client_id);
 -- 受信するメールアドレス (kurosu@・info@ など。server/mail.py)。1つずつ IMAP で受信して
 -- 1つの受信箱にまとめ、返信は届いたアドレスを差出人にして送る。
 -- パスワード (imap_pass・smtp_pass) は画面・API には出さない (入っているかだけ返す)
@@ -322,6 +348,25 @@ INT_SETTINGS = {
     "mail_require_approval": 1,
 }
 
+# 取引先ごとのまとめで、1人ずつに分けるドメインの最初の一覧 (設定 mail_client_personal_domains)
+DEFAULT_PERSONAL_DOMAINS = (
+    # 誰でも作れるメール (フリーメール)
+    "gmail.com", "googlemail.com", "yahoo.co.jp", "yahoo.ne.jp", "ymail.ne.jp", "yahoo.com",
+    "outlook.com", "outlook.jp", "hotmail.com", "hotmail.co.jp", "live.jp", "live.com",
+    "msn.com", "icloud.com", "me.com", "mac.com", "aol.com", "protonmail.com", "proton.me",
+    "gmx.com", "mail.com", "zoho.com", "qq.com", "163.com", "naver.com",
+    # 携帯電話の会社のメール
+    "docomo.ne.jp", "ezweb.ne.jp", "au.com", "softbank.ne.jp", "i.softbank.jp",
+    "ymobile.ne.jp", "y-mobile.ne.jp", "emobile.ne.jp", "uqmobile.jp", "rakumail.jp",
+    # インターネットの接続の会社のメール (プロバイダ)
+    "nifty.com", "biglobe.ne.jp", "ocn.ne.jp", "so-net.ne.jp", "plala.or.jp", "dion.ne.jp",
+    "ybb.ne.jp", "asahi-net.or.jp", "zag.ne.jp", "jcom.home.ne.jp",
+    # 予約サイト (ゲストとのやり取りを中継するアドレス)
+    "airbnb.com", "airbnb.jp", "booking.com", "expedia.com", "expediapartnercentral.com",
+    "agoda.com", "agoda-messaging.com", "trip.com", "hotels.com", "vrbo.com",
+    "travel.rakuten.co.jp", "rakuten.co.jp", "jalan.net", "ikyu.com",
+)
+
 # 全社設定の既定値 (文字列)
 STR_SETTINGS = {
     "company_name": "zatsumu",     # ヘッダー等に表示する会社名/サービス名
@@ -382,6 +427,11 @@ STR_SETTINGS = {
     "mail_remind_quiet": "21-8",
     # お知らせに載せるメール画面のアドレス (空ならサーバの設定 ZATSUMU_MAIL_DOMAIN などから作る)
     "mail_page_url": "",
+    # 取引先ごとのまとめで、会社ではなく1人ずつに分けるメールのドメイン (1行に1つ)。
+    # Gmail などの誰でも作れるメールと、Airbnb などの予約サイトの中継のアドレス。
+    # ここに無いドメインは会社とみなし、同じドメインの人を1つの取引先にまとめる (server/clients.py)。
+    # 「airbnb.com」は guest.airbnb.com などその下のドメインも含む
+    "mail_client_personal_domains": "\n".join(DEFAULT_PERSONAL_DOMAINS),
     # Notion の連携 (インテグレーション) のシークレット (空なら「Notionに登録」は使わない)
     "notion_token": "",
     # 登録する Notion のデータベースの番号 (32文字。画面で URL を貼っても番号にそろえる)
@@ -583,6 +633,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # フォームから届いたメールだけの索引 (フォームの送信元に送ってしまった返信を数える用。小さい)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_via_form ON mails(replied_at)"
                  " WHERE contact_via_form = 1")
+    _migrate_client_columns(conn, mcols)
     # 列が用意できた後にインデックスを作成する (担当での絞り込み・人を削除したときの付け替え用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_assignee ON mails(assignee_user_id)")
     # アドレスでの絞り込み・アドレスを削除したときの付け替え用
@@ -596,6 +647,51 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
     _seed_mail_templates(conn)
     migrate_mail_accounts(conn)
+
+
+# 相手のアドレスのドメイン (@ の後ろを小文字にしたもの。@ が無ければ空) を出す SQL の式。
+# トリガー・最初の1回の書き込みで同じ式を使う (server/clients.py の domain_of と同じ結果)
+CONTACT_DOMAIN_SQL = (
+    "CASE WHEN instr(contact_addr, '@') > 0"
+    " THEN lower(trim(substr(contact_addr, instr(contact_addr, '@') + 1))) ELSE '' END")
+# 前からあるメールの contact_domain を入れ終えた印 (settings の非公開キー)
+CONTACT_DOMAIN_FILLED_KEY = "mail_state_contact_domain_filled"
+
+
+def _migrate_client_columns(conn: sqlite3.Connection, mcols: list[str]) -> None:
+    """取引先ごとのまとめ用の列・トリガー・索引を足す (何度呼んでも同じ。足すだけ).
+
+    contact_domain は DB のトリガーで入れる (メールを入れたとき・相手のアドレスを変えたとき)。
+    自動更新で前の版のコードに戻っても、前の版が入れたメールにも入る (前の版はこの列を知らない
+    ので、書くのは DB だけ)。前からあるメールの分は、最初の1回だけまとめて入れる
+    (1回の UPDATE なので、何万通あってもすぐ終わる。終えたら印を残す)。
+    """
+    for col in ("contact_domain", "contact_company"):
+        if col not in mcols:
+            conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    # その行の今の contact_addr から計算する (NEW の値ではなく)。受信したとき相手を決めずに
+    # 入ったメールは、別のトリガー (trg_mails_contact_default) が相手を入れるので、どちらが
+    # 先に動いても最後は今の相手のドメインになる
+    for name, when in (("trg_mails_contact_domain_ins", "AFTER INSERT ON mails"),
+                       ("trg_mails_contact_domain_upd", "AFTER UPDATE OF contact_addr ON mails")):
+        conn.execute(
+            f"CREATE TRIGGER IF NOT EXISTS {name} {when}"
+            f" BEGIN UPDATE mails SET contact_domain = {CONTACT_DOMAIN_SQL}"
+            f" WHERE id = NEW.id AND contact_domain != {CONTACT_DOMAIN_SQL}; END")
+    if not conn.execute("SELECT 1 FROM settings WHERE key = ?",
+                        (CONTACT_DOMAIN_FILLED_KEY,)).fetchone():
+        conn.execute(f"UPDATE mails SET contact_domain = {CONTACT_DOMAIN_SQL}"
+                     f" WHERE contact_addr != '' AND contact_domain != {CONTACT_DOMAIN_SQL}")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, '1')",
+                     (CONTACT_DOMAIN_FILLED_KEY,))
+        # すぐ確定する (この接続でこの後に行う通信の間、書き込みロックを持ち越さない)
+        conn.commit()
+    # 取引先の一覧で、相手のアドレスごとの数・最後の日時・名前を、表を読まずに数える用
+    # (この索引だけで足りる。本文の大きい表を読まないので、何万通あっても速い)。
+    # ドメインで始まるので、取引先 (ドメイン) ごとのメールを探すのにも使う
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mails_clients ON mails(contact_domain, contact_addr,"
+        " received_at, status, replied_at, contact_name, contact_company)")
 
 
 # 受信するメールアドレスの一覧 (mail_accounts) を使い始めた印 (settings の非公開キー)。

@@ -390,6 +390,111 @@
   #att-viewer { z-index: 20; cursor: zoom-out; flex-direction: column; gap: .6rem; }
   #att-viewer img { max-width: 94vw; max-height: 84vh; object-fit: contain;
                     background: #fff; border-radius: 4px; }
+  /* 使い方 (説明の長い文)。最初は閉じておき、開いたかはこのブラウザに覚えておく */
+  .howto { margin: 0 0 .7rem; font-size: .9rem; color: #4b5563; }
+  .howto[hidden] { display: none; }
+  .howto > summary { cursor: pointer; display: inline-block; color: #166534; padding: .2rem 0;
+                     -webkit-tap-highlight-color: rgba(0,0,0,.06); }
+  .howto > summary::-webkit-details-marker { display: none; }
+  .howto > summary::before { content: "▸ "; color: #6b7280; }
+  .howto[open] > summary::before { content: "▾ "; }
+  .howto > p { margin: .3rem 0 0; line-height: 1.6; }
+  .howto .staff-help { margin-top: .3rem; }
+  /* 取引先 (一覧) */
+  .cl-search { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin: 0 0 .7rem; }
+  #cl-q { flex: 1 1 16rem; min-width: 0; padding: .55rem .7rem; border: 1px solid #ccc;
+          border-radius: 6px; font-size: 1rem; box-sizing: border-box; }
+  #cl-count { font-size: .85rem; color: #6b7280; }
+  .cl-list { display: flex; flex-direction: column; gap: .45rem; }
+  .cl-row { display: flex; align-items: center; gap: .4rem 1rem; flex-wrap: wrap; width: 100%;
+            text-align: left; background: #fff; color: #111827; border: 1px solid var(--line);
+            border-radius: 8px; padding: .65rem .9rem; box-shadow: 0 1px 2px rgba(0,0,0,.05);
+            font-size: .95rem; }
+  .cl-row:hover { background: #f0fdf4; }
+  .cl-main { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+  .cl-name { font-weight: 700; }
+  .cl-addr { display: block; font-size: .8rem; color: #6b7280; margin-top: .1rem; }
+  .cl-side { display: flex; flex-direction: column; align-items: flex-end; gap: .15rem;
+             font-size: .8rem; color: #4b5563; white-space: nowrap; }
+  .cl-kind { display: inline-block; font-size: .7rem; line-height: 1.5; padding: 0 .45rem;
+             border-radius: 99px; background: #f3f4f6; color: #4b5563; margin-left: .35rem;
+             vertical-align: 1px; font-weight: normal; white-space: nowrap; }
+  .cl-kind.named { background: #dcfce7; color: #166534; }
+  .cl-open { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+             border-radius: 99px; background: #fef3c7; color: #92400e; font-weight: 700; }
+  .cl-pend { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+             border-radius: 99px; background: #ede9fe; color: #5b21b6; }
+  .cl-empty { color: #6b7280; font-size: .9rem; }
+  .cl-more-row { text-align: center; margin: .8rem 0; }
+  .cl-more-row button[hidden] { display: none; }
+  /* 取引先の印 (受信箱の一覧・返信画面) */
+  .cl-tag { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+            border-radius: 99px; background: #dcfce7; color: #166534; margin-left: .35rem;
+            white-space: nowrap; vertical-align: 1px; font-weight: normal; max-width: 100%;
+            overflow: hidden; text-overflow: ellipsis; }
+  .m-client { display: flex; flex-wrap: wrap; gap: .3rem .7rem; align-items: center;
+              margin: -.2rem 0 .6rem; font-size: .88rem; }
+  .m-client[hidden] { display: none; }
+  .cl-chip { display: inline-block; padding: .15rem .6rem; border-radius: 99px; background: #dcfce7;
+             color: #14532d; font-weight: 600; overflow-wrap: anywhere; max-width: 100%; }
+  #m-client-link { color: #166534; }
+  /* 取引先 (1つ) */
+  #cd-back { margin-bottom: .5rem; }
+  .cd-head h2 { margin: .2rem 0 .1rem; overflow-wrap: anywhere; }
+  .cd-sub { color: #6b7280; font-size: .88rem; overflow-wrap: anywhere; margin-bottom: .6rem; }
+  .cd-stats { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+              margin: 0 0 .7rem; }
+  .cd-stat { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: .5rem .7rem; }
+  .cd-stat small { display: block; color: #6b7280; font-size: .75rem; }
+  .cd-stat b { font-size: 1.05rem; overflow-wrap: anywhere; }
+  .cd-stat.warn b { color: #b45309; }
+  .cd-cats { display: flex; flex-wrap: wrap; gap: .3rem; margin: 0 0 .7rem; }
+  .cd-cats:empty { display: none; }
+  .cd-cats > span { white-space: nowrap; }
+  .cd-cats small { color: #4b5563; margin-right: .5rem; }
+  .cd-note { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: .55rem .8rem;
+             margin: 0 0 .7rem; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .92rem; }
+  .cd-note[hidden] { display: none; }
+  .cd-box { background: #fff; border: 1px solid var(--line); border-radius: 8px; margin: 0 0 .7rem;
+            font-size: .92rem; }
+  .cd-box[hidden] { display: none; }
+  .cd-box > summary { cursor: pointer; padding: .6rem .8rem; font-weight: 600; color: #374151;
+                      -webkit-tap-highlight-color: rgba(0,0,0,.06); }
+  .cd-box > div { padding: 0 .8rem .7rem; }
+  .cd-addr { display: flex; flex-wrap: wrap; gap: .3rem .7rem; align-items: center;
+             border-top: 1px solid #f1f5f9; padding: .45rem 0; }
+  .cd-addr > span { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+  .cd-addr small { color: #6b7280; }
+  .cd-addr button { padding: .3rem .6rem; font-size: .8rem; margin-left: auto; }
+  .cd-lbl { display: block; margin: .7rem 0 .25rem; font-size: .85rem; color: #374151; font-weight: 600; }
+  .cd-row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .3rem 0; }
+  .cd-row input, .cd-row select { flex: 1 1 12rem; min-width: 0; padding: .45rem; border: 1px solid #ccc;
+                                  border-radius: 6px; font-size: 1rem; background: #fff; box-sizing: border-box; }
+  #cd-admin textarea { width: 100%; box-sizing: border-box; padding: .5rem; border: 1px solid #ccc;
+                       border-radius: 6px; font-size: .95rem; font-family: inherit; }
+  .cd-danger { margin-top: 1rem; border-top: 1px solid #f1f5f9; padding-top: .7rem; }
+  .cd-danger button { color: #b91c1c; }
+  .cd-danger small { color: #6b7280; }
+  .cd-msg { font-size: .85rem; overflow-wrap: anywhere; }
+  .cd-msg:empty { display: none; }
+  .cd-msg.ok { color: #0a7d32; } .cd-msg.err { color: var(--hi); }
+  .cd-tl-title { margin: 1rem 0 .5rem; }
+  .cd-timeline { display: flex; flex-direction: column; gap: .45rem; }
+  .tl-item { border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: .9rem; }
+  .tl-item.out { background: #f0fdf4; border-color: #bbf7d0; }
+  .tl-item > summary { cursor: pointer; list-style: none; position: relative;
+                       padding: .55rem .7rem .55rem 1.8rem; -webkit-tap-highlight-color: rgba(0,0,0,.06); }
+  .tl-item > summary::-webkit-details-marker { display: none; }
+  .tl-item > summary::before { content: "▸"; position: absolute; left: .7rem; top: .55rem; color: #6b7280; }
+  .tl-item[open] > summary::before { content: "▾"; }
+  .tl-line { display: block; overflow-wrap: anywhere; }
+  .tl-head { color: #6b7280; font-size: .8rem; }
+  .tl-kind { font-weight: 700; color: #1d4ed8; }
+  .tl-item.out .tl-kind { color: #166534; }
+  .tl-subj { font-weight: 600; }
+  .tl-full { padding: 0 .7rem .7rem; display: flex; flex-direction: column; gap: .4rem; }
+  .tl-full .mail-body { max-height: 20rem; background: #fff; }
+  .tl-full button { align-self: flex-start; padding: .4rem .8rem; }
   @media (max-width: 720px) {
     html { font-size: 15px; }
     main { padding: .8rem; }
@@ -453,6 +558,7 @@
 <header>
   <h1>📨 <span id="brand">メール対応</span></h1>
   <button id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span></button>
+  <button id="nav-clients">取引先</button>
   <!-- 確認待ちの数は受信箱のボタンの中に入れない (スマホで受信箱を押したつもりが、
        こちらに当たって確認待ちだけの一覧になってしまうので、別のボタンにする) -->
   <button id="nav-pending" class="pend" title="確認待ち（メール担当者からの確認のお願い）" hidden></button>
@@ -482,7 +588,12 @@
   <span id="fetch-error-hint">設定は「設定」の「受信するメールアドレス」で確かめられます。</span></small></p>
   <p id="approval-banner" class="appr-banner" hidden><span id="approval-banner-text"></span>
     <button id="approval-show" class="ghost">確認待ちを見る</button></p>
-  <p id="staff-help" class="staff-help" hidden></p>
+  <details class="howto" id="staff-help-box" data-howto="staff" hidden>
+    <summary>メール担当者の使い方を見る</summary>
+    <p id="staff-help" class="staff-help"></p>
+  </details>
+  <details class="howto" data-howto="inbox">
+  <summary>使い方を見る</summary>
   <p><small>受信メールを新しい順（届いた日時の新しいものが上）に表示します。一覧の上の「並び順」で
   「重要度順」（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）にもできます。
   一覧のすぐ上のタブで、問い合わせの種類ごとや「重要（高）」だけに分けて見られます
@@ -498,7 +609,9 @@
   返信もお客様のアドレスに送ります。
   受信するメールアドレスが2つ以上あるときは、件名の前にどのアドレスに届いたか（宛先）が出て、
   上の「アドレス」で絞り込めます（返信は、届いたアドレスから送ります）。
+  上の「取引先」を押すと、取引先（会社・お客様）ごとに、前に届いたメールと送った返信をまとめて見られます。
   <span id="admin-help">受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
+  </details>
   <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
   理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
   <div class="inbox-bar">
@@ -512,6 +625,88 @@
     <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th></tr></thead>
     <tbody></tbody>
   </table></div>
+</section>
+
+<section id="clients-view" hidden>
+  <h2>取引先</h2>
+  <details class="howto" data-howto="clients">
+    <summary>使い方を見る</summary>
+    <p><small>メールの相手を、取引先（会社・お客様）ごとにまとめています。行を押すと、その取引先から届いた
+    メールと、こちらが送った返信を、新しい順にまとめて見られます。
+    会社のアドレス（例: tanaka@abc.co.jp と suzuki@abc.co.jp）は、@ の後ろ（abc.co.jp）が同じなら
+    1つの取引先になります。Gmail・携帯のメールや、Airbnb などの予約サイトから届くメールは、1人ずつ別の取引先です。
+    HPのお問い合わせフォームから届いたメールは、本文に書かれたお客様の取引先に入ります。
+    自分たちのアドレスと、フォーム・自動送信の送信元（wordpress@・noreply@ など）は取引先になりません。
+    <span class="cl-admin-help">名前を付けたり、まとめ方を直したりするのは、取引先を開いた画面でできます（管理者だけ）。</span></small></p>
+  </details>
+  <div class="cl-search">
+    <input type="search" id="cl-q" placeholder="名前・アドレス・ドメインで探す" aria-label="取引先を探す"
+      autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="100">
+    <span id="cl-count"></span>
+  </div>
+  <div id="cl-list" class="cl-list"></div>
+  <p class="cl-more-row"><button id="cl-more" class="ghost" hidden>もっと見る</button></p>
+</section>
+
+<section id="client-view" hidden>
+  <button id="cd-back" class="ghost">← 戻る</button>
+  <div class="cd-head">
+    <h2 id="cd-name"></h2>
+    <div id="cd-sub" class="cd-sub"></div>
+  </div>
+  <details class="howto" data-howto="client">
+    <summary>使い方を見る</summary>
+    <p><small>この取引先から届いたメール（📩）と、こちらが送った返信（↩）を、新しい順に並べています。
+    行を押すと全文が出て、「このメールを開く」で返信画面を開けます（返信画面を閉じると、この画面に戻ります）。
+    上の数は、この取引先のメール全部の数です（未対応は、まだ返信も「対応不要」もしていないメール）。
+    <span class="cl-admin-help">管理者は、下の「取引先の設定」で名前・メモと、まとめるアドレス・ドメインを変えられます
+    （変えてもメールは変わりません。取引先を消すと、元の分け方に戻ります）。</span></small></p>
+  </details>
+  <div id="cd-stats" class="cd-stats"></div>
+  <div id="cd-cats" class="cd-cats"></div>
+  <div id="cd-note-view" class="cd-note" hidden></div>
+  <details class="cd-box" id="cd-addrs-box">
+    <summary id="cd-addrs-title">アドレス</summary>
+    <div id="cd-addrs"></div>
+  </details>
+  <details class="cd-box" id="cd-admin" hidden>
+    <summary>取引先の設定（名前・メモ・まとめ方）</summary>
+    <div id="cd-admin-named">
+      <label class="cd-lbl" for="cd-name-in">取引先の名前</label>
+      <div class="cd-row"><input type="text" id="cd-name-in" maxlength="60" autocomplete="off">
+        <button id="cd-name-save">名前を保存</button></div>
+      <label class="cd-lbl" for="cd-note-in">メモ（担当・物件・注意することなど。メール担当者も見られます）</label>
+      <textarea id="cd-note-in" maxlength="2000" rows="3"></textarea>
+      <div class="cd-row"><button id="cd-note-save">メモを保存</button></div>
+      <div class="cd-lbl">この取引先にまとめるアドレス・ドメイン</div>
+      <div id="cd-rules"></div>
+      <div class="cd-row"><input type="text" id="cd-rule-in" inputmode="email" autocomplete="off"
+          autocapitalize="off" spellcheck="false" placeholder="tanaka@abc.co.jp か @abc.co.jp">
+        <button id="cd-rule-add">足す</button></div>
+      <p class="set-help"><small>「@abc.co.jp」と書くと、abc.co.jp のアドレス全部がこの取引先に入ります
+      （mail.abc.co.jp のような別のドメインは、別に足してください）。アドレスを1つ書くと、そのアドレスだけが入ります。
+      アドレスで決めたものは、ドメインで決めたものより強いので、会社の中の1人だけを別の取引先に分けられます。
+      Gmail などの個人のメールは、ドメインではなくアドレスを1つずつ足してください。</small></p>
+      <div class="cd-row cd-danger"><button id="cd-delete" class="ghost">この取引先を消す</button>
+        <small>消しても、メールは消えません（元の分け方に戻ります）。</small></div>
+    </div>
+    <div id="cd-admin-default">
+      <p class="set-help"><small>この取引先には、まだ名前を付けていません（今の名前は、メールから自動で決めています）。
+      名前を付けると、メモを書いたり、ほかのアドレスをまとめたりできます。</small></p>
+      <label class="cd-lbl" for="cd-newname">取引先の名前</label>
+      <div class="cd-row"><input type="text" id="cd-newname" maxlength="60" autocomplete="off">
+        <button id="cd-name-create">名前を付ける</button></div>
+      <div id="cd-merge-box">
+        <label class="cd-lbl" for="cd-merge-sel">ほかの取引先にまとめる（同じ会社・同じ人のとき）</label>
+        <div class="cd-row"><select id="cd-merge-sel"></select>
+          <button id="cd-merge" class="ghost">まとめる</button></div>
+      </div>
+    </div>
+    <div id="cd-admin-msg" class="cd-msg"></div>
+  </details>
+  <h3 class="cd-tl-title" id="cd-tl-title">やり取り</h3>
+  <div id="cd-timeline" class="cd-timeline"></div>
+  <p class="cl-more-row"><button id="cd-more" class="ghost" hidden>もっと見る</button></p>
 </section>
 
 <section id="settings-view" hidden>
@@ -608,6 +803,18 @@
       それでも差出人のまま出てしまうフォームがあれば、その差出人のアドレスを書いてください
       （「@example.co.jp」と書くと、そのドメインから届いたメール全部）。保存すると、届いていたメールも直します。</small></p>
       <div id="form-misdir" class="error" hidden></div>
+    </div>
+    <div class="set-card" id="client-card">
+      <h3>取引先の分け方</h3>
+      <p class="set-help"><small>「取引先」の画面では、会社のアドレスは @ の後ろ（ドメイン）が同じなら1つの取引先に
+      まとめます（tanaka@abc.co.jp と suzuki@abc.co.jp は「abc.co.jp」）。下の一覧のドメインは、会社ではなく
+      1人ずつ別の取引先にします（Gmail・携帯のメール・プロバイダのメールと、Airbnb などの予約サイトの
+      中継のアドレス）。「airbnb.com」と書くと、guest.airbnb.com のようなその下のドメインも入ります。</small></p>
+      <label for="set-client-personal" style="display:block;margin:.3rem 0 .2rem;font-size:.9rem">1人ずつに分けるドメイン（1行に1つ）</label>
+      <textarea id="set-client-personal" rows="6" spellcheck="false" autocapitalize="off"></textarea>
+      <div style="margin-top:.4rem"><button type="button" class="ghost" id="set-client-personal-reset">最初の一覧に戻す</button></div>
+      <p class="set-help" style="margin-top:.4rem"><small>変えた内容は下の「保存」で保存され、すぐ取引先の画面に使われます
+      （メールは変わりません）。会社ごとに名前を付けたり、まとめ方を直したりするのは、取引先の画面でできます。</small></p>
     </div>
     <div class="set-card" id="ai-card">
       <h3>AI返信（Claude）</h3>
@@ -862,6 +1069,10 @@
     <button id="m-back" class="ghost" hidden>← 前のメールに戻る</button>
     <h2 id="m-subject" style="margin:.2rem 0"></h2>
     <div class="mail-meta" id="m-meta"></div>
+    <div class="m-client" id="m-client" hidden>
+      <span class="cl-chip" id="m-client-name"></span>
+      <a href="#" id="m-client-link">この取引先のやり取りをすべて見る</a>
+    </div>
     <div class="misdir" id="m-misdir" hidden>
       <div id="m-misdir-text"></div>
       <button id="m-misdir-ok" class="ghost">お客様に連絡した（この注意を消す）</button>
@@ -1079,7 +1290,11 @@ async function showApp() {
   if (isAdmin()) fillSettings(appSettings);
   else renderTabs();
   loadAssignees();   // 担当の選択肢は後から入る (受信箱を開くのを待たせない)
-  showInbox().then(revealActiveTab, () => {});   // 覚えていたタブが見えるようにする
+  // アドレスの「#clients」「#client=…」(取引先の画面) から開いたときは、その画面を出す
+  const st = stateFromHash();
+  history.replaceState({ ...st, n: 0 }, "", urlFor(st));
+  if (st.v === "inbox") showInbox().then(revealActiveTab, () => {});   // 覚えていたタブが見えるようにする
+  else renderState(st);
   schedulePoll();    // 開いたままでも、新しいメールが届いたら受信箱を新しくする
 }
 
@@ -1092,7 +1307,8 @@ function applyRole() {
   $("fetch-error-hint").textContent = admin
     ? "設定は「設定」の「受信するメールアドレス」で確かめられます。"
     : "続くときは管理者に伝えてください。";
-  $("staff-help").hidden = admin;
+  $("staff-help-box").hidden = admin;
+  document.querySelectorAll(".cl-admin-help").forEach(el => { el.hidden = !admin; });
   $("staff-help").textContent = admin ? "" : me.require_approval
     ? "メール担当者としてログインしています。返信の送信は管理者だけができます。返信画面で返信文を作ったら" +
       "「確認をお願いする」を押してください（管理者が確かめて送ります。管理者が直してほしいところがあると" +
@@ -1106,8 +1322,19 @@ function switchView(name) {
   viewName = name;
   $("inbox").hidden = name !== "inbox";
   $("settings-view").hidden = name !== "settings";
+  $("clients-view").hidden = name !== "clients";
+  $("client-view").hidden = name !== "client";
   $("nav-inbox").classList.toggle("active", name === "inbox");
+  $("nav-clients").classList.toggle("active", name === "clients" || name === "client");
   $("nav-settings").classList.toggle("active", name === "settings");
+}
+
+// 返信画面で変えた (送った・種類を変えた など) 後に、受信箱を新しくする。受信箱を見ているときだけ
+// すぐ取り直し、取引先・設定を見ているときは、受信箱に戻ったときに取り直す (見ている画面を動かさない)。
+// 取引先の画面は、返信画面を閉じたときに取り直す
+function inboxChanged() {
+  clientStale = true;
+  if (viewName === "inbox") showInbox(); else inboxStale = true;
 }
 
 /* ---------- 受信の様子 (未対応の数・最終受信・受信の失敗) ---------- */
@@ -1225,6 +1452,10 @@ const contactLine = m => {
   return name && addr ? `${name} <${addr}>` : (name || (addr ? `<${addr}>` : "")) ||
     (m.via_form ? "お客様（アドレス不明）" : "差出人不明");
 };
+// 名前を付けた取引先にまとめた相手なら、取引先の名前 (名前は esc() を通す)
+const clientTag = m => m.client_name
+  ? ` <span class="cl-tag" title="取引先（上の「取引先」で、この取引先とのやり取りをまとめて見られます）">🏢 ${esc(m.client_name)}</span>`
+  : "";
 const formTag = m => m.via_form
   ? ` <span class="form-tag" title="HPのお問い合わせフォームから届いたメールです（差出人: ${esc(m.from_addr)}）。相手は本文に書かれたお客様です">HPフォーム経由</span>`
   : "";
@@ -1333,7 +1564,7 @@ function renderInbox(list, keepPlace) {
     return `
     <tr class="mail-row ${["unhandled", "pending_approval"].includes(m.status) ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
-      <td data-label="差出人"><strong>${esc(contactLabel(m))}</strong>${formTag(m)}${threadBadge(m)}</td>
+      <td data-label="差出人"><strong>${esc(contactLabel(m))}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m)}</td>
       <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
       <td data-label="状態"><span class="st-${esc(m.status)}">${esc(ST[m.status] || m.status)}</span>${m.status === "pending_approval" && m.requested_by ? `<small>（${esc(m.requested_by)}）</small>` : ""}${m.returned ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : ""}</td>
@@ -1357,6 +1588,7 @@ $("filter").onchange = () => showInbox();
 // 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱の横の「確認待ち」から)。
 // 種類に関係なく全部の確認待ちを見せるため、タブは「すべて」にする
 function showPending() {
+  if (viewName !== "inbox") pushNav({ v: "inbox" });   // 取引先などから来たら、戻るで戻れるように
   $("filter").value = "pending_approval";
   setTab(TAB_ALL);
   renderTabs();
@@ -1623,6 +1855,7 @@ async function openMail(id) {
   $("m-cc-count").textContent = modal.ccCandidates
     ? `元のメールの宛先・CC に ${(m.reply_cc_candidates || []).length}人` : "";
   $("m-subject").textContent = m.subject || "（件名なし）";
+  renderMailClient(m);
   $("m-body").textContent = m.body || "（本文なし）";
   renderAttachments(id, m);
   renderThread(m);
@@ -1779,7 +2012,7 @@ $("m-priority").onchange = async () => {
       body: JSON.stringify({ priority: +$("m-priority").value }),
     });
     $("m-reason").textContent = "判定理由: 手動変更（手動）";
-    showInbox();
+    inboxChanged();
   } catch {}
 };
 
@@ -1795,7 +2028,7 @@ async function patchMail(fields) {
   modal.assigneeName = r.assignee_name || "";
   fillCategorySelect(modal.category);
   fillAssigneeSelect(modal.assigneeId, modal.assigneeName);
-  showInbox();
+  inboxChanged();
 }
 $("m-category").onchange = async () => {
   if (!modal.id) return;
@@ -1925,7 +2158,7 @@ $("m-send").onclick = async () => {
       body: JSON.stringify({ body: text, cc, bcc, to,
                              approve_request: approving ? (modal.mail.requested_at || "") : null }),
     });
-    if (modal.id !== id) { showInbox(); return; }
+    if (modal.id !== id) { inboxChanged(); return; }
     modal.savedDraft = text;
     const sentCc = r.cc || [], sentBcc = r.bcc || [];
     // 0件の方は書かない (CC だけ送ったのに「BCC 0件」と出ると、文が長く分かりにくい)
@@ -1959,7 +2192,7 @@ $("m-send").onclick = async () => {
     $("m-cc").readOnly = $("m-bcc").readOnly = $("m-to").readOnly = true;
     $("m-to-note").hidden = true;
     $("m-cc-all").disabled = true;
-    showInbox();
+    inboxChanged();
   } catch {
     if (modal.id === id) { b.disabled = false; b.textContent = approving ? "承認して送信" : "返信を送信"; }
   }
@@ -1972,6 +2205,7 @@ $("m-archive").onclick = async () => {
       body: JSON.stringify({ status: "archived" }),
     });
     inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
+    clientStale = true;  // 取引先の画面から開いていたら、閉じたときに取り直す
     await closeModal();
   } catch {}
 };
@@ -1996,7 +2230,7 @@ $("m-request").onclick = async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ body: text, cc, bcc, to, note: $("m-req-note").value }),
     });
-    if (modal.id !== id) { showInbox(); return; }
+    if (modal.id !== id) { inboxChanged(); return; }
     modal.savedDraft = text;
     Object.assign(modal.mail, { status: "pending_approval", requested_by: r.requested_by,
                                 requested_at: r.requested_at, approval_note: $("m-req-note").value.trim(),
@@ -2006,7 +2240,7 @@ $("m-request").onclick = async () => {
     renderToNote(modal.mail);   // 宛先の注意も、直した宛先のことに変える
     $("m-status").textContent = "確認をお願いしました ✓（管理者が確かめて送ります）" +
       ((r.notified || []).length ? "" : "（お知らせの送り先が未設定のため、管理者に一声かけてください）");
-    showInbox();
+    inboxChanged();
   } catch {
     if (modal.id === id) renderControls(modal.mail);   // ボタンを元に戻す
   }
@@ -2033,12 +2267,12 @@ $("m-return").onclick = async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ note }),
     });
-    if (modal.id !== id) { showInbox(); return; }
+    if (modal.id !== id) { inboxChanged(); return; }
     Object.assign(modal.mail, { status: "unhandled", returned_by: r.returned_by,
                                 returned_at: r.returned_at, return_note: r.return_note });
     renderControls(modal.mail);
     $("m-status").textContent = `${who} さんに差し戻しました ✓`;
-    showInbox();
+    inboxChanged();
   } catch {}
   b.disabled = false;
 };
@@ -2062,7 +2296,7 @@ async function saveDraft() {
   }
 }
 
-async function closeModal() {
+async function closeModal(opts = {}) {
   await saveDraft();
   modal = { ...EMPTY_MODAL };
   modalHistory = [];
@@ -2071,8 +2305,15 @@ async function closeModal() {
   clearCalendar();
   ntnSeq++;
   $("mail-modal").hidden = true;
+  // 履歴に「このメールを開いていた」と残していたら消す (戻る・進むで開き直さないように)
+  if (!opts.keepHistory && history.state && history.state.mail) {
+    const { mail: _m, ...rest } = history.state;
+    history.replaceState(rest, "", location.href);
+  }
   // 開いている間に新着などで受信箱が変わっていたら、ここで取り直す
   if (inboxStale && viewName === "inbox") showInbox({ auto: true });
+  // 取引先の画面から開いたメールを送った・変えたときは、取引先の画面を取り直す (見ていた場所はそのまま)
+  if (clientStale && viewName === "client" && clientView.key) loadClient(clientView.key, { keepPlace: true });
 }
 $("m-close").onclick = () => closeModal();
 $("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
@@ -2725,6 +2966,7 @@ function fillSettings(s) {
   $("set-mail-instructions").value = s.mail_reply_instructions;
   $("set-mail-vip").value = s.mail_vip_addresses;
   $("set-mail-form-senders").value = s.mail_form_senders || "";
+  $("set-client-personal").value = s.mail_client_personal_domains || "";
   renderFormMisdirected(s);
   $("set-mail-keywords").value = s.mail_urgent_keywords;
   $("set-mail-categories").value = s.mail_categories;
@@ -3113,8 +3355,14 @@ async function refreshAiStatus() {
 // 一番上の受信のカードしか見えないため)
 $("ai-warn-link").onclick = async e => {
   e.preventDefault();
-  await openSettings();
+  await navTo({ v: "settings" });
   $("ai-card").scrollIntoView({ block: "start" });
+};
+
+// 「1人ずつに分けるドメイン」を最初の一覧に戻す (保存は下の「保存」)
+$("set-client-personal-reset").onclick = () => {
+  const d = (appSettings && appSettings.mail_client_personal_domains_default) || "";
+  if (d) $("set-client-personal").value = d;
 };
 
 $("set-save").onclick = async () => {
@@ -3132,6 +3380,7 @@ $("set-save").onclick = async () => {
     mail_reply_instructions: $("set-mail-instructions").value,
     mail_vip_addresses: $("set-mail-vip").value,
     mail_form_senders: $("set-mail-form-senders").value,
+    mail_client_personal_domains: $("set-client-personal").value,
     mail_urgent_keywords: $("set-mail-keywords").value,
     mail_categories: $("set-mail-categories").value,
     mail_category_keywords: $("set-mail-category-keywords").value,
@@ -3577,6 +3826,466 @@ $("tpl-cancel").onclick = () => { resetTplForm(); $("tpl-msg").textContent = "";
 document.querySelectorAll(".tpl-ph button").forEach(b =>
   b.onclick = () => insertAtCursor($("tpl-body"), b.dataset.ph));
 
+/* ---------- 取引先 (取引先ごとに、届いたメールと送った返信をまとめて見る) ----------
+   一覧と1つの取引先の画面。名前・アドレス・件名・本文などは外から来た文字なので、
+   innerHTML に入れるときは必ず esc() を通す (または textContent で入れる)。
+   変える操作 (名前・メモ・まとめ方) は管理者だけに出す (サーバも必ず確かめる)。
+   新着の自動確認 (1分ごと) は、この画面を描き直さない (見ている場所を動かさない) */
+let clientList = { q: null, items: [], total: 0, seq: 0 };
+let clientView = { key: null, data: null, items: [], seq: 0 };
+let clientStale = false;   // 返信画面で送った・変えた (取引先の画面を開き直すときに取り直す)
+let clientSearchTimer = null;
+const tlBodies = new Map();   // やり取りの全文 (読み込んだもの) "in:番号" / "out:番号"
+
+// 日付だけ (「2026/10/20」)
+function fmtDay(iso) {
+  const d = new Date(iso);
+  return iso && !isNaN(d) ? fmtTz(d, { year: "numeric", month: "numeric", day: "numeric" }) : "";
+}
+const kindLabel = c => c.kind === "company" ? "会社" : "個人";
+
+async function showClients(st = {}, restore) {
+  switchView("clients");
+  if (typeof st.q === "string") $("cl-q").value = st.q;
+  // 取引先の画面から戻ったときは、前に出していた数だけ取り直して、見ていた場所に戻す
+  await loadClients(false, restore ? clientList.items.length : 0);
+}
+
+async function loadClients(more, atLeast = 0) {
+  const seq = ++clientList.seq;
+  const q = $("cl-q").value.trim();
+  const offset = more ? clientList.items.length : 0;
+  const p = new URLSearchParams({ offset: String(offset),
+                                  limit: String(Math.min(200, Math.max(50, atLeast))) });
+  if (q) p.set("q", q);
+  $("cl-more").disabled = true;
+  let r;
+  try { r = await apiJson("/api/mail/clients?" + p); }
+  catch { $("cl-more").disabled = false; return; }
+  if (seq !== clientList.seq) return;     // 待っている間に、探す言葉を変えた
+  clientList.items = more ? clientList.items.concat(r.clients) : r.clients;
+  clientList.total = r.total;
+  clientList.q = q;
+  renderClients();
+}
+
+function clientRowHtml(c) {
+  const sub = c.kind === "company" && c.domains.length
+    ? c.domains.join("・") + (c.address_count ? ` ・ アドレス ${Number(c.address_count)}件` : "")
+    : (c.addresses[0] ? c.addresses[0].addr : "") +
+      (c.address_count > 1 ? ` ほか${Number(c.address_count) - 1}件` : "");
+  return `
+  <button type="button" class="cl-row" data-key="${esc(c.key)}">
+    <span class="cl-main"><span class="cl-name">${esc(c.name) || "（名前なし）"}</span><span class="cl-kind${c.named ? " named" : ""}">${c.named ? "名前を付けた" + kindLabel(c) : kindLabel(c)}</span>
+      <span class="cl-addr">${esc(sub) || "（メールはまだありません）"}</span></span>
+    <span class="cl-side">
+      <span>${c.last_at ? "最後: " + esc(fmtDay(c.last_at)) : "やり取りなし"}</span>
+      <span>メール ${Number(c.total)}通・返信 ${Number(c.replies)}通</span>
+      <span>${c.unhandled ? `<span class="cl-open">未対応 ${Number(c.unhandled)}</span>` : ""}${c.pending ? ` <span class="cl-pend">確認待ち ${Number(c.pending)}</span>` : ""}</span>
+    </span>
+  </button>`;
+}
+
+function renderClients() {
+  const { items, total, q } = clientList;
+  $("cl-count").textContent = q ? `「${q}」に合う取引先 ${total}件` : `取引先 ${total}件`;
+  $("cl-list").innerHTML = items.map(clientRowHtml).join("") ||
+    `<p class="cl-empty">${q ? "この言葉に合う取引先はありません（名前・アドレス・ドメインの一部で探せます）"
+                            : "まだ取引先はありません（メールが届くと、相手ごとにここに出ます）"}</p>`;
+  $("cl-more").hidden = items.length >= total;
+  $("cl-more").disabled = false;
+}
+$("cl-list").onclick = e => {
+  const b = e.target.closest(".cl-row");
+  if (b) navTo({ v: "client", key: b.dataset.key });
+};
+$("cl-more").onclick = () => loadClients(true);
+// 探す: 打ち終わるのを少し待ってから聞く。探す言葉は履歴にも残す (戻ったときに同じ一覧にする)
+$("cl-q").addEventListener("input", () => {
+  clearTimeout(clientSearchTimer);
+  clientSearchTimer = setTimeout(() => {
+    if (history.state && history.state.v === "clients") {
+      history.replaceState({ ...history.state, q: $("cl-q").value }, "", location.href);
+    }
+    loadClients(false);
+  }, 300);
+});
+
+/* 1つの取引先 */
+async function showClient(key, st) {
+  switchView("client");
+  if (clientView.key !== key) {
+    // 前の取引先を出したままにしない (読み込み中と分かるように)
+    $("cd-name").textContent = "読み込み中…";
+    for (const id of ["cd-sub", "cd-stats", "cd-cats", "cd-timeline", "cd-addrs"]) $(id).textContent = "";
+    $("cd-note-view").hidden = true;
+    $("cd-admin").hidden = true;
+    $("cd-more").hidden = true;
+    $("cd-tl-title").textContent = "やり取り";
+  }
+  await loadClient(key, { restore: !!st });
+}
+
+async function loadClient(key, opts = {}) {
+  const seq = ++clientView.seq;
+  const keep = opts.keepPlace ? window.scrollY : null;
+  const same = clientView.key === key;
+  const want = (opts.keepPlace || opts.restore) && same ? clientView.items.length : 0;
+  let d;
+  try {
+    const r = await api(`/api/mail/clients/${encodeURIComponent(key)}?limit=${Math.min(100, Math.max(30, want))}`);
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || "取引先を読み込めませんでした");
+    }
+    d = await r.json();
+  } catch (e) {
+    if (e.message === "auth" || seq !== clientView.seq) return;
+    clientView = { key, data: null, items: [], seq };
+    $("cd-name").textContent = e.message === "Failed to fetch"
+      ? "読み込めませんでした（通信を確かめて、もう一度開いてください）" : e.message;
+    for (const id of ["cd-sub", "cd-stats", "cd-cats", "cd-timeline", "cd-addrs"]) $(id).textContent = "";
+    $("cd-admin").hidden = true;
+    $("cd-more").hidden = true;
+    return;
+  }
+  if (seq !== clientView.seq) return;    // 待っている間に、別の取引先を開いた
+  clientStale = false;
+  if (d.key !== key && history.state && history.state.v === "client") {
+    // 名前を付けた・まとめた後など、今の取引先の番号にそろえる
+    history.replaceState({ ...history.state, key: d.key }, "", urlFor({ v: "client", key: d.key }));
+  }
+  if (!same) tlBodies.clear();
+  clientView = { key: d.key, data: d, items: d.timeline || [], seq };
+  renderClient(d);
+  if (keep !== null) window.scrollTo(0, keep);
+}
+
+function renderClient(d) {
+  const admin = isAdmin();
+  $("cd-name").textContent = d.name || "（名前なし）";
+  const subParts = [d.kind === "company" ? "会社" : "個人"];
+  if (d.kind === "company" && d.domains.length) subParts.push("ドメイン: " + d.domains.join("・"));
+  else if (d.addresses[0]) subParts.push(d.addresses[0].addr);
+  if (d.named && d.default_name && d.default_name !== d.name) subParts.push(`メールでの名前: ${d.default_name}`);
+  if (!d.named) subParts.push("名前はメールから自動で決めています");
+  $("cd-sub").textContent = subParts.join(" ・ ");
+  const stat = (label, value, warn) =>
+    `<div class="cd-stat${warn ? " warn" : ""}"><small>${esc(label)}</small><b>${esc(value)}</b></div>`;
+  $("cd-stats").innerHTML =
+    stat("はじめてのやり取り", d.first_at ? fmtDay(d.first_at) : "—") +
+    stat("最後のやり取り", d.last_at ? fmtDay(d.last_at) : "—") +
+    stat("届いたメール", `${Number(d.total)}通`) +
+    stat("送った返信", `${Number(d.replies)}通`) +
+    stat("未対応", `${Number(d.unhandled)}通`, d.unhandled > 0) +
+    (d.pending ? stat("確認待ち", `${Number(d.pending)}通`, true) : "");
+  $("cd-cats").innerHTML = (d.categories || []).map(c =>
+    `<span>${catBadge(c.category)}<small>${Number(c.count)}通</small></span>`).join("");
+  $("cd-note-view").textContent = d.note ? "📝 " + d.note : "";
+  $("cd-note-view").hidden = !d.note;
+  // アドレス (多い順)。会社の中の1人を別の取引先に分けるボタンは管理者だけ
+  $("cd-addrs-title").textContent = `アドレス（${Number(d.address_count)}件）`;
+  $("cd-addrs").innerHTML = d.addresses.map(a => `
+    <div class="cd-addr"><span>${esc(a.addr)}${a.name ? ` <small>（${esc(a.name)}）</small>` : ""}<br>
+      <small>${Number(a.count)}通${a.last_at ? "・最後 " + esc(fmtDay(a.last_at)) : ""}</small></span>
+      ${admin && d.address_count > 1 ? `<button class="ghost" data-split="${esc(a.addr)}" data-name="${esc(a.name)}">別の取引先に分ける</button>` : ""}
+    </div>`).join("") +
+    (d.address_count > d.addresses.length
+      ? `<small>ほかに ${Number(d.address_count) - d.addresses.length} 件のアドレスがあります</small>` : "") ||
+    "<small>まだメールはありません</small>";
+  renderClientAdmin(d);
+  $("cd-tl-title").textContent = `やり取り（${Number(d.timeline_total)}件）`;
+  renderTimeline();
+}
+
+function renderTimeline() {
+  const d = clientView.data;
+  const items = clientView.items;
+  $("cd-timeline").innerHTML = items.map(t => {
+    const id = Number(t.mail_id), incoming = t.kind === "in";
+    const who = incoming ? contactLine(t) + (t.via_form ? "（HPフォーム経由）" : "")
+      : "宛先: " + (t.sent_to || "") + ((t.cc || []).length ? "・CC: " + t.cc.join(", ") : "");
+    const tag = incoming ? `<span class="st-${esc(t.status)}">${esc(ST[t.status] || t.status)}</span>`
+      : esc(t.replied_by ? t.replied_by + " が送信" : "送信");
+    return `
+    <details class="tl-item ${incoming ? "in" : "out"}" data-tl="${incoming ? "in" : "out"}:${id}">
+      <summary>
+        <span class="tl-line tl-head"><span class="tl-kind">${incoming ? "📩 届いたメール" : "↩ こちらの返信"}</span> ・ ${esc(fmtDate(t.at))} ・ ${tag}</span>
+        ${incoming && d && d.address_count > 1 ? `<span class="tl-line tl-head">${esc(contactLine(t))}</span>` : ""}
+        <span class="tl-line tl-subj">${esc(t.subject) || "（件名なし）"}</span>
+        <span class="tl-line">${esc(t.snippet) || "（本文なし）"}</span>
+      </summary>
+      <div class="tl-full">
+        <small>${esc(who)}</small>
+        <div class="mail-body tl-body">読み込み中…</div>
+        <button class="ghost" data-tl-open="${id}">このメールを開く</button>
+      </div>
+    </details>`;
+  }).join("") || '<p class="cl-empty">まだやり取りはありません</p>';
+  $("cd-more").hidden = !d || items.length >= d.timeline_total;
+  $("cd-more").disabled = false;
+}
+
+// やり取りを開いたら全文を読み込む (届いたメールは本文、こちらの返信は送った文)
+async function loadTimelineBody(item) {
+  const [kind, idText] = item.dataset.tl.split(":");
+  const el = item.querySelector(".tl-body");
+  const cacheKey = item.dataset.tl;
+  if (tlBodies.has(cacheKey)) { el.textContent = tlBodies.get(cacheKey); return; }
+  if (item.dataset.loading) return;
+  item.dataset.loading = "1";
+  const seq = clientView.seq;
+  try {
+    const r = await api(`/api/mail/${Number(idText)}?thread=false`);
+    if (!r.ok) throw new Error(r.status === 404 ? "gone" : "load");
+    const m = await r.json();
+    tlBodies.set(`in:${Number(idText)}`, m.body || "（本文なし）");
+    if (m.replied_at) tlBodies.set(`out:${Number(idText)}`, m.reply_body || "（本文なし）");
+    if (seq === clientView.seq) el.textContent = tlBodies.get(cacheKey) || "（本文なし）";
+  } catch (e) {
+    if (e.message === "auth" || seq !== clientView.seq) return;
+    el.textContent = e.message === "gone"
+      ? "このメールは見つかりませんでした（保存日数を過ぎて消えた可能性があります）"
+      : "読み込めませんでした。閉じてもう一度開くと読み直します";
+  } finally {
+    delete item.dataset.loading;
+  }
+}
+$("cd-timeline").addEventListener("toggle", e => {
+  if (e.target.matches && e.target.matches(".tl-item") && e.target.open) loadTimelineBody(e.target);
+}, true);
+$("cd-timeline").onclick = e => {
+  const b = e.target.closest("button[data-tl-open]");
+  if (b) openMail(Number(b.dataset.tlOpen)).catch(() => {});
+};
+$("cd-more").onclick = async () => {
+  const d = clientView.data, key = clientView.key, seq = clientView.seq;
+  if (!d) return;
+  $("cd-more").disabled = true;
+  try {
+    const r = await apiJson(`/api/mail/clients/${encodeURIComponent(key)}?offset=${clientView.items.length}&limit=30`);
+    if (seq !== clientView.seq) return;
+    clientView.items = clientView.items.concat(r.timeline || []);
+    clientView.data.timeline_total = r.timeline_total;
+    renderTimeline();
+  } catch { $("cd-more").disabled = false; }
+};
+$("cd-back").onclick = () => {
+  // この画面に来た元 (一覧・受信箱) に戻る。アドレスから直接開いたときは一覧へ
+  if (history.state && history.state.n > 0) history.back();
+  else { history.replaceState({ v: "clients", n: 0 }, "", urlFor({ v: "clients" })); showClients(); }
+};
+
+/* 取引先の設定 (管理者だけ。名前・メモ・まとめるアドレスとドメイン) */
+function cdMsg(text, ok) {
+  $("cd-admin-msg").textContent = text || "";
+  $("cd-admin-msg").className = "cd-msg" + (text ? (ok ? " ok" : " err") : "");
+}
+// 取引先を変える API を呼ぶ (うまくいかなかった理由は画面に出す。アラートは出さない)
+async function clientWrite(path, method, body) {
+  const r = await api(path, { method, headers: { "Content-Type": "application/json" },
+                              body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data, detail: data.detail || "うまくいきませんでした" };
+}
+function ruleText(p) {
+  return p.startsWith("@") ? `${p}（${p.slice(1)} のアドレス全部）` : `${p}（このアドレスだけ）`;
+}
+function renderClientAdmin(d) {
+  const admin = isAdmin();
+  $("cd-admin").hidden = !admin;
+  if (!admin) return;
+  $("cd-admin-named").hidden = !d.named;
+  $("cd-admin-default").hidden = d.named;
+  if (d.named) {
+    $("cd-name-in").value = d.name;
+    $("cd-note-in").value = d.note || "";
+    $("cd-rules").innerHTML = (d.rules || []).map(r => `
+      <div class="cd-addr"><span>${esc(ruleText(r.pattern))}</span>
+        <button class="ghost" data-rule="${Number(r.id)}" data-pattern="${esc(r.pattern)}">外す</button></div>`).join("") ||
+      "<small>まだありません（下で足してください）</small>";
+  } else {
+    $("cd-newname").value = d.name || "";
+    loadMergeTargets(d.key);
+  }
+}
+// 「ほかの取引先にまとめる」の選択肢 (名前を付けた取引先)
+async function loadMergeTargets(key) {
+  const sel = $("cd-merge-sel");
+  let r;
+  try { r = await apiJson("/api/mail/clients?named=true&limit=200"); } catch { return; }
+  if (clientView.key !== key) return;
+  setOptions(sel, [["", r.clients.length ? "まとめる先を選ぶ…" : "名前を付けた取引先がまだありません"],
+                   ...r.clients.map(c => [c.key, c.name])], "");
+  $("cd-merge-box").hidden = !r.clients.length;
+}
+async function afterClientChange(text, key) {
+  if (key && key !== clientView.key) {
+    history.replaceState({ ...(history.state || {}), v: "client", key }, "", urlFor({ v: "client", key }));
+  }
+  await loadClient(key || clientView.key, { keepPlace: true });
+  cdMsg(text, true);
+}
+$("cd-name-save").onclick = async () => {
+  const r = await clientWrite(`/api/mail/clients/${encodeURIComponent(clientView.key)}`, "PATCH",
+                              { name: $("cd-name-in").value });
+  if (!r.ok) { cdMsg(r.detail); return; }
+  afterClientChange("名前を保存しました ✓");
+};
+$("cd-note-save").onclick = async () => {
+  const r = await clientWrite(`/api/mail/clients/${encodeURIComponent(clientView.key)}`, "PATCH",
+                              { note: $("cd-note-in").value });
+  if (!r.ok) { cdMsg(r.detail); return; }
+  afterClientChange("メモを保存しました ✓");
+};
+// アドレス・ドメインを足す。ほかの取引先に入っているものは、確かめてから移す
+async function addRule(body) {
+  const path = `/api/mail/clients/${encodeURIComponent(clientView.key)}/rules`;
+  let r = await clientWrite(path, "POST", body);
+  if (r.status === 409 && confirm(r.detail.replace(/（こちらに移すときは.*）$/, "") +
+      "\n\nこの取引先に移しますか？（メールは変わりません）")) {
+    r = await clientWrite(path, "POST", { ...body, move: true });
+  }
+  return r;
+}
+$("cd-rule-add").onclick = async () => {
+  const v = $("cd-rule-in").value.trim();
+  if (!v) { cdMsg("アドレスか「@ドメイン」を入れてください"); return; }
+  const r = await addRule({ pattern: v });
+  if (!r.ok) { if (r.status !== 409) cdMsg(r.detail); return; }
+  $("cd-rule-in").value = "";
+  afterClientChange(`「${r.data.pattern}」をこの取引先にまとめました ✓`);
+};
+$("cd-rules").onclick = async e => {
+  const b = e.target.closest("button[data-rule]");
+  if (!b || !confirm(`「${b.dataset.pattern}」をこの取引先から外しますか？\n\n` +
+      "そのアドレスのメールは、元の分け方（会社のドメインごと・個人のアドレスごと）に戻ります。メールは消えません。")) return;
+  const r = await clientWrite(`/api/mail/clients/${encodeURIComponent(clientView.key)}/rules/${Number(b.dataset.rule)}`, "DELETE");
+  if (!r.ok) { cdMsg(r.detail); return; }
+  afterClientChange(`「${r.data.pattern}」を外しました ✓`);
+};
+$("cd-delete").onclick = async () => {
+  const d = clientView.data;
+  if (!d || !confirm(`取引先「${d.name}」を消しますか？\n\nメールは消えません。` +
+      "まとめていたアドレスのメールは、元の分け方（会社のドメインごと・個人のアドレスごと）に戻ります。")) return;
+  const r = await clientWrite(`/api/mail/clients/${encodeURIComponent(clientView.key)}`, "DELETE");
+  if (!r.ok) { cdMsg(r.detail); return; }
+  history.replaceState({ v: "clients", n: (history.state && history.state.n) || 0 }, "", urlFor({ v: "clients" }));
+  clientView.key = null;
+  showClients();
+};
+$("cd-name-create").onclick = async () => {
+  const r = await clientWrite("/api/mail/clients", "POST",
+                              { name: $("cd-newname").value, from_key: clientView.key });
+  if (!r.ok) { cdMsg(r.detail); return; }
+  afterClientChange("名前を付けました ✓（メモを書いたり、ほかのアドレスをまとめたりできます）", r.data.key);
+};
+$("cd-merge").onclick = async () => {
+  const target = $("cd-merge-sel").value;
+  if (!target) { cdMsg("まとめる先の取引先を選んでください"); return; }
+  const name = $("cd-merge-sel").selectedOptions[0].textContent;
+  if (!confirm(`この取引先を「${name}」にまとめますか？（メールは変わりません）`)) return;
+  const r = await clientWrite(`/api/mail/clients/${encodeURIComponent(target)}/rules`, "POST",
+                              { from_key: clientView.key });
+  if (!r.ok) { cdMsg(r.detail); return; }
+  afterClientChange(`「${name}」にまとめました ✓`, target);
+};
+// 会社の中の1人 (アドレス) を、新しい取引先に分ける
+$("cd-addrs").onclick = async e => {
+  const b = e.target.closest("button[data-split]");
+  if (!b) return;
+  const name = prompt(`「${b.dataset.split}」を新しい取引先に分けます。新しい取引先の名前を入れてください`,
+                      b.dataset.name || b.dataset.split);
+  if (name === null) return;
+  const r = await clientWrite("/api/mail/clients", "POST",
+                              { name, patterns: [b.dataset.split], move: true });
+  if (!r.ok) { cdMsg(r.detail); return; }
+  afterClientChange(`「${r.data.name}」に分けました ✓（上の「取引先」の一覧から開けます）`);
+};
+
+/* 返信画面の「取引先」の印と「この取引先のやり取りをすべて見る」 */
+function renderMailClient(m) {
+  const c = m.client;
+  $("m-client").hidden = !c;
+  if (!c) return;
+  $("m-client-name").textContent = "🏢 " + (c.name || "取引先");
+  $("m-client-name").title = c.named ? "取引先" : "取引先（名前はメールから自動で決めています）";
+  $("m-client-link").dataset.key = c.key;
+}
+$("m-client-link").onclick = async e => {
+  e.preventDefault();
+  const key = $("m-client-link").dataset.key, id = modal.id;
+  if (!key) return;
+  // 同じ取引先の画面から開いていたら、閉じるだけ
+  if (viewName === "client" && clientView.key === key) { await closeModal(); return; }
+  await closeModal();
+  // 戻ったときに、このメールを開き直せるように残しておく
+  const cur = history.state || { v: viewName, n: 0 };
+  history.replaceState({ ...cur, mail: id }, "", location.href);
+  navTo({ v: "client", key });
+};
+
+/* ---------- 画面の行き来 (ブラウザ・スマホの「戻る」で、前の画面の前の場所に戻れるように) ----------
+   履歴の1つ1つ: { v: "inbox" | "clients" | "client" | "settings", key (取引先の番号),
+   q (探す言葉), mail (開いていたメールの番号), scroll (見ていた位置), n (この画面までの数) } */
+function stateFromHash() {
+  const h = location.hash;
+  if (h === "#clients") return { v: "clients" };
+  if (h === "#settings" && isAdmin()) return { v: "settings" };
+  if (h.startsWith("#client=")) {
+    try {
+      const key = decodeURIComponent(h.slice("#client=".length));
+      if (key) return { v: "client", key };
+    } catch {}
+  }
+  return { v: "inbox" };
+}
+function urlFor(st) {
+  const base = location.pathname + location.search;
+  return st.v === "clients" ? base + "#clients"
+    : st.v === "client" ? base + "#client=" + encodeURIComponent(st.key)
+    : st.v === "settings" ? base + "#settings" : base;
+}
+const sameView = (a, b) => !!a && a.v === b.v && (a.v !== "client" || a.key === b.key);
+// 今の画面の見ていた位置を覚えてから、次の画面を履歴に足す (同じ画面なら足さない)
+function pushNav(st) {
+  const cur = history.state || { v: viewName, n: 0 };
+  if (sameView(cur, st)) {
+    history.replaceState({ ...cur, ...st }, "", urlFor(st));
+    return;
+  }
+  history.replaceState({ ...cur, scroll: window.scrollY }, "", location.href);
+  history.pushState({ ...st, n: (cur.n || 0) + 1 }, "", urlFor(st));
+}
+function navTo(st) {
+  pushNav(st);
+  return renderState(st);
+}
+// 画面を出す。restore: 「戻る」「進む」で来たとき (前に見ていた場所に戻す・開いていたメールを開き直す)
+async function renderState(st, restore) {
+  try {
+    if (st.v === "clients") await showClients(st, restore);
+    else if (st.v === "client") await showClient(st.key, restore ? st : null);
+    else if (st.v === "settings" && isAdmin()) await openSettings();
+    else await showInbox(restore ? { auto: true } : {});
+  } catch { return; }
+  if (restore && typeof st.scroll === "number") window.scrollTo(0, st.scroll);
+  if (restore && st.mail && $("mail-modal").hidden) openMail(st.mail).catch(() => {});
+}
+window.addEventListener("popstate", async e => {
+  if ($("app").hidden) return;
+  // 返信画面を開いていたら閉じる (書きかけの返信文は保存する)
+  if (!$("mail-modal").hidden) await closeModal({ keepHistory: true });
+  renderState(e.state || stateFromHash(), true);
+});
+
+/* ---------- 使い方 (説明の長い文)。最初は閉じておき、開いたかはこのブラウザに覚えておく ---------- */
+const HOWTO_KEY = "zatsumu_mail_howto_";
+document.querySelectorAll("details.howto").forEach(d => {
+  d.open = loadPref(HOWTO_KEY + d.dataset.howto) === "1";
+  d.addEventListener("toggle", () => savePref(HOWTO_KEY + d.dataset.howto, d.open ? "1" : "0"));
+});
+
 /* ---------- 新着の自動確認 (画面を開いたままでも新しいメールが出る) ---------- */
 // 1分ごとに、受信の様子 (未対応の数・一番新しいメールの番号など) だけをサーバに聞き、
 // 変わっていたら受信箱を取り直す。サーバが受信サーバへ新しいメールを確かめに行く間隔は
@@ -3634,10 +4343,11 @@ window.addEventListener("offline", () => {
 window.addEventListener("pageshow", e => { if (e.persisted) pollNow(); });
 
 /* ---------- ナビ・ログイン ---------- */
-$("nav-inbox").onclick = () => showInbox();
+$("nav-inbox").onclick = () => navTo({ v: "inbox" });
+$("nav-clients").onclick = () => navTo({ v: "clients" });
 // 受信箱の横の「確認待ち N」を押したら、確認待ちのメールだけを出す
 $("nav-pending").onclick = () => showPending();
-$("nav-settings").onclick = () => openSettings();
+$("nav-settings").onclick = () => navTo({ v: "settings" });
 $("login-btn").onclick = () => {
   localStorage.setItem(KEY, $("token-input").value.trim());
   showApp();

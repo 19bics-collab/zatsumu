@@ -1636,6 +1636,19 @@ def contact_from_body(body, rules: ContactRules, sender: str, sure: bool,
     return addr, name[:CONTACT_NAME_MAX_CHARS].rstrip()
 
 
+def company_from_body(body) -> str:
+    """フォームのメールの本文の「会社名」「貴社名」などの値 (無ければ "").
+
+    取引先の名前の候補にする (server/clients.py)。読み仮名の項目は使わない。
+    """
+    for _i, key, label, value, _prose in _label_lines(str(body or "")):
+        if key in _COMPANY_LABELS and not _KANA_RE.search(label):
+            company = _clean_contact_name(value)
+            if company:
+                return company
+    return ""
+
+
 def _same_org(a: str, b: str) -> bool:
     """2つのアドレスが同じ会社などのドメインか (Gmail などは別の人なので同じとはみなさない)."""
     da, db_ = a.rpartition("@")[2].lower(), b.rpartition("@")[2].lower()
@@ -1721,6 +1734,7 @@ _CONTACT_BODY_BATCH = 200
 def _redecide(conn, rows, rules: ContactRules) -> list[tuple]:
     """rows (id, from_addr, from_name) の相手を決め直し、UPDATE に渡す値の一覧にする.
 
+    値は (相手のアドレス, 名前, 決め方, フォームか, フォームの会社名, 番号)。
     フォームかもしれない差出人のメールと、Reply-To を覚えているメールだけ本文を読む
     (ふつうの人のメールは差出人のまま)。Reply-To は前の版が入れたメールでは分からない (空)。
     """
@@ -1730,7 +1744,7 @@ def _redecide(conn, rows, rules: ContactRules) -> list[tuple]:
             need_body.append(r["id"])
         else:
             out.append((str(r["from_addr"] or "").strip(), _one_line(r["from_name"]),
-                        "from", 0, r["id"]))
+                        "from", 0, "", r["id"]))
     for i in range(0, len(need_body), _CONTACT_BODY_BATCH):
         part = need_body[i:i + _CONTACT_BODY_BATCH]
         for r in conn.execute(
@@ -1741,7 +1755,8 @@ def _redecide(conn, rows, rules: ContactRules) -> list[tuple]:
                 f" WHERE id IN ({_marks(part)})", (CONTACT_BODY_SCAN_CHARS, *part)):
             c = decide_contact(dict(r), rules)
             out.append((c["contact_addr"], c["contact_name"], c["contact_source"],
-                        c["contact_via_form"], r["id"]))
+                        c["contact_via_form"],
+                        company_from_body(r["body"]) if c["contact_via_form"] else "", r["id"]))
     return out
 
 
@@ -1765,8 +1780,45 @@ def fill_missing_contacts(conn, settings: dict | None = None) -> int:
     updates = _redecide(conn, rows, contact_rules(conn, settings))
     conn.executemany(
         "UPDATE mails SET contact_addr = ?, contact_name = ?, contact_source = ?,"
-        " contact_via_form = ? WHERE id = ? AND contact_source = ''", updates)
+        " contact_via_form = ?, contact_company = ? WHERE id = ? AND contact_source = ''",
+        updates)
     _set_state(conn, CONTACTS_FILLED_KEY, newest)
+    conn.commit()
+    return len(updates)
+
+
+# どの番号のメールまで、フォームの「会社名」(contact_company) を読み終えたか (settings の非公開キー)
+COMPANIES_FILLED_KEY = "mail_state_companies_filled_upto"
+
+
+def fill_missing_companies(conn) -> int:
+    """フォームから届いたメールで「会社名」をまだ読んでいないものを読み、読んだ数を返す (起動時).
+
+    この機能より前に取り込んだメールと、自動更新で前の版に戻っていた間に取り込んだメール
+    (前の版は会社名の列を知らない)。前の回に調べ終えた番号より後のメールだけを見る
+    (fill_missing_contacts と同じ。2回目からは新しい分しか読まない)。本文はフォームのメールの分だけ読む。
+    """
+    try:
+        upto = int(_get_state(conn, COMPANIES_FILLED_KEY, "0") or 0)
+    except ValueError:
+        upto = 0
+    newest = conn.execute("SELECT COALESCE(MAX(id), 0) FROM mails").fetchone()[0]
+    if newest <= upto:
+        return 0
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM mails WHERE id > ? AND id <= ? AND contact_via_form = 1"
+        " AND contact_company = ''", (upto, newest))]
+    updates = []
+    for i in range(0, len(ids), _CONTACT_BODY_BATCH):
+        part = ids[i:i + _CONTACT_BODY_BATCH]
+        for r in conn.execute(f"SELECT id, substr(body, 1, ?) FROM mails WHERE id IN ({_marks(part)})",
+                              (CONTACT_BODY_SCAN_CHARS, *part)):
+            company = company_from_body(r[1])
+            if company:
+                updates.append((company, r[0]))
+    conn.executemany("UPDATE mails SET contact_company = ? WHERE id = ? AND contact_company = ''",
+                     updates)
+    _set_state(conn, COMPANIES_FILLED_KEY, newest)
     conn.commit()
     return len(updates)
 
@@ -1795,7 +1847,7 @@ def redecide_form_contacts(conn, settings: dict, before: dict) -> int:
     updates = _redecide(conn, rows, rules)
     conn.executemany(
         "UPDATE mails SET contact_addr = ?, contact_name = ?, contact_source = ?,"
-        " contact_via_form = ? WHERE id = ?", updates)
+        " contact_via_form = ?, contact_company = ? WHERE id = ?", updates)
     return len(rows)
 
 
@@ -2725,6 +2777,8 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None,
             continue
         # 相手 (Reply-To・本文のお客様・差出人)。分類・下書きにも使うので先に決める
         p.update(decide_contact(p, rules))
+        # HPのフォームの「会社名」(取引先の名前の候補)
+        p["contact_company"] = company_from_body(p["body"]) if p["contact_via_form"] else ""
         known = conn.execute(
             "SELECT 1 FROM mails WHERE message_id = ?", (p["message_id"],)
         ).fetchone()
@@ -2836,15 +2890,16 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
             " priority, priority_reason, priority_source, category,"
             " assignee_user_id, draft_reply, draft_source, draft_generated_at,"
             " references_hdr, account_id, reply_to, contact_addr, contact_name,"
-            " contact_source, contact_via_form)"
+            " contact_source, contact_via_form, contact_company)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-            " ?, ?, ?, ?, ?)",
+            " ?, ?, ?, ?, ?, ?)",
             (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
              p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
              reason, source, category, assignee, draft, draft_source, drafted_at,
              p["references_hdr"], account_id, p.get("reply_to_addr", ""),
              p.get("contact_addr", p["from_addr"]), p.get("contact_name", p["from_name"]),
-             p.get("contact_source", "from"), p.get("contact_via_form", 0)),
+             p.get("contact_source", "from"), p.get("contact_via_form", 0),
+             p.get("contact_company", "")),
         )
         if not cur.rowcount:
             continue  # 同じメールが既にある (添付も保存しない)

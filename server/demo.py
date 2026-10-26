@@ -224,21 +224,21 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
 
     # 「この相手とのやり取り」の確認用: 佐々木さんとの前のやり取り (返信済み) と、
     # その返信に別のアドレス (佐々木 部長) から届いた返事 (ヘッダでつながる)
-    add_mail(4400, "佐々木", "Sasaki@Example.com", "物件の下見について",
+    add_mail(4400, "佐々木", "Sasaki@Sasaki-Shoji.example.co.jp", "物件の下見について",
              "来週、物件の下見をお願いできますでしょうか。\n"
              "火曜か水曜の午後ですと助かります。", 2, "通常",
              status="replied", category="運営代行のご相談", assignee=ids["管理者"],
              reply=("佐々木 様\n\nお世話になっております。\n"
                     "下見の件、承知いたしました。水曜日の14時はいかがでしょうか。\n"
                     "よろしくお願いいたします。", 4300, "管理者",
-                    "佐々木 部長 <sasaki-bucho@example.com>"))
-    add_mail(4200, "佐々木 部長", "sasaki-bucho@example.com", "Re: 物件の下見について",
+                    "佐々木 部長 <bucho@sasaki-shoji.example.co.jp>"))
+    add_mail(4200, "佐々木 部長", "bucho@sasaki-shoji.example.co.jp", "Re: 物件の下見について",
              "水曜日14時で問題ございません。\n当日は私も同席いたします。", 2, "通常",
              status="archived", category="運営代行のご相談",
              in_reply_to="<demo-reply-4400@example.com>")
 
     # 種類を入れていないメール (この機能より前に取り込んだメール =「未分類」の表示の確認用)
-    add_mail(20, "山本 商事", "yamamoto@example.com",
+    add_mail(20, "山本 商事", "yamamoto@yamamoto-shoji.example.co.jp",
              "【至急】納品物の不具合について",
              "本日納品いただいた製品に不具合がありました。\n"
              "至急ご確認のうえ、対応方法をご連絡ください。",
@@ -247,7 +247,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              "納品物の不具合の件、大変申し訳ございません。\n"
              "至急状況を確認のうえ、本日中に対応方法をご連絡いたします。")
     estimate_id = add_mail(
-        90, "佐々木", "sasaki@example.com",
+        90, "佐々木", "sasaki@sasaki-shoji.example.co.jp",
         "お見積もりのご相談",
         "新規案件についてお見積もりをお願いしたく、"
         "ご都合の良い日程を教えてください。\n間取り図を添付します。",
@@ -256,7 +256,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
         "お見積もりのご相談ありがとうございます。\n"
         "候補日程を確認のうえ、改めてご連絡差し上げます。",
         # 全員に返信 (CC) の確認用
-        cc="佐々木 部長 <sasaki-bucho@example.com>, keiri@example.com",
+        cc="佐々木 部長 <bucho@sasaki-shoji.example.co.jp>, keiri@sasaki-shoji.example.co.jp",
         category="運営代行のご相談", assignee=ids["管理者"])
     if attachment_dir is not None:
         # 添付ファイルの確認用 (画像は縮小表示される・大きすぎる動画は保存していない例)
@@ -267,7 +267,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
             {"filename": "物件の動画.mov", "content_type": "video/quicktime",
              "size": 52 * 1024 * 1024, "data": None, "skip": "too_large"},
         ], now_utc.isoformat())
-    add_mail(2900, "山本 商事", "yamamoto@example.com", "納品日程のご確認",
+    add_mail(2900, "山本 商事", "yamamoto@yamamoto-shoji.example.co.jp", "納品日程のご確認",
              "先日ご依頼した件の納品日程を教えてください。", 2, "通常",
              status="replied",
              reply=("山本 商事 様\n\nお世話になっております。\n"
@@ -276,7 +276,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
     # 「カレンダーに登録」の確認用: 清掃の日時と物件が書いてあるご依頼 (日付は3日後)
     day = (now_utc - timedelta(minutes=45)).astimezone(tz.TZ).date() + timedelta(days=3)
     md = f"{day.month}月{day.day}日（{'月火水木金土日'[day.weekday()]}）"
-    add_mail(45, "鈴木 ホスト", "suzuki-host@example.com", f"清掃のご依頼（{md}）",
+    add_mail(45, "鈴木 ホスト", "suzuki.host.demo@gmail.com", f"清掃のご依頼（{md}）",
              "いつもお世話になっております。\n下記の日程で清掃をお願いできますでしょうか。\n\n"
              f"日時：{md}\n時間：１０：００～１３：００\n物件名：ビックス渋谷 201号室\n"
              "住所：東京都渋谷区神南1-2-3\n\nよろしくお願いいたします。",
@@ -287,7 +287,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              3, "自動配信・お知らせ", category="営業・宣伝")
     # 確認待ちの確認用: メール担当者の田中さんが下書きを作り、「確認をお願いする」を押したメール
     pending_id = add_mail(
-        70, "伊藤", "ito@example.com", "チェックインの時間について",
+        70, "伊藤", "ito.demo@icloud.com", "チェックインの時間について",
         "来週の土曜日に宿泊予定の伊藤です。\n到着が20時ごろになりそうですが、"
         "チェックインはできますでしょうか。", 2, "通常",
         "伊藤 様\n\nお問い合わせいただき、ありがとうございます。\n"
@@ -321,15 +321,58 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              2, "通常", category="その他")
     # 前の版で、返信がフォームの送信元 (wordpress@) に送られていたメール (お客様に届いていない)
     add_mail(5200, "WordPress", "wordpress@example.com", "【HPお問い合わせ】料金表がほしいです",
-             "差出人: 加藤 真理 <mari.kato@example.net>\n題名: 料金表がほしいです\n\n"
+             "差出人: 加藤 真理 <mari.kato.demo@gmail.com>\n題名: 料金表がほしいです\n\n"
              "メッセージ本文:\n清掃の料金表を送っていただけますか。" + form_footer,
              2, "通常", status="replied", category="清掃のご依頼",
              reply=("加藤 様\n\nお問い合わせありがとうございます。\n料金表を添付いたします。",
                     5100, "管理者", ""))
-    add_mail(1500, "高橋", "takahashi@example.com",
+    add_mail(1500, "高橋", "takahashi@takahashi-design.example.jp",
              "先日の打ち合わせのお礼",
              "先日はお時間をいただきありがとうございました。",
              2, "通常", status="replied", category="その他", to="kurosu@example.com")
+
+    # 取引先の確認用: 同じ会社のドメインの2人 (さくら不動産。名前とメモを付けた取引先)、
+    # 名前を付けていない会社 (青葉管理。HPのフォームの「会社名」が名前になる)、Gmail の個人
+    add_mail(9000, "田中 一郎", "tanaka@sakura-fudosan.example.co.jp", "物件の清掃のご相談",
+             "いつもお世話になっております。さくら不動産の田中です。\n"
+             "管理している3物件の定期清掃をお願いできないか、ご相談させてください。", 2, "通常",
+             status="replied", category="清掃のご依頼",
+             reply=("田中 様\n\nお問い合わせありがとうございます。\n"
+                    "3物件の定期清掃、承知いたしました。お見積もりをお送りします。",
+                    8900, "管理者", ""))
+    add_mail(6000, "鈴木 花子", "suzuki@sakura-fudosan.example.co.jp", "清掃の請求書について",
+             "さくら不動産 経理の鈴木です。\n先月分の請求書を、PDFでお送りいただけますでしょうか。",
+             2, "通常", status="replied", category="請求・お支払い",
+             reply=("鈴木 様\n\nお世話になっております。\n請求書をお送りいたします。",
+                    5950, "管理者", ""))
+    add_mail(25, "田中 一郎", "tanaka@sakura-fudosan.example.co.jp", "来月の清掃日程",
+             "来月の清掃日程を、第2・第4土曜でお願いできますか。", 2, "通常",
+             category="清掃のご依頼")
+    now_iso = now_utc.isoformat()
+    sakura = conn.execute(
+        "INSERT INTO clients (name, note, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        ("さくら不動産", "3物件の定期清掃（毎月第2・第4土曜）。請求書は経理の鈴木さんへPDFで。",
+         now_iso, now_iso)).lastrowid
+    conn.execute("INSERT INTO client_rules (client_id, pattern, created_at) VALUES (?, ?, ?)",
+                 (sakura, "@sakura-fudosan.example.co.jp", now_iso))
+    add_mail(3000, "WordPress", "wordpress@example.com", "【HPお問い合わせ】管理物件の清掃について",
+             "会社名：青葉管理株式会社\nお名前：大野 健太\n"
+             "メールアドレス：ohno@aoba-kanri.example.co.jp\n\n"
+             "メッセージ本文:\n管理物件10室の清掃をお願いしたいです。" + form_footer,
+             2, "通常", status="replied", category="清掃のご依頼",
+             reply=("大野 様\n\nお問い合わせありがとうございます。\n担当よりご連絡いたします。",
+                    2950, "管理者", ""))
+    add_mail(15, "大野 健太", "ohno@aoba-kanri.example.co.jp", "Re: 管理物件の清掃について",
+             "ご連絡ありがとうございます。来週の打ち合わせ、水曜の午後でいかがでしょうか。",
+             2, "通常", category="清掃のご依頼")
+    add_mail(4000, "青木 さくら", "demo.aoki@gmail.com", "宿泊の予約について",
+             "来月の3連休に2泊で予約したいのですが、空いていますか。", 2, "通常",
+             status="replied", category="予約・宿泊のお問い合わせ",
+             reply=("青木 様\n\nお問い合わせありがとうございます。\nその日程は空いております。",
+                    3990, "管理者", ""))
+    add_mail(50, "青木 さくら", "demo.aoki@gmail.com", "チェックインの時間",
+             "予約した青木です。チェックインは何時からできますか。", 2, "通常",
+             category="予約・宿泊のお問い合わせ")
 
     conn.commit()
     return True

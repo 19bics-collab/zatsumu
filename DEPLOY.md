@@ -359,7 +359,7 @@ caddy.exe run --config C:\zatsumu\caddy\Caddyfile
 |---|---|---|
 | `https://kintai.example.com/admin` | 勤怠管理 | 稼働状況・日報・申請・メンバー管理・レポート |
 | `https://kintai.example.com/me` | 打刻 | メンバーが自分で打刻・実績確認 |
-| `https://kintai.example.com/mail` | メール対応 | 受信箱（新しい順・種類ごとのタブ）・返信文の生成/編集・送信 |
+| `https://kintai.example.com/mail` | メール対応 | 受信箱（新しい順・種類ごとのタブ）・取引先ごとのやり取り・返信文の生成/編集・送信 |
 
 - ログインは**3画面とも同じ管理者トークン**です（`/admin` は管理者のみ。`/mail` は管理者と、
   管理者が「メール担当者」にした人だけ。下の「スタッフ（メール担当者）に返信の下書きを任せる」）。

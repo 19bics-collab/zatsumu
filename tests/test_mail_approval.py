@@ -117,6 +117,9 @@ MATRIX = [
     ("PATCH", "/api/mail/{mid}", {"priority": 1}, True),
     ("POST", "/api/mail/{mid}/request-approval", {"body": "本文"}, True),
     ("POST", "/api/mail/{mid}/misdirect-checked", None, True),
+    # 取引先は見るだけ (変えるのは管理者だけ)
+    ("GET", "/api/mail/clients", None, True),
+    ("GET", "/api/mail/clients/{ckey}", None, True),
     # ここから管理者だけ
     ("POST", "/api/mail/{mid}/send", {"body": "本文"}, False),
     ("POST", "/api/mail/{mid}/send-back", {"note": "直してください"}, False),
@@ -145,6 +148,11 @@ MATRIX = [
     ("POST", "/api/settings/test-notion", None, False),
     ("GET", "/api/devices", None, False),
     ("DELETE", "/api/devices/{dev}", None, False),
+    ("POST", "/api/mail/clients", {"name": "新しい取引先"}, False),
+    ("PATCH", "/api/mail/clients/{ckey}", {"note": "メモ"}, False),
+    ("POST", "/api/mail/clients/{ckey}/rules", {"pattern": "x@other.example.jp"}, False),
+    ("DELETE", "/api/mail/clients/{ckey}/rules/{rule}", None, False),
+    ("DELETE", "/api/mail/clients/{ckey}", None, False),
 ]
 
 
@@ -163,7 +171,12 @@ def _matrix_ids(tmp_path, staff):
             " 'info@bics.example', '2026-10-22T00:00:00+00:00')").lastrowid
         devices.issue_device(conn, staff["id"], "テスト")
         dev = conn.execute("SELECT MAX(id) FROM device_tokens").fetchone()[0]
-    return {"mid": mid, "att": att, "tid": tid, "acc": acc, "staff": staff["id"], "dev": dev}
+        cl = conn.execute("INSERT INTO clients (name, created_at, updated_at)"
+                          " VALUES ('取引先', 'now', 'now')").lastrowid
+        rule = conn.execute("INSERT INTO client_rules (client_id, pattern, created_at)"
+                            " VALUES (?, '@abc.example.jp', 'now')", (cl,)).lastrowid
+    return {"mid": mid, "att": att, "tid": tid, "acc": acc, "staff": staff["id"], "dev": dev,
+            "ckey": f"c:{cl}", "rule": rule}
 
 
 def test_every_mail_and_settings_api_is_in_the_matrix(client):

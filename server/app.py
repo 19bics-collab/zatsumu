@@ -16,7 +16,8 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import db, devices, imaging, mail, mail_events, notify, notion, reports, retention, tz
+from . import (clients, db, devices, imaging, mail, mail_events, notify, notion, reports,
+               retention, tz)
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
@@ -206,6 +207,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             conn.rollback()
             print(f"メールの相手を記録できませんでした: {e}")
+        # HPのフォームから届いたメールの「会社名」(取引先の名前の候補) を読む (前の回に
+        # 調べ終えたメールは調べない)。失敗しても起動は止めない (名前の候補が減るだけ)
+        try:
+            filled = mail.fill_missing_companies(conn)
+            if filled:
+                print(f"メール {filled} 通の会社名を記録しました")
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            print(f"メールの会社名を記録できませんでした: {e}")
         # 自動更新で前の版 (受信するアドレスが1つだけの版) に戻っていた間に取り込んだメールに、
         # 届いたアドレス (旧設定から作ったもの) を付ける。失敗しても起動は止めない
         try:
@@ -487,6 +497,7 @@ class SettingsPatch(BaseModel):
     notion_ai_fill: bool | None = None
     mail_require_approval: bool | None = None
     mail_form_senders: str | None = None
+    mail_client_personal_domains: str | None = None
 
 
 class MailPatch(BaseModel):
@@ -983,6 +994,8 @@ def _mask_settings(s: dict, conn) -> dict:
     s["mail_form_misdirected_count"] = conn.execute(
         f"SELECT COUNT(*) FROM mails m WHERE {mail.MISDIRECTED_SQL}").fetchone()[0]
     s["mail_form_misdirected"] = [dict(r) for r in misdirected]
+    # 「1人ずつに分けるドメイン」の最初の一覧 (読み取り専用。設定画面の「最初の一覧に戻す」用)
+    s["mail_client_personal_domains_default"] = db.STR_SETTINGS["mail_client_personal_domains"]
     for key in ("smtp_pass", "imap_pass", "anthropic_api_key", "notion_token"):
         s[f"{key}_set"] = bool(s.get(key))
         s[key] = ""
@@ -1110,7 +1123,8 @@ def patch_settings(
                        ("notion_token", notion.clean_token),
                        ("notion_database_id", notion.clean_database_id),
                        ("notion_property_map", notion.clean_property_map),
-                       ("mail_form_senders", mail.clean_form_senders)):
+                       ("mail_form_senders", mail.clean_form_senders),
+                       ("mail_client_personal_domains", clients.clean_personal_domains)):
         if key in changes:
             try:
                 changes[key] = clean(changes[key])
@@ -2657,8 +2671,21 @@ def list_mail(
     sql += order + " LIMIT 500"
     rows = conn.execute(sql, params).fetchall()
     counts = _thread_counts(conn, rows)
-    return [_mail_summary(r, max(0, counts.get(r["contact_key"], 1) - 1)
-                          if r["contact_key"] else 0) for r in rows]
+    # 名前を付けた取引先にまとめた相手には、取引先の名前も出す (決まりは表から1回だけ読む)
+    g = clients.Grouping(conn)
+    named: dict[str, dict | None] = {}
+    out = []
+    for r in rows:
+        item = _mail_summary(r, max(0, counts.get(r["contact_key"], 1) - 1)
+                             if r["contact_key"] else 0)
+        addr = item["contact_addr"].lower()
+        if addr not in named:
+            named[addr] = clients.named_client_of(g, addr) if addr else None
+        c = named[addr]
+        item["client_key"] = c["key"] if c else ""
+        item["client_name"] = c["name"] if c else ""
+        out.append(item)
+    return out
 
 
 @app.post("/api/mail/fetch")
@@ -3200,6 +3227,183 @@ def mail_report_send_now(admin=Depends(require_admin), conn=Depends(get_conn)):
     return {"sent": sent, "failed": [c for c in configured if c not in sent]}
 
 
+# ----- 取引先 (取引先ごとのやり取り。server/clients.py) -----
+# /api/mail/clients... は /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)。
+# 見るのは管理者とメール担当者、変える (名前・メモ・まとめるアドレスとドメイン) のは管理者だけ。
+# 変えるのは取引先の表だけで、メールは変えない
+
+class ClientCreateBody(BaseModel):
+    name: str
+    note: str = ""
+    # まとめるアドレス・ドメイン (「taro@abc.co.jp」「@abc.co.jp」)
+    patterns: list[str] = []
+    # 名前を付けていない取引先 (d:… / a:…) に名前を付けるときは、その番号 (まとめ方を引き継ぐ)
+    from_key: str | None = None
+    # ほかの取引先に入っているアドレス・ドメインを、こちらに移す (分ける・まとめ直す)
+    move: bool = False
+
+
+class ClientPatchBody(BaseModel):
+    name: str | None = None
+    note: str | None = None
+
+
+class ClientRuleBody(BaseModel):
+    pattern: str | None = None
+    from_key: str | None = None   # 名前を付けていない取引先を、まるごとこちらにまとめる
+    move: bool = False
+
+
+def _client_error(e: clients.ClientError) -> HTTPException:
+    return HTTPException(e.status, str(e))
+
+
+def _paging(offset: int, limit: int | None, default: int, most: int) -> tuple[int, int]:
+    if offset < 0 or offset > 1_000_000:
+        raise HTTPException(400, "offset は 0 以上で指定してください")
+    limit = default if limit is None else limit
+    if not 1 <= limit <= most:
+        raise HTTPException(400, f"limit は 1〜{most} で指定してください")
+    return offset, limit
+
+
+def _audit_text(value, limit: int = 60) -> str:
+    one = " ".join(str(value or "").split())
+    return one if len(one) <= limit else one[:limit] + "…"
+
+
+@app.get("/api/mail/clients")
+def list_mail_clients(
+    q: str = "", offset: int = 0, limit: int | None = None, named: bool = False,
+    _user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """取引先の一覧 (最後にやり取りした日時の新しい順)。q で名前・アドレス・ドメインを探す.
+
+    それぞれ、番号 (key)・名前・会社か個人か・アドレスかドメイン・最後のやり取りの日時・
+    メールの数・未対応と確認待ちの数・送った返信の数。total は条件に合う全部の数。
+    named=true なら、名前を付けた取引先だけ。
+    """
+    offset, limit = _paging(offset, limit, clients.LIST_LIMIT, clients.LIST_LIMIT_MAX)
+    if len(q) > clients.QUERY_MAX_CHARS:
+        raise HTTPException(400, f"探す言葉は{clients.QUERY_MAX_CHARS}文字以内にしてください")
+    return clients.list_clients(conn, q, offset, limit, named_only=named)
+
+
+@app.post("/api/mail/clients")
+def create_mail_client(
+    body: ClientCreateBody, admin=Depends(require_admin), conn=Depends(get_conn),
+):
+    """取引先を作る (名前を付ける・新しい取引先に分ける。管理者だけ)."""
+    g = clients.Grouping(conn)
+    try:
+        patterns = list(body.patterns)
+        if body.from_key:
+            canon = g.canonical(body.from_key)
+            if canon is None:
+                raise clients.ClientNotFound("この相手は取引先にまとめていません")
+            patterns.insert(0, clients.pattern_for_key(canon))
+        out = clients.create_client(conn, g, body.name, body.note, patterns, move=body.move)
+    except clients.ClientError as e:
+        raise _client_error(e)
+    _audit(conn, admin, "client_create", detail=(
+        f"client={out['id']} name={_audit_text(out['name'])} patterns={','.join(out['patterns'])}"
+        + "".join(f" moved={p}<-{_audit_text(n, 30)}" for p, n in out["moved"])))
+    return {"key": out["key"], "id": out["id"], "name": out["name"],
+            "patterns": out["patterns"]}
+
+
+@app.get("/api/mail/clients/{key}")
+def mail_client_detail(
+    key: str, offset: int = 0, limit: int | None = None,
+    _user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """1つの取引先: はじめと最後のやり取りの日時・数・種類ごとの数・アドレス・メモ・決まり (rules) と、
+    やり取り (届いたメールと送った返信。新しい順に limit 件) の1ページ.
+
+    名前を付ける前の番号 (d:… / a:…) でも開ける (key は今の番号)。本文は書き出しだけ
+    (全文は /api/mail/{番号}?thread=false で読む)。
+    """
+    offset, limit = _paging(offset, limit, clients.TIMELINE_LIMIT, clients.TIMELINE_LIMIT_MAX)
+    try:
+        return clients.client_detail(conn, key, offset, limit)
+    except clients.ClientError as e:
+        raise _client_error(e)
+
+
+@app.patch("/api/mail/clients/{key}")
+def patch_mail_client(
+    key: str, body: ClientPatchBody, admin=Depends(require_admin), conn=Depends(get_conn),
+):
+    """取引先の名前・メモを変える (管理者だけ)."""
+    g = clients.Grouping(conn)
+    try:
+        out = clients.update_client(conn, g, key, body.name, body.note)
+    except clients.ClientError as e:
+        raise _client_error(e)
+    parts = []
+    if "name" in out:
+        parts.append(f"name={_audit_text(out['name'])}")
+    if "note" in out:
+        parts.append(f"note={_audit_text(out['note'])}")
+    _audit(conn, admin, "client_update", detail=f"client={out['id']} " + ", ".join(parts))
+    return {"key": clients.client_key(out["id"]), **{k: v for k, v in out.items() if k != "id"}}
+
+
+@app.delete("/api/mail/clients/{key}")
+def delete_mail_client(key: str, admin=Depends(require_admin), conn=Depends(get_conn)):
+    """取引先を消す (管理者だけ)。メールは消えない (決まった分け方に戻る)."""
+    g = clients.Grouping(conn)
+    try:
+        out = clients.delete_client(conn, g, key)
+    except clients.ClientError as e:
+        raise _client_error(e)
+    _audit(conn, admin, "client_delete", detail=(
+        f"client={out['id']} name={_audit_text(out['name'])} patterns={','.join(out['patterns'])}"))
+    return {"deleted": key}
+
+
+@app.post("/api/mail/clients/{key}/rules")
+def add_mail_client_rule(
+    key: str, body: ClientRuleBody, admin=Depends(require_admin), conn=Depends(get_conn),
+):
+    """取引先にアドレス・ドメインを足す (まとめる・分ける。管理者だけ).
+
+    pattern は「taro@abc.co.jp」か「@abc.co.jp」。from_key に名前を付けていない取引先
+    (d:… / a:…) を渡すと、その取引先をまるごと入れる。ほかの取引先に入っているものは、
+    move のときだけ移す (そうでなければ 409)。
+    """
+    g = clients.Grouping(conn)
+    try:
+        pattern = body.pattern
+        if body.from_key:
+            canon = g.canonical(body.from_key)
+            if canon is None:
+                raise clients.ClientNotFound("この相手は取引先にまとめていません")
+            pattern = clients.pattern_for_key(canon)
+        out = clients.add_rule(conn, g, key, pattern, move=body.move)
+    except clients.ClientError as e:
+        raise _client_error(e)
+    _audit(conn, admin, "client_rule_add", detail=(
+        f"client={out['id']} pattern={out['pattern']}"
+        + (f" moved_from={_audit_text(out['moved_from'], 30)}" if out["moved_from"] else "")))
+    return {"key": clients.client_key(out["id"]), "rule_id": out["rule_id"],
+            "pattern": out["pattern"], "moved_from": out["moved_from"]}
+
+
+@app.delete("/api/mail/clients/{key}/rules/{rule_id}")
+def delete_mail_client_rule(
+    key: str, rule_id: int, admin=Depends(require_admin), conn=Depends(get_conn),
+):
+    """取引先からアドレス・ドメインを外す (管理者だけ。そのメールは決まった分け方に戻る)."""
+    g = clients.Grouping(conn)
+    try:
+        out = clients.delete_rule(conn, g, key, rule_id)
+    except clients.ClientError as e:
+        raise _client_error(e)
+    _audit(conn, admin, "client_rule_delete", detail=f"client={out['id']} pattern={out['pattern']}")
+    return {"key": clients.client_key(out["id"]), "pattern": out["pattern"]}
+
+
 @app.get("/api/mail/{mail_id}/templates")
 def mail_templates_for_mail(
     mail_id: int, _user=Depends(require_mail_user), conn=Depends(get_conn)
@@ -3238,6 +3442,9 @@ def mail_detail(
     # 同じ相手とのやり取り (新しい順。こちらが送った返信も付く)
     history = (mail.mail_thread(conn, r) if thread
                else {"thread": [], "thread_total": 0})
+    # 相手の取引先 (返信画面の「取引先」の印と「この取引先のやり取りをすべて見る」用。
+    # 取引先にしない相手 (自分たち・フォームの送信元など) なら null)
+    client = clients.client_for_mail(conn, r) if thread else None
     s = db.get_settings(conn)
     accounts = mail.list_accounts(conn)
     acc = next((a for a in accounts if a["id"] == r["account_id"]), None)
@@ -3288,6 +3495,7 @@ def mail_detail(
         "returned_by": r["returned_by"],
         "returned_at": r["returned_at"],
         "return_note": r["return_note"],
+        "client": client,
         **history,
     }
 
