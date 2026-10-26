@@ -180,8 +180,9 @@ CREATE TABLE IF NOT EXISTS clients (
     updated_at TEXT NOT NULL
 );
 -- 取引先にまとめるアドレス・ドメイン。pattern は「taro@abc.co.jp」(そのアドレス) か
--- 「@abc.co.jp」(そのドメインのアドレス全部)。同じものを2つの取引先には入れない。
--- アドレスの決まりはドメインの決まりより強い (会社の中の1人だけを別の取引先に分けられる)
+-- 「@abc.co.jp」(そのドメインと、下の tokyo.abc.co.jp などのアドレス全部)。同じものを2つの
+-- 取引先には入れない。アドレスの決まりはドメインの決まりより強く (会社の中の1人だけを別の
+-- 取引先に分けられる)、ドメインの決まりは一番長く合うものが強い
 CREATE TABLE IF NOT EXISTS client_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -348,24 +349,51 @@ INT_SETTINGS = {
     "mail_require_approval": 1,
 }
 
-# 取引先ごとのまとめで、1人ずつに分けるドメインの最初の一覧 (設定 mail_client_personal_domains)
-DEFAULT_PERSONAL_DOMAINS = (
-    # 誰でも作れるメール (フリーメール)
-    "gmail.com", "googlemail.com", "yahoo.co.jp", "yahoo.ne.jp", "ymail.ne.jp", "yahoo.com",
+# 誰でも作れるメール (フリーメール・携帯電話の会社・プロバイダ・アドレスを隠す中継) のドメイン。
+# 同じドメインでも別々の人なので、会社としてまとめない (取引先の最初の一覧・server/mail.py の
+# 「自社のドメイン」「同じ会社」の見分けで使う。一覧はここ1か所だけ)
+FREE_MAIL_DOMAINS = (
+    # 誰でも作れるメール (国内)
+    "gmail.com", "googlemail.com", "yahoo.co.jp", "yahoo.ne.jp", "ymail.ne.jp",
     "outlook.com", "outlook.jp", "hotmail.com", "hotmail.co.jp", "live.jp", "live.com",
-    "msn.com", "icloud.com", "me.com", "mac.com", "aol.com", "protonmail.com", "proton.me",
-    "gmx.com", "mail.com", "zoho.com", "qq.com", "163.com", "naver.com",
+    "msn.com", "icloud.com", "me.com", "mac.com", "excite.co.jp", "infoseek.jp", "livedoor.com",
+    "goo.jp", "mail.goo.ne.jp",
+    # 誰でも作れるメール (海外。民泊の海外のゲストが使うもの)
+    "yahoo.com", "yahoo.co.uk", "yahoo.fr", "yahoo.de", "yahoo.com.tw", "yahoo.com.hk",
+    "yahoo.com.sg", "yahoo.com.au", "yahoo.co.in", "hotmail.co.uk", "hotmail.fr", "hotmail.de",
+    "hotmail.it", "outlook.fr", "outlook.de", "live.co.uk", "live.fr", "aol.com",
+    "protonmail.com", "proton.me", "pm.me", "tutanota.com", "tuta.io", "fastmail.com",
+    "gmx.com", "gmx.net", "gmx.de", "gmx.at", "web.de", "t-online.de", "freenet.de",
+    "mail.com", "email.com", "zoho.com", "orange.fr", "wanadoo.fr", "free.fr", "laposte.net",
+    "sfr.fr", "libero.it", "virgilio.it", "seznam.cz", "wp.pl", "o2.pl", "interia.pl",
+    "btinternet.com", "sky.com", "comcast.net", "verizon.net", "att.net", "sbcglobal.net",
+    "bigpond.com", "rediffmail.com",
+    # 中国・台湾・香港・韓国・ロシアのフリーメール
+    "qq.com", "foxmail.com", "163.com", "126.com", "yeah.net", "sina.com", "sina.cn",
+    "sohu.com", "aliyun.com", "139.com", "hinet.net", "netvigator.com",
+    "naver.com", "hanmail.net", "daum.net", "nate.com", "kakao.com",
+    "yandex.ru", "yandex.com", "ya.ru", "mail.ru", "bk.ru", "inbox.ru", "list.ru", "rambler.ru",
     # 携帯電話の会社のメール
-    "docomo.ne.jp", "ezweb.ne.jp", "au.com", "softbank.ne.jp", "i.softbank.jp",
-    "ymobile.ne.jp", "y-mobile.ne.jp", "emobile.ne.jp", "uqmobile.jp", "rakumail.jp",
+    "docomo.ne.jp", "mopera.net", "ezweb.ne.jp", "au.com", "softbank.ne.jp", "i.softbank.jp",
+    "vodafone.ne.jp", "disney.ne.jp", "ymobile.ne.jp", "y-mobile.ne.jp", "emobile.ne.jp",
+    "pdx.ne.jp", "willcom.com", "wcm.ne.jp", "uqmobile.jp", "rakumail.jp",
     # インターネットの接続の会社のメール (プロバイダ)
     "nifty.com", "biglobe.ne.jp", "ocn.ne.jp", "so-net.ne.jp", "plala.or.jp", "dion.ne.jp",
-    "ybb.ne.jp", "asahi-net.or.jp", "zag.ne.jp", "jcom.home.ne.jp",
-    # 予約サイト (ゲストとのやり取りを中継するアドレス)
+    "ybb.ne.jp", "asahi-net.or.jp", "zaq.ne.jp", "zag.ne.jp", "jcom.home.ne.jp", "eonet.ne.jp",
+    "odn.ne.jp", "infoweb.ne.jp", "hi-ho.ne.jp", "commufa.jp", "k-opti.com", "wakwak.com",
+    "tiki.ne.jp", "dti.ne.jp", "sannet.ne.jp", "gol.com",
+    # アドレスを隠す中継 (Apple の「メールを非公開」など。1人ずつ別のアドレス)
+    "privaterelay.appleid.com", "duck.com", "mozmail.com",
+)
+# 予約サイト (ゲストとのやり取りを中継するアドレス)
+BOOKING_RELAY_DOMAINS = (
     "airbnb.com", "airbnb.jp", "booking.com", "expedia.com", "expediapartnercentral.com",
-    "agoda.com", "agoda-messaging.com", "trip.com", "hotels.com", "vrbo.com",
+    "agoda.com", "agoda-messaging.com", "trip.com", "hotels.com", "vrbo.com", "homeaway.com",
     "travel.rakuten.co.jp", "rakuten.co.jp", "jalan.net", "ikyu.com",
 )
+# 取引先ごとのまとめで、1人ずつに分けるドメインの最初の一覧 (設定 mail_client_personal_domains)。
+# 設定を一度も保存していなければ、この一覧がそのまま使われる
+DEFAULT_PERSONAL_DOMAINS = FREE_MAIL_DOMAINS + BOOKING_RELAY_DOMAINS
 
 # 全社設定の既定値 (文字列)
 STR_SETTINGS = {
@@ -688,10 +716,16 @@ def _migrate_client_columns(conn: sqlite3.Connection, mcols: list[str]) -> None:
         conn.commit()
     # 取引先の一覧で、相手のアドレスごとの数・最後の日時・名前を、表を読まずに数える用
     # (この索引だけで足りる。本文の大きい表を読まないので、何万通あっても速い)。
-    # ドメインで始まるので、取引先 (ドメイン) ごとのメールを探すのにも使う
+    # ドメインで始まるので、取引先 (ドメイン) ごとのメールを探すのにも使う。
+    # 取り込んだ時刻 (fetched_at) は、先の日付のメールを取り込んだ時刻で数えるのに使う。
+    # 開発中の版で fetched_at の無い索引を作った DB は、作り直す (前の版のコードはこの索引を
+    # 名前で使わないので、作り直しても前の版はそのまま動く)
+    cols = [r[2] for r in conn.execute("PRAGMA index_info(idx_mails_clients)")]
+    if cols and "fetched_at" not in cols:
+        conn.execute("DROP INDEX idx_mails_clients")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mails_clients ON mails(contact_domain, contact_addr,"
-        " received_at, status, replied_at, contact_name, contact_company)")
+        " received_at, fetched_at, status, replied_at, contact_name, contact_company)")
 
 
 # 受信するメールアドレスの一覧 (mail_accounts) を使い始めた印 (settings の非公開キー)。

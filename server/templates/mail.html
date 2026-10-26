@@ -416,6 +416,7 @@
   .cl-addr { display: block; font-size: .8rem; color: #6b7280; margin-top: .1rem; }
   .cl-side { display: flex; flex-direction: column; align-items: flex-end; gap: .15rem;
              font-size: .8rem; color: #4b5563; white-space: nowrap; }
+  .cl-side > span:empty { display: none; }
   .cl-kind { display: inline-block; font-size: .7rem; line-height: 1.5; padding: 0 .45rem;
              border-radius: 99px; background: #f3f4f6; color: #4b5563; margin-left: .35rem;
              vertical-align: 1px; font-weight: normal; white-space: nowrap; }
@@ -509,6 +510,9 @@
                 -webkit-overflow-scrolling: touch; scrollbar-width: none;
                 padding: 2px 0 4px; }
     .cat-tabs::-webkit-scrollbar { display: none; }
+    /* 取引先の一覧: 右側の数は名前の下に回るので、左寄せの横並びにして左端をそろえる */
+    .cl-side { flex-direction: row; flex-wrap: wrap; align-items: center; gap: .2rem .8rem;
+               white-space: normal; }
   }
   /* スマホは1行=1カードに縦積みして横スクロールを無くす */
   @media (max-width: 640px) {
@@ -684,7 +688,8 @@
           autocapitalize="off" spellcheck="false" placeholder="tanaka@abc.co.jp か @abc.co.jp">
         <button id="cd-rule-add">足す</button></div>
       <p class="set-help"><small>「@abc.co.jp」と書くと、abc.co.jp のアドレス全部がこの取引先に入ります
-      （mail.abc.co.jp のような別のドメインは、別に足してください）。アドレスを1つ書くと、そのアドレスだけが入ります。
+      （tokyo.abc.co.jp のような下のドメインも入ります。下のドメインだけを別の取引先に入れることもできます）。
+      アドレスを1つ書くと、そのアドレスだけが入ります。
       アドレスで決めたものは、ドメインで決めたものより強いので、会社の中の1人だけを別の取引先に分けられます。
       Gmail などの個人のメールは、ドメインではなくアドレスを1つずつ足してください。</small></p>
       <div class="cd-row cd-danger"><button id="cd-delete" class="ghost">この取引先を消す</button>
@@ -3922,6 +3927,9 @@ async function showClient(key, st) {
     $("cd-admin").hidden = true;
     $("cd-more").hidden = true;
     $("cd-tl-title").textContent = "やり取り";
+    // 前の取引先で出した「保存しました ✓」やうまくいかなかった理由・書きかけのアドレスも消す
+    cdMsg("");
+    $("cd-rule-in").value = "";
   }
   await loadClient(key, { restore: !!st });
 }
@@ -4089,7 +4097,7 @@ async function clientWrite(path, method, body) {
   return { ok: r.ok, status: r.status, data, detail: data.detail || "うまくいきませんでした" };
 }
 function ruleText(p) {
-  return p.startsWith("@") ? `${p}（${p.slice(1)} のアドレス全部）` : `${p}（このアドレスだけ）`;
+  return p.startsWith("@") ? `${p}（${p.slice(1)} と、その下のドメインのアドレス全部）` : `${p}（このアドレスだけ）`;
 }
 function renderClientAdmin(d) {
   const admin = isAdmin();
@@ -4116,7 +4124,8 @@ async function loadMergeTargets(key) {
   try { r = await apiJson("/api/mail/clients?named=true&limit=200"); } catch { return; }
   if (clientView.key !== key) return;
   setOptions(sel, [["", r.clients.length ? "まとめる先を選ぶ…" : "名前を付けた取引先がまだありません"],
-                   ...r.clients.map(c => [c.key, c.name])], "");
+                   ...r.clients.map(c => [c.key, c.name + (c.domains[0] ? `（${c.domains[0]}）`
+                     : c.addresses[0] ? `（${c.addresses[0].addr}）` : "")])], "");
   $("cd-merge-box").hidden = !r.clients.length;
 }
 async function afterClientChange(text, key) {
@@ -4152,7 +4161,8 @@ $("cd-rule-add").onclick = async () => {
   const v = $("cd-rule-in").value.trim();
   if (!v) { cdMsg("アドレスか「@ドメイン」を入れてください"); return; }
   const r = await addRule({ pattern: v });
-  if (!r.ok) { if (r.status !== 409) cdMsg(r.detail); return; }
+  // 移すのをやめたときは何も変わっていないので、前の知らせも消す
+  if (!r.ok) { cdMsg(r.status === 409 ? "" : r.detail); return; }
   $("cd-rule-in").value = "";
   afterClientChange(`「${r.data.pattern}」をこの取引先にまとめました ✓`);
 };
@@ -4170,8 +4180,11 @@ $("cd-delete").onclick = async () => {
       "まとめていたアドレスのメールは、元の分け方（会社のドメインごと・個人のアドレスごと）に戻ります。")) return;
   const r = await clientWrite(`/api/mail/clients/${encodeURIComponent(clientView.key)}`, "DELETE");
   if (!r.ok) { cdMsg(r.detail); return; }
-  history.replaceState({ v: "clients", n: (history.state && history.state.n) || 0 }, "", urlFor({ v: "clients" }));
   clientView.key = null;
+  // 「← 戻る」と同じく前の画面 (一覧・受信箱) に戻る。消した取引先の画面を履歴に残さない
+  // (残すと、ブラウザの「戻る」を押しても同じ一覧が出るだけになる)。アドレスから直接開いたときは一覧へ
+  if (history.state && history.state.n > 0) { history.back(); return; }
+  history.replaceState({ v: "clients", n: 0 }, "", urlFor({ v: "clients" }));
   showClients();
 };
 $("cd-name-create").onclick = async () => {

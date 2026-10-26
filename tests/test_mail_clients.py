@@ -268,9 +268,14 @@ def test_rename_merge_split_delete_precedence(client, users, tmp_path):
     d = _detail(client, admin, key)
     assert d["total"] == 4 and d["address_count"] == 4
     assert _keys(client, admin) == [key]
-    # 分ける: アドレスで決めたものはドメインで決めたものより強い
+    # 分ける: アドレスで決めたものはドメインで決めたものより強い。ほかの取引先にドメインで
+    # 入っている人は、移すと言わなければ 409 (黙ってその取引先から抜けない)
     r = client.post("/api/mail/clients", headers=h,
                     json={"name": "鈴木さん", "patterns": ["Suzuki@ABC.co.jp"]})
+    assert r.status_code == 409 and "ABC 不動産" in r.json()["detail"]
+    assert "「@abc.co.jp」でまとめている" in r.json()["detail"]
+    r = client.post("/api/mail/clients", headers=h,
+                    json={"name": "鈴木さん", "patterns": ["Suzuki@ABC.co.jp"], "move": True})
     assert r.status_code == 200, r.text
     suzuki = r.json()["key"]
     assert _detail(client, admin, suzuki)["total"] == 1
@@ -475,6 +480,208 @@ def test_edits_are_audit_logged(client, users, tmp_path):
     ]
 
 
+# ---------- 見直しで見つかったこと ----------
+
+def test_free_mail_providers_and_relays_are_one_person_each(client, users, tmp_path):
+    """プロバイダ・海外のフリーメール・Apple の中継は、同じドメインでも別々のお客様."""
+    admin, _staff, _member = users
+    pairs = [("guestA@eonet.ne.jp", "guestB@eonet.ne.jp"), ("li@126.com", "wang@126.com"),
+             ("kim@hanmail.net", "park@hanmail.net"), ("a@foxmail.com", "b@foxmail.com"),
+             ("ivan@yandex.ru", "olga@mail.ru"), ("hans@gmx.de", "anna@web.de"),
+             ("x1@privaterelay.appleid.com", "x2@privaterelay.appleid.com"),
+             ("p@odn.ne.jp", "q@commufa.jp")]
+    for a, b in pairs:
+        _mail(tmp_path, a)
+        _mail(tmp_path, b)
+    keys = _keys(client, admin)
+    assert sorted(keys) == sorted("a:" + x.lower() for pair in pairs for x in pair)
+    assert _detail(client, admin, "a:guesta@eonet.ne.jp")["total"] == 1
+    # 一覧は1か所 (受信の「自社のドメイン」「同じ会社」の見分けも同じ一覧を使う)
+    from server import db, mail
+    assert mail._FREE_MAIL_DOMAINS == frozenset(db.FREE_MAIL_DOMAINS)
+    assert set(db.FREE_MAIL_DOMAINS) <= set(db.DEFAULT_PERSONAL_DOMAINS)
+    assert len(set(db.DEFAULT_PERSONAL_DOMAINS)) == len(db.DEFAULT_PERSONAL_DOMAINS)
+    from server import clients
+    assert clients.clean_personal_domains("\n".join(db.DEFAULT_PERSONAL_DOMAINS)) == \
+        "\n".join(db.DEFAULT_PERSONAL_DOMAINS)
+    assert not mail._same_org("a@eonet.ne.jp", "b@eonet.ne.jp")
+    # 自分たちが eonet.ne.jp で受信していても、eonet の人を自社の人とはみなさない
+    rules = mail.ContactRules({"mail_from": "shop@eonet.ne.jp"})
+    assert "eonet.ne.jp" not in rules.own_domains
+
+
+def _set_dates(tmp_path, mail_id, received, fetched):
+    with _db(tmp_path) as conn:
+        conn.execute("UPDATE mails SET received_at = ?, fetched_at = ? WHERE id = ?",
+                     (received, fetched, mail_id))
+
+
+def test_future_dates_count_from_when_the_mail_arrived(client, users, tmp_path):
+    """差出人が先の日付を付けたメールは、取り込んだ時刻で並べる (一覧・やり取りの一番上に居座らない)."""
+    admin, _staff, _member = users
+    spam = _mail(tmp_path, "win@lucky-prize.biz", "当選", subject="当選しました")
+    _set_dates(tmp_path, spam, "2099-01-01T00:00:00+00:00", "2026-08-02T00:00:00+00:00")
+    early = _mail(tmp_path, "tanaka@abc.co.jp", "田中", subject="先の日付")
+    _set_dates(tmp_path, early, "2027-06-01T00:00:00+00:00", "2026-08-03T00:00:00+00:00")
+    later = _mail(tmp_path, "suzuki@abc.co.jp", "鈴木", subject="新しいメール")
+    _set_dates(tmp_path, later, "2026-08-20T00:00:00+00:00", "2026-08-20T00:01:00+00:00")
+    _mail(tmp_path, "boss@other.co.jp", "社長", day=10)
+    out = _list(client, admin)
+    assert [c["key"] for c in out["clients"]] == ["d:abc.co.jp", "d:other.co.jp", "d:lucky-prize.biz"]
+    by_key = {c["key"]: c for c in out["clients"]}
+    assert by_key["d:lucky-prize.biz"]["last_at"] == "2026-08-02T00:00:00+00:00"
+    abc = _detail(client, admin, "d:abc.co.jp")
+    assert abc["last_at"] == "2026-08-20T00:00:00+00:00"
+    assert abc["first_at"] == "2026-08-03T00:00:00+00:00"
+    # 名前も、取り込んだ時刻で一番新しいメールの人
+    assert abc["name"] == "鈴木"
+    # やり取りの順番も取り込んだ時刻 (出す日時は差出人が付けた日付のまま)
+    assert [(t["mail_id"], t["at"]) for t in abc["timeline"]] == \
+        [(later, "2026-08-20T00:00:00+00:00"), (early, "2027-06-01T00:00:00+00:00")]
+
+
+def test_staff_personal_addresses_are_not_clients(client, users, tmp_path):
+    """登録している人 (メール担当者など) の Gmail などのアドレスは、取引先にしない."""
+    admin, staff, _member = users
+    with _db(tmp_path) as conn:
+        conn.execute("UPDATE users SET email = 'Tanaka.Staff@gmail.com' WHERE id = ?", (staff["id"],))
+    _mail(tmp_path, "tanaka.staff@gmail.com", "田中（スタッフ）")
+    _mail(tmp_path, "taro@gmail.com", "太郎")
+    assert _keys(client, admin) == ["a:taro@gmail.com"]
+    assert client.get("/api/mail/clients/a:tanaka.staff@gmail.com",
+                      headers=auth(admin)).status_code == 404
+    key = client.post("/api/mail/clients", headers=auth(admin),
+                      json={"name": "太郎さん", "from_key": "a:taro@gmail.com"}).json()["key"]
+    r = client.post(f"/api/mail/clients/{key}/rules", headers=auth(admin),
+                    json={"pattern": "tanaka.staff@gmail.com"})
+    assert r.status_code == 400 and "社内の人" in r.json()["detail"]
+
+
+def test_domain_rules_cover_subdomains(client, users, tmp_path):
+    """「@abc.co.jp」は下のドメイン (tokyo.abc.co.jp) も入れる。一番長く合う決まりが強い."""
+    admin, _staff, _member = users
+    _mail(tmp_path, "a@tokyo.abc.co.jp", "東京", day=1)
+    _mail(tmp_path, "b@osaka.abc.co.jp", "大阪", day=2)
+    _mail(tmp_path, "c@abc.co.jp", "本社", day=3)
+    _mail(tmp_path, "d@xabc.co.jp", "別の会社", day=4)
+    h = auth(admin)
+    # 決めていなければ、ドメインごと
+    assert set(_keys(client, admin)) == {"d:tokyo.abc.co.jp", "d:osaka.abc.co.jp",
+                                         "d:abc.co.jp", "d:xabc.co.jp"}
+    abc = client.post("/api/mail/clients", headers=h,
+                      json={"name": "ABC", "from_key": "d:abc.co.jp"}).json()["key"]
+    assert set(_keys(client, admin)) == {abc, "d:xabc.co.jp"}
+    d = _detail(client, admin, abc)
+    assert (d["total"], d["address_count"]) == (3, 3)
+    assert {t["contact_addr"] for t in d["timeline"]} == \
+        {"a@tokyo.abc.co.jp", "b@osaka.abc.co.jp", "c@abc.co.jp"}
+    # 下のドメインの古い番号でも、今の取引先が開ける
+    assert _detail(client, admin, "d:tokyo.abc.co.jp")["key"] == abc
+    # 下のドメインだけを別の取引先に: 今は ABC に入っているので、移すと言わなければ 409
+    r = client.post("/api/mail/clients", headers=h, json={"name": "ABC 東京", "patterns": ["@tokyo.abc.co.jp"]})
+    assert r.status_code == 409 and "ABC" in r.json()["detail"]
+    r = client.post("/api/mail/clients", headers=h,
+                    json={"name": "ABC 東京", "patterns": ["@tokyo.abc.co.jp"], "move": True})
+    assert r.status_code == 200, r.text
+    tokyo = r.json()["key"]
+    assert _detail(client, admin, tokyo)["total"] == 1
+    assert _detail(client, admin, abc)["total"] == 2
+    assert {c["key"]: c["total"] for c in _list(client, admin)["clients"]} == \
+        {abc: 2, tokyo: 1, "d:xabc.co.jp": 1}
+    # 広すぎるドメインではまとめられない (別々の会社が全部入ってしまう)
+    for bad in ("@co.jp", "ne.jp", "@com.cn", "@co.uk", "jp", "@com"):
+        r = client.post(f"/api/mail/clients/{abc}/rules", headers=h, json={"pattern": bad})
+        assert r.status_code == 400, bad
+        assert ("広すぎ" if "." in bad else "正しくありません") in r.json()["detail"], bad
+    # 消すと、下のドメインも元の分け方に戻る
+    assert client.delete(f"/api/mail/clients/{abc}", headers=h).status_code == 200
+    assert set(_keys(client, admin)) == {tokyo, "d:osaka.abc.co.jp", "d:abc.co.jp", "d:xabc.co.jp"}
+
+
+def test_keys_without_mail_are_not_found(client, users, tmp_path):
+    """メールの無いドメイン・アドレスの番号は 404 (空の取引先を出さない・意味の無い決まりを作らない)."""
+    admin, _staff, _member = users
+    _mail(tmp_path, "tanaka@abc.co.jp", "田中")
+    _mail(tmp_path, "taro@gmail.com", "太郎")
+    h = auth(admin)
+    for key in ("d:nonexistent.example", "d:co.jp", "d:jp", "d:x@y", "d:abc.co.jp@x",
+                "a:nobody@nowhere.example", "a:hanako@gmail.com", "a:nobody@abc.co.jp~"):
+        r = client.get(f"/api/mail/clients/{key}", headers=h)
+        assert r.status_code == 404, key
+        assert client.post("/api/mail/clients", headers=h,
+                           json={"name": "x", "from_key": key}).status_code == 404, key
+    # メールのある相手は開ける (アドレスの番号で同じ会社の人も)
+    assert _detail(client, admin, "a:tanaka@abc.co.jp")["key"] == "d:abc.co.jp"
+    assert _detail(client, admin, "a:taro@gmail.com")["total"] == 1
+    # 会社の人を全員ほかの取引先に入れると、ドメインの番号は見つからない
+    client.post("/api/mail/clients", headers=h, json={"name": "田中さん", "patterns": ["tanaka@abc.co.jp"]})
+    assert client.get("/api/mail/clients/d:abc.co.jp", headers=h).status_code == 404
+    with _db(tmp_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0] == 1
+
+
+def test_adding_an_address_from_another_named_client_asks_first(client, users, tmp_path):
+    """ほかの取引先にドメインで入っている人のアドレスを足すときは、確かめてから移し、記録に残す."""
+    admin, _staff, _member = users
+    _mail(tmp_path, "tanaka@sakura.co.jp", "田中", reply=("返信", 3))
+    _mail(tmp_path, "yamada@sakura.co.jp", "山田")
+    _mail(tmp_path, "sasaki@sasaki.co.jp", "佐々木")
+    h = auth(admin)
+    sakura = client.post("/api/mail/clients", headers=h,
+                         json={"name": "さくら不動産", "from_key": "d:sakura.co.jp"}).json()["key"]
+    sasaki = client.post("/api/mail/clients", headers=h,
+                         json={"name": "佐々木商事", "from_key": "d:sasaki.co.jp"}).json()["key"]
+    r = client.post(f"/api/mail/clients/{sasaki}/rules", headers=h,
+                    json={"pattern": "tanaka@sakura.co.jp"})
+    assert r.status_code == 409
+    assert r.json()["detail"].startswith("「tanaka@sakura.co.jp」は今、取引先「さくら不動産」に入っています")
+    assert "（こちらに移すときは「移す」を選んでください）" in r.json()["detail"]
+    # 何も変わっていない
+    assert _detail(client, admin, sakura)["total"] == 2
+    assert _detail(client, admin, sasaki)["total"] == 1
+    r = client.post(f"/api/mail/clients/{sasaki}/rules", headers=h,
+                    json={"pattern": "tanaka@sakura.co.jp", "move": True})
+    assert r.status_code == 200 and r.json()["moved_from"] == "さくら不動産"
+    assert _detail(client, admin, sakura)["total"] == 1
+    assert _detail(client, admin, sasaki)["total"] == 2
+    with _db(tmp_path) as conn:
+        detail = conn.execute("SELECT detail FROM audit_log WHERE action = 'client_rule_add'"
+                              " ORDER BY id DESC").fetchone()[0]
+    assert detail == f"client={sasaki[2:]} pattern=tanaka@sakura.co.jp moved_from=さくら不動産"
+    # 同じ取引先にドメインで入っている人のアドレスは、そのまま足せる
+    r = client.post(f"/api/mail/clients/{sakura}/rules", headers=h, json={"pattern": "yamada@sakura.co.jp"})
+    assert r.status_code == 200 and r.json()["moved_from"] is None
+
+
+def test_client_names_must_be_distinct(client, users, tmp_path):
+    """同じ名前の取引先は作れない (「まとめる先」の選択肢で、どれのことか分からなくならないように)."""
+    admin, _staff, _member = users
+    _mail(tmp_path, "a@sakura.co.jp")
+    _mail(tmp_path, "b@sasaki.co.jp")
+    _mail(tmp_path, "c@abc.co.jp")
+    h = auth(admin)
+    sakura = client.post("/api/mail/clients", headers=h,
+                         json={"name": "さくら不動産 ABC", "from_key": "d:sakura.co.jp"}).json()["key"]
+    sasaki = client.post("/api/mail/clients", headers=h,
+                         json={"name": "佐々木商事", "from_key": "d:sasaki.co.jp"}).json()["key"]
+    # 全角・半角、大文字・小文字、空白の数の違いも同じ名前
+    for name in ("さくら不動産 ABC", "さくら不動産　ＡＢＣ", " さくら不動産  abc "):
+        r = client.patch(f"/api/mail/clients/{sasaki}", headers=h, json={"name": name})
+        assert r.status_code == 409 and "同じ名前の取引先「さくら不動産 ABC」" in r.json()["detail"], name
+        r = client.post("/api/mail/clients", headers=h, json={"name": name, "from_key": "d:abc.co.jp"})
+        assert r.status_code == 409, name
+    assert _detail(client, admin, sasaki)["name"] == "佐々木商事"
+    with _db(tmp_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0] == 2
+    # 自分の名前のまま保存するのはよい
+    assert client.patch(f"/api/mail/clients/{sakura}", headers=h,
+                        json={"name": "さくら不動産　ＡＢＣ"}).status_code == 200
+    # 選択肢でも見分けられるように、一覧にドメインを返している
+    named = _list(client, admin, named="true")["clients"]
+    assert {c["name"]: c["domains"] for c in named} == \
+        {"さくら不動産 ABC": ["sakura.co.jp"], "佐々木商事": ["sasaki.co.jp"]}
+
+
 # ---------- 設定「1人ずつに分けるドメイン」 ----------
 
 def test_personal_domains_setting(client, users, tmp_path):
@@ -562,6 +769,12 @@ def test_migration_from_previous_version_is_fast_and_idempotent(tmp_path):
         t = time.time()
         d = clients.client_detail(conn, "d:co5.example.jp")
         assert d["total"] == 72 and len(d["timeline"]) == 30 and time.time() - t < 2
+        # 名前を付けた取引先 (ドメインの決まりは下のドメインにも当てる) も速い
+        out = clients.create_client(conn, clients.Grouping(conn), "会社5", "", ["@co5.example.jp"])
+        t = time.time()
+        d = clients.client_detail(conn, out["key"])
+        assert d["total"] == 72 and len(d["timeline"]) == 30 and time.time() - t < 2
+        conn.rollback()
     finally:
         conn.close()
     # 2回目に開いても同じ (もう一度書き込まない)
@@ -572,6 +785,29 @@ def test_migration_from_previous_version_is_fast_and_idempotent(tmp_path):
         assert conn.total_changes == 0
     finally:
         conn.close()
+
+
+def test_clients_index_without_fetched_at_is_rebuilt(tmp_path):
+    """開発中の版で作った索引 (取り込んだ時刻が無い) は、開いたときに作り直す (何度開いても同じ)."""
+    from server import clients, db
+    path = tmp_path / "zatsumu.db"
+    conn = db.connect(path)
+    conn.execute("DROP INDEX idx_mails_clients")
+    conn.execute("CREATE INDEX idx_mails_clients ON mails(contact_domain, contact_addr,"
+                 " received_at, status, replied_at, contact_name, contact_company)")
+    conn.commit()
+    conn.close()
+    for _ in range(2):
+        conn = db.connect(path)
+        try:
+            cols = [r[2] for r in conn.execute("PRAGMA index_info(idx_mails_clients)")]
+            assert "fetched_at" in cols
+            plan = " ".join(str(tuple(r)) for r in conn.execute(
+                "EXPLAIN QUERY PLAN " + clients._STATS_SQL
+                + " WHERE contact_addr != '' GROUP BY contact_domain, contact_addr"))
+            assert "COVERING INDEX idx_mails_clients" in plan, plan
+        finally:
+            conn.close()
 
 
 def test_previous_version_runs_on_new_db(tmp_path):
@@ -679,3 +915,12 @@ def test_mail_page_has_client_screens(client):
     assert page.count("inboxChanged();") >= 8
     send = page[page.index('$("m-send").onclick'):page.index('$("m-archive").onclick')]
     assert "showInbox()" not in send
+    # 別の取引先を開いたら、前の取引先の設定欄の知らせ・書きかけのアドレスを消す
+    show = page[page.index("async function showClient("):page.index("async function loadClient(")]
+    assert 'cdMsg("");' in show and '$("cd-rule-in").value = "";' in show
+    # 消した後は前の画面に戻る (同じ一覧が履歴に2つ並ばない)
+    delete = page[page.index('$("cd-delete").onclick'):page.index('$("cd-name-create").onclick')]
+    assert "history.back()" in delete
+    # スマホ幅の取引先の一覧は、右側の数を左寄せの横並びにする
+    mobile = page[page.index("@media (max-width: 720px)"):page.index("@media (max-width: 640px)")]
+    assert ".cl-side { flex-direction: row;" in mobile

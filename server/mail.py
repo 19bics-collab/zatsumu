@@ -1335,16 +1335,10 @@ _MAYBE_FORM_LOCAL_RE = re.compile(
 # 返事を受け取らない送信元 (送っても人に届かない)
 _NO_REPLY_LOCAL_RE = re.compile(
     r"no[-_.]?reply|do[-_.]?not[-_.]?reply|mailer[-_.]?daemon|postmaster")
-# 誰でも作れるメールのドメイン。自分たちのアドレスがここにあっても、同じドメインの人を
-# 「自社のフォーム」とはみなさない (Gmail で受信していると、Gmail の人が全員フォームになるため)
-_FREE_MAIL_DOMAINS = frozenset((
-    "gmail.com", "googlemail.com", "yahoo.co.jp", "ymail.ne.jp", "yahoo.com", "outlook.com",
-    "outlook.jp", "hotmail.com", "hotmail.co.jp", "live.jp", "live.com", "msn.com",
-    "icloud.com", "me.com", "mac.com", "docomo.ne.jp", "ezweb.ne.jp", "au.com",
-    "softbank.ne.jp", "i.softbank.jp", "ymobile.ne.jp", "nifty.com", "biglobe.ne.jp",
-    "ocn.ne.jp", "so-net.ne.jp", "aol.com", "protonmail.com", "proton.me", "gmx.com",
-    "mail.com", "zoho.com",
-))
+# 誰でも作れるメールのドメイン (一覧は server/db.py の FREE_MAIL_DOMAINS)。自分たちのアドレスが
+# ここにあっても、同じドメインの人を「自社のフォーム」とはみなさない (Gmail で受信していると、
+# Gmail の人が全員フォームになるため)
+_FREE_MAIL_DOMAINS = frozenset(db.FREE_MAIL_DOMAINS)
 # 本文からアドレスを探す形 (見つけたものは valid_address でも確かめる)
 _ADDR_SCAN_RE = re.compile(
     r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")

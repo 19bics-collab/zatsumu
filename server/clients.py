@@ -3,15 +3,19 @@
 メールの相手 (mails.contact_addr。HPのフォームから届いたメールは本文のお客様) から、
 次の決まりで「取引先」にまとめる (いつ見ても同じ結果になり、なぜその取引先かを説明できるように):
 
-1. 自分たちのアドレス・自社のドメイン・フォームや自動送信の送信元 (wordpress@・noreply@ など)
-   は取引先にしない。相手のアドレスが分からないメール (フォームで本文にアドレスが無い) も入れない
+1. 自分たちのアドレス・自社のドメイン・社内の人 (登録している人のアドレス)・フォームや自動送信の
+   送信元 (wordpress@・noreply@ など) は取引先にしない。相手のアドレスが分からないメール
+   (フォームで本文にアドレスが無い) も入れない
 2. 管理者がアドレス (taro@abc.co.jp) を決めて入れた取引先があれば、その取引先
-3. 管理者がドメイン (@abc.co.jp) を決めて入れた取引先があれば、その取引先
+3. 管理者がドメイン (@abc.co.jp) を決めて入れた取引先があれば、その取引先。下のドメイン
+   (tokyo.abc.co.jp) も入る。いくつも合うときは一番長く合うもの (@tokyo.abc.co.jp を別の取引先に
+   入れていれば、そちら)
 4. 決めていなければ、会社のドメインはドメインごとに1つ (tanaka@abc.co.jp と suzuki@abc.co.jp は
    「abc.co.jp」)。Gmail などの個人のメール・予約サイトの中継のアドレス (設定
    mail_client_personal_domains) は、アドレスごとに1人ずつ
 
-名前を付けていない取引先は表に入れず、見るたびにメールから数える (メールが何万通でも、
+名前を付けていない取引先は表に入れず、見るたびにメールから数える (メールが1通も無いドメイン・
+アドレスの番号は「見つかりません」にする) (メールが何万通でも、
 索引 idx_mails_clients だけを読む)。取引先を作る・まとめる・分ける・消すのはどれも
 clients / client_rules の表だけを変え、メールは変えない (消すと、決まった分け方に戻るだけ)。
 
@@ -50,6 +54,12 @@ DETAIL_ADDRESSES = 100
 SNIPPET_CHARS = 120
 # 検索の言葉の最大文字数
 QUERY_MAX_CHARS = 100
+# 「@co.jp」のように、ドメインでまとめると関係の無い会社まで全部入ってしまうもの
+# (「.jp」などの国の部分と、その前の co・ne・or などだけのドメイン)
+_SHARED_SECOND_LEVEL = frozenset((
+    "co", "ne", "or", "ac", "ad", "ed", "go", "gr", "lg", "com", "net", "org", "gov", "edu",
+    "ltd", "plc", "biz", "info",
+))
 
 _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
@@ -74,6 +84,12 @@ def _in_domains(domain: str, domains) -> bool:
     """
     parts = domain.split(".")
     return any(".".join(parts[i:]) in domains for i in range(len(parts)))
+
+
+def _too_broad(domain: str) -> bool:
+    """ドメインでまとめると、別々の会社まで入ってしまうか (「jp」「co.jp」「com.cn」など)."""
+    parts = domain.split(".")
+    return len(parts) < 2 or (len(parts) == 2 and parts[0] in _SHARED_SECOND_LEVEL)
 
 
 class ClientError(ValueError):
@@ -193,12 +209,13 @@ def parse_key(key) -> tuple[str, object]:
 class Grouping:
     """取引先にまとめる決まり (リクエストごとに作る。読むだけ).
 
-    rules は自分たちのアドレスとフォームの送信元 (server/mail.py の ContactRules)、
+    rules は自分たちのアドレス・社内の人・フォームの送信元 (server/mail.py の ContactRules)、
     personal は1人ずつに分けるドメイン、exact / domains は管理者が決めたアドレス・ドメインの
     取引先 (pattern → 取引先の番号)。
     """
 
     def __init__(self, conn, settings: dict | None = None):
+        self.conn = conn
         s = settings if settings is not None else db.get_settings(conn)
         self.rules = mail.contact_rules(conn, s)
         self.personal = personal_domains(s)
@@ -206,6 +223,7 @@ class Grouping:
         self.own_domains = {d for d in self.rules.own_domains
                             if not _in_domains(d, self.personal)}
         self._personal_cache: dict[str, bool] = {}
+        self._domain_cache: dict[str, int | None] = {}
         self.clients = {r["id"]: dict(r) for r in conn.execute(
             "SELECT id, name, note, created_at, updated_at FROM clients")}
         self.exact: dict[str, int] = {}
@@ -227,12 +245,27 @@ class Grouping:
             hit = self._personal_cache[domain] = _in_domains(domain, self.personal)
         return hit
 
+    def domain_client(self, domain: str) -> int | None:
+        """ドメインで決めた取引先の番号 (下のドメインにも当てる。一番長く合う決まり)。無ければ None."""
+        if domain in self._domain_cache:
+            return self._domain_cache[domain]
+        hit = None
+        if domain:
+            parts = domain.split(".")
+            for i in range(len(parts)):
+                hit = self.domains.get(".".join(parts[i:]))
+                if hit is not None:
+                    break
+        self._domain_cache[domain] = hit
+        return hit
+
     def excluded(self, addr: str) -> bool:
-        """取引先にしないアドレスか (自分たち・自社のドメイン・フォームや自動送信の送信元)."""
+        """取引先にしないアドレスか (自分たち・自社のドメイン・社内の人・フォームや自動送信の送信元)."""
         a = ascii_lower(addr)
         if "@" not in a:
             return True
-        if a in self.rules.own or _in_domains(domain_of(a), self.own_domains):
+        if (a in self.rules.own or a in self.rules.people
+                or _in_domains(domain_of(a), self.own_domains)):
             return True
         return self.rules.automated(a)
 
@@ -244,27 +277,65 @@ class Grouping:
         d = domain_of(a) if domain is None else domain
         if a in self.exact:
             return client_key(self.exact[a])
-        if d in self.domains:
-            return client_key(self.domains[d])
+        cid = self.domain_client(d)
+        if cid is not None:
+            return client_key(cid)
         if self.personal_domain(d):
             return address_key(a)
         return domain_key(d)
 
     def canonical(self, key) -> str | None:
-        """番号を、今の決まりでの番号にする (名前を付けた後の古い番号でも開けるように)。無ければ None."""
+        """番号を、今の決まりでの番号にする (名前を付けた後の古い番号でも開けるように)。無ければ None.
+
+        名前を付けていない取引先 (d:… / a:…) は、メールが1通以上あるときだけ (打ち間違えた URL や、
+        メールの無いドメインで、空の取引先を出したり、意味の無い決まりを作ったりしないように)。
+        """
         kind, value = parse_key(key)
         if kind == "c":
             return key if value in self.clients else None
         if kind == "a":
-            return self.key_for(value)
-        d = value
-        if d in self.domains:
-            return client_key(self.domains[d])
-        if not d or self.personal_domain(d) or _in_domains(d, self.own_domains):
-            return None
-        return domain_key(d)
+            canon = self.key_for(value)
+        else:
+            d = value
+            if not d or "@" in d:
+                return None
+            cid = self.domain_client(d)
+            if cid is not None:
+                return client_key(cid)
+            if self.personal_domain(d) or _in_domains(d, self.own_domains):
+                return None
+            canon = domain_key(d)
+        if canon is None or canon.startswith("c:"):
+            return canon
+        return canon if self._has_mail(canon) else None
+
+    def _has_mail(self, key: str) -> bool:
+        """名前を付けていない取引先 (d:… / a:…) のメールが1通以上あるか (索引 idx_mails_clients で探す)."""
+        kind, value = parse_key(key)
+        if kind == "a":
+            return self.conn.execute(
+                "SELECT 1 FROM mails WHERE contact_domain = ? AND lower(contact_addr) = ? LIMIT 1",
+                (domain_of(value), value)).fetchone() is not None
+        return any(self.key_for(r[0], value) == key for r in self.conn.execute(
+            "SELECT DISTINCT contact_addr FROM mails WHERE contact_domain = ?", (value,)))
+
+    def rule_domains_of(self, client_id: int) -> list[str]:
+        """名前を付けた取引先にドメインの決まりで入る、メールのあるドメイン (下のドメインも).
+
+        メールのドメインの種類だけを索引から読む (何万通あっても速い)。
+        """
+        if not any(p["pattern"].startswith("@") for p in self.rules_of.get(client_id, [])):
+            return []
+        return [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT contact_domain FROM mails WHERE contact_domain != ''")
+            if self.domain_client(r[0]) == client_id]
 
 
+# 届いた時刻。差出人が付けた日付 (received_at) が、このサーバが取り込んだ時刻 (fetched_at) より
+# 先なら取り込んだ時刻にする (迷惑メールや時計のずれた送り主の先の日付が、一覧の一番上に
+# 居座らないように。受信箱の並び (server/app.py の _MAIL_SORT_TIME) と同じ考え)。
+# どちらも UTC の ISO の文字なので、文字のまま比べられる
+_AT_SQL = "min(received_at, fetched_at)"
 # 相手のアドレスごとの数 (索引 idx_mails_clients だけで数える)。名前は一番新しい
 # 名前の入ったメールの名前 (届いた時刻と名前をつなげた文字の一番大きいもの)
 _SEP = "\x1f"
@@ -273,10 +344,10 @@ _STATS_SQL = (
     " COALESCE(SUM(status = 'unhandled'), 0) AS unhandled,"
     " COALESCE(SUM(status = 'pending_approval'), 0) AS pending,"
     " COALESCE(SUM(replied_at IS NOT NULL), 0) AS replies,"
-    " MIN(received_at) AS first_at, MAX(received_at) AS last_at,"
+    f" MIN({_AT_SQL}) AS first_at, MAX({_AT_SQL}) AS last_at,"
     " MAX(replied_at) AS last_reply_at,"
-    " MAX(CASE WHEN contact_name != '' THEN received_at || char(31) || contact_name END) AS name_at,"
-    " MAX(CASE WHEN contact_company != '' THEN received_at || char(31) || contact_company END)"
+    f" MAX(CASE WHEN contact_name != '' THEN {_AT_SQL} || char(31) || contact_name END) AS name_at,"
+    f" MAX(CASE WHEN contact_company != '' THEN {_AT_SQL} || char(31) || contact_company END)"
     " AS company_at FROM mails"
 )
 
@@ -433,7 +504,10 @@ def list_clients(conn, q: str = "", offset: int = 0, limit: int = LIST_LIMIT,
 
 def _members(conn, g: Grouping, key: str) -> tuple[list, list, list]:
     """取引先のメールの条件 (A, D, E): 相手のアドレスが A のどれか、または
-    相手のドメインが D のどれかで、アドレスが E (ほかの取引先・取引先にしないアドレス) でないもの."""
+    相手のドメインが D のどれかで、アドレスが E (ほかの取引先・取引先にしないアドレス) でないもの.
+
+    名前を付けた取引先の D は、ドメインの決まりに合う (下のドメインも入れた) メールのあるドメイン。
+    """
     kind, value = parse_key(key)
     if kind == "a":
         return [value], [], []
@@ -442,8 +516,7 @@ def _members(conn, g: Grouping, key: str) -> tuple[list, list, list]:
     else:
         addrs = [p["pattern"] for p in g.rules_of.get(value, [])
                  if not p["pattern"].startswith("@") and g.key_for(p["pattern"]) == key]
-        domains = [p["pattern"][1:] for p in g.rules_of.get(value, [])
-                   if p["pattern"].startswith("@")]
+        domains = g.rule_domains_of(value)
     other = []
     if domains:
         seen = {ascii_lower(r[0]) for r in conn.execute(
@@ -482,10 +555,11 @@ def _snippet(text) -> str:
 def timeline(conn, where: str, params: list, offset: int, limit: int) -> list[dict]:
     """取引先とのやり取り (届いたメールと、こちらが送った返信) を新しい順に1ページ分.
 
-    本文は書き出しだけ (全文は画面が /api/mail/{番号}?thread=false で読む)。
+    本文は書き出しだけ (全文は画面が /api/mail/{番号}?thread=false で読む)。届いたメールは、
+    取り込んだ時刻より先の日付を取り込んだ時刻にして並べる (出す日時は差出人が付けた日付のまま)。
     """
     events = conn.execute(
-        f"SELECT kind, id, at FROM (SELECT 'in' AS kind, id, received_at AS at FROM mails"
+        f"SELECT kind, id, at FROM (SELECT 'in' AS kind, id, {_AT_SQL} AS at FROM mails"
         f" WHERE {where} UNION ALL SELECT 'out' AS kind, id, replied_at AS at FROM mails"
         f" WHERE {where} AND replied_at IS NOT NULL)"
         " ORDER BY at DESC, id DESC, kind DESC LIMIT ? OFFSET ?",
@@ -543,8 +617,8 @@ def client_detail(conn, key: str, offset: int = 0, limit: int = TIMELINE_LIMIT,
     if canon is None:
         kind, _value = parse_key(key)
         raise ClientNotFound("この取引先は削除されたか、見つかりません" if kind == "c" else
-                             "この相手は取引先にまとめていません"
-                             "（自分たちのアドレス・フォームの送信元などは、取引先になりません）")
+                             "この取引先は見つかりません（メールが1通も無いか、自分たちのアドレス・"
+                             "社内の人・フォームの送信元など、取引先にならない相手です）")
     item, where, params = _summary(conn, g, canon, DETAIL_ADDRESSES)
     cats = []
     if where != "0":
@@ -595,6 +669,24 @@ def clean_name(value) -> str:
     return name
 
 
+def _name_key(name) -> str:
+    return " ".join(unicodedata.normalize("NFKC", str(name or "")).split()).casefold()
+
+
+def _check_name_free(g: Grouping, name: str, client_id: int | None = None) -> None:
+    """同じ名前の取引先がほかに無いか (「まとめる先」の選択肢で、どれのことか分からなくならないように).
+
+    全角・半角、英字の大文字・小文字、空白の数の違いは同じ名前とみなす。
+    """
+    want = _name_key(name)
+    for cid, c in g.clients.items():
+        if cid != client_id and _name_key(c["name"]) == want:
+            raise ClientConflict(
+                f"同じ名前の取引先「{c['name']}」がもうあります。同じ会社なら、名前を付けずに"
+                "「ほかの取引先にまとめる」でまとめてください。別の会社なら、支店名などを足して"
+                "見分けられる名前にしてください")
+
+
 def clean_note(value) -> str:
     note = mail.normalize_newlines(str(value or "")).strip()
     if len(note) > NOTE_MAX_CHARS:
@@ -619,9 +711,12 @@ def clean_pattern(g: Grouping, value) -> str:
                           "「@abc.co.jp」の形で入れてください")
     if local:
         if g.excluded(text):
-            raise ClientError(f"「{shown}」は自分たちのアドレスか、HPのフォーム・自動送信の"
-                              "送信元なので、取引先にはまとめられません")
+            raise ClientError(f"「{shown}」は自分たちのアドレスか、社内の人、HPのフォーム・"
+                              "自動送信の送信元なので、取引先にはまとめられません")
     else:
+        if _too_broad(domain):
+            raise ClientError(f"「{shown}」は広すぎて、別々の会社が全部入ってしまいます。"
+                              "「@abc.co.jp」のように、会社のドメインを入れてください")
         if _in_domains(domain, g.own_domains):
             raise ClientError(f"「{shown}」は自分たちのドメインなので、取引先にはまとめられません")
         if g.personal_domain(domain):
@@ -645,22 +740,46 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _owner(g: Grouping, pattern: str) -> int | None:
+    """今そのアドレス・ドメインが入っている、名前を付けた取引先の番号 (どこにも入っていなければ None).
+
+    アドレスは今の決まりでの取引先 (ドメインでまとめた取引先に入っていることもある)。
+    ドメインは、そのドメインか上のドメイン (@abc.co.jp に対する tokyo.abc.co.jp) の決まり。
+    """
+    if pattern.startswith("@"):
+        return g.domain_client(pattern[1:])
+    key = g.key_for(pattern)
+    return parse_key(key)[1] if key and key.startswith("c:") else None
+
+
 def _check_patterns(conn, g: Grouping, client_id: int | None, patterns, move: bool) -> list:
     """入れようとしているアドレス・ドメインが、ほかの取引先に入っていないか確かめる.
 
-    move なら、ほかの取引先から移す (移す元の (pattern, 取引先の名前) の一覧を返す)。
+    同じ決まりがほかの取引先にあるときだけでなく、ほかの取引先にドメインでまとめられている人の
+    アドレスも (黙ってその取引先から抜けないように)。move なら、ほかの取引先から移す
+    (移す元の (pattern, 取引先の名前) の一覧を返す)。
     """
     moved = []
     for p in patterns:
         r = conn.execute("SELECT client_id FROM client_rules WHERE pattern = ?", (p,)).fetchone()
-        if r is None:
-            continue
-        if r[0] == client_id:
+        if r is not None and r[0] == client_id:
             raise ClientConflict(f"「{p}」は、もうこの取引先に入っています")
-        other = g.clients.get(r[0], {}).get("name", "")
+        same_rule = r is not None and r[0] in g.clients
+        owner = r[0] if same_rule else _owner(g, p)
+        if owner is None or owner == client_id or owner not in g.clients:
+            continue
+        other = g.clients[owner]["name"]
         if not move:
-            raise ClientConflict(f"「{p}」は、取引先「{other}」に入っています"
-                                 "（こちらに移すときは「移す」を選んでください）")
+            if same_rule:
+                text = f"「{p}」は、取引先「{other}」に入っています"
+            else:
+                via = next((x["pattern"] for x in g.rules_of.get(owner, [])
+                            if x["pattern"].startswith("@")
+                            and _in_domains(domain_of(p) if not p.startswith("@") else p[1:],
+                                            {x["pattern"][1:]})), "")
+                text = (f"「{p}」は今、取引先「{other}」に入っています"
+                        + (f"。「{via}」でまとめているためです" if via else ""))
+            raise ClientConflict(text + "（こちらに移すときは「移す」を選んでください）")
         moved.append((p, other))
     return moved
 
@@ -668,6 +787,7 @@ def _check_patterns(conn, g: Grouping, client_id: int | None, patterns, move: bo
 def create_client(conn, g: Grouping, name, note="", patterns=(), move: bool = False) -> dict:
     """取引先を作る (名前を付ける)。patterns はまとめるアドレス・ドメイン (確かめてから入れる)."""
     name, note = clean_name(name), clean_note(note)
+    _check_name_free(g, name)
     cleaned = list(dict.fromkeys(clean_pattern(g, p) for p in patterns))
     if len(cleaned) > RULES_PER_CLIENT_MAX:
         raise ClientError(f"1つの取引先に入れられるアドレス・ドメインは{RULES_PER_CLIENT_MAX}件までです")
@@ -699,6 +819,7 @@ def update_client(conn, g: Grouping, key, name=None, note=None) -> dict:
     changes = {}
     if name is not None:
         changes["name"] = clean_name(name)
+        _check_name_free(g, changes["name"], cid)
     if note is not None:
         changes["note"] = clean_note(note)
     if not changes:
