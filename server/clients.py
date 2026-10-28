@@ -245,6 +245,11 @@ class Grouping:
             hit = self._personal_cache[domain] = _in_domains(domain, self.personal)
         return hit
 
+    def client_kind(self, client_id: int) -> str:
+        """名前を付けた取引先が会社 ("company"。ドメインの決まりがある) か個人 ("person") か."""
+        return ("company" if any(p["pattern"].startswith("@") for p in self.rules_of.get(client_id, []))
+                else "person")
+
     def domain_client(self, domain: str) -> int | None:
         """ドメインで決めた取引先の番号 (下のドメインにも当てる。一番長く合う決まり)。無ければ None."""
         if domain in self._domain_cache:
@@ -423,7 +428,7 @@ def _finish(g: Grouping, group: dict, address_max: int = LIST_ADDRESSES) -> dict
         client = g.clients[value]
         patterns = g.rules_of.get(value, [])
         domains = [p["pattern"][1:] for p in patterns if p["pattern"].startswith("@")]
-        ctype = "company" if domains else "person"
+        ctype = g.client_kind(value)
     elif kind == "d":
         domains, ctype = [value], "company"
     else:
@@ -635,9 +640,10 @@ def client_detail(conn, key: str, offset: int = 0, limit: int = TIMELINE_LIMIT,
 
 
 def client_for_mail(conn, row, g: Grouping | None = None) -> dict | None:
-    """メールの相手の取引先 {key, name, named} (取引先にしない相手なら None).
+    """メールの相手の取引先 {key, name, named, kind} (取引先にしない相手なら None).
 
-    返信画面の「取引先」の印用。名前を付けていない取引先の名前は、その取引先のメールから決める。
+    返信画面の「取引先」の印用 (kind は会社 "company" か個人 "person"。印の絵を変える)。
+    名前を付けていない取引先の名前は、その取引先のメールから決める。
     """
     g = g or Grouping(conn)
     key = g.key_for(mail.counterpart(row)[1])
@@ -645,16 +651,18 @@ def client_for_mail(conn, row, g: Grouping | None = None) -> dict | None:
         return None
     kind, value = parse_key(key)
     if kind == "c":
-        return {"key": key, "name": g.clients[value]["name"], "named": True}
+        return {"key": key, "name": g.clients[value]["name"], "named": True,
+                "kind": g.client_kind(value)}
     item, _w, _p = _summary(conn, g, key, 0)
-    return {"key": key, "name": item["name"], "named": False}
+    return {"key": key, "name": item["name"], "named": False, "kind": item["kind"]}
 
 
 def named_client_of(g: Grouping, addr) -> dict | None:
-    """名前を付けた取引先にまとめたアドレスなら {key, name} (受信箱の一覧用。DB は読まない)."""
+    """名前を付けた取引先にまとめたアドレスなら {key, name, kind} (受信箱の一覧用。DB は読まない)."""
     key = g.key_for(addr)
     if key and key.startswith("c:"):
-        return {"key": key, "name": g.clients[int(key[2:])]["name"]}
+        cid = int(key[2:])
+        return {"key": key, "name": g.clients[cid]["name"], "kind": g.client_kind(cid)}
     return None
 
 

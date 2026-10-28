@@ -238,7 +238,8 @@
   .appr-help:empty { display: none; }
   .appr-return { display: flex; flex-direction: column; gap: .4rem; }
   #m-return-note { width: 100%; box-sizing: border-box; min-height: 3.6rem; padding: .5rem;
-                   border: 1px solid #ccc; border-radius: 6px; font-size: .9rem; font-family: inherit; }
+                   border: 1px solid #ccc; border-radius: 6px; font-size: .9rem; font-family: inherit;
+                   overflow-wrap: break-word; }
   #m-return { align-self: flex-start; padding: .45rem .9rem; }
   #m-req-row { margin-top: .8rem; display: flex; }
   #m-req-note { flex: 1; min-width: 0; padding: .45rem; border: 1px solid #ccc; border-radius: 6px;
@@ -247,12 +248,24 @@
   .mail-meta { color: #6b7280; font-size: .85rem; margin: .2rem 0 .6rem; overflow-wrap: anywhere; }
   /* 区切りの無い長い件名 (URL など) でも、スマホで横にはみ出さないように折り返す */
   #m-subject { overflow-wrap: anywhere; }
-  .mail-body { white-space: pre-wrap; background: #f9fafb; border: 1px solid var(--line);
-               border-radius: 6px; padding: .7rem; max-height: 12rem; overflow: auto;
-               font-size: .92rem; color: #374151; }
+  /* メールの本文。区切りの無い長い文字 (URL・「<mailto:…>」付きのアドレス・罫線) も折り返して、
+     横にはスクロールさせない。本文の中だけを縦にスクロールさせる枠にもしない (スマホで指が
+     本文の枠に取られて、返信画面を下へ進めにくくなるので)。長い本文は、決まった高さで
+     たたんで下をぼかし、「全文を表示」で全部出す (fitBody)。--fold がたたんだ高さ */
+  .mail-body { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+               background: #f9fafb; border: 1px solid var(--line);
+               border-radius: 6px; padding: .7rem; font-size: .92rem; line-height: 1.6;
+               color: #374151; --fold: 15rem; --body-bg: #f9fafb; }
+  .mail-body.folded { max-height: var(--fold); overflow: hidden; position: relative; }
+  .mail-body.folded::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0;
+                             height: 3.2rem; pointer-events: none;
+                             background: linear-gradient(rgba(255,255,255,0), var(--body-bg)); }
+  .body-more { align-self: flex-start; margin-top: .35rem; padding: .4rem .8rem; }
+  .body-more[hidden] { display: none; }
+  .thr-full .body-more, .tl-full .body-more { margin-top: -.1rem; }
   #m-draft { width: 100%; box-sizing: border-box; min-height: 11rem; padding: .6rem;
              border: 1px solid #ccc; border-radius: 6px; font-size: .95rem;
-             font-family: inherit; margin-top: .3rem; }
+             font-family: inherit; margin-top: .3rem; overflow-wrap: break-word; }
   #m-inst { flex: 1; min-width: 180px; padding: .45rem; border: 1px solid #ccc;
             border-radius: 6px; font-size: .9rem; }
   #m-tpl { max-width: 100%; padding: .35rem; border: 1px solid #ccc; border-radius: 6px;
@@ -324,7 +337,7 @@
   .thr-other { color: #b45309; font-size: .8rem; }
   .thr-full { padding: 0 .6rem .6rem; display: flex; flex-direction: column; gap: .35rem; }
   .thr-full small { color: #6b7280; overflow-wrap: anywhere; }
-  .thr-full .mail-body { max-height: 16rem; background: #fff; }
+  .thr-full .mail-body { --fold: 12rem; --body-bg: #fff; background: #fff; }
   .thr-full button { align-self: flex-start; padding: .4rem .8rem; }
   #m-back { align-self: flex-start; padding: .35rem .8rem; margin-bottom: .4rem; }
   #m-back[hidden] { display: none; }
@@ -494,7 +507,7 @@
   .tl-item.out .tl-kind { color: #166534; }
   .tl-subj { font-weight: 600; }
   .tl-full { padding: 0 .7rem .7rem; display: flex; flex-direction: column; gap: .4rem; }
-  .tl-full .mail-body { max-height: 20rem; background: #fff; }
+  .tl-full .mail-body { --fold: 16rem; --body-bg: #fff; background: #fff; }
   .tl-full button { align-self: flex-start; padding: .4rem .8rem; }
   @media (max-width: 720px) {
     html { font-size: 15px; }
@@ -1457,13 +1470,74 @@ const contactLine = m => {
   return name && addr ? `${name} <${addr}>` : (name || (addr ? `<${addr}>` : "")) ||
     (m.via_form ? "お客様（アドレス不明）" : "差出人不明");
 };
+// 取引先の印の絵: 会社は 🏢、個人 (Gmail・Outlook などのアドレスごとの取引先) は 👤
+const clientIcon = kind => kind === "person" ? "👤" : "🏢";
 // 名前を付けた取引先にまとめた相手なら、取引先の名前 (名前は esc() を通す)
 const clientTag = m => m.client_name
-  ? ` <span class="cl-tag" title="取引先（上の「取引先」で、この取引先とのやり取りをまとめて見られます）">🏢 ${esc(m.client_name)}</span>`
+  ? ` <span class="cl-tag" title="取引先（上の「取引先」で、この取引先とのやり取りをまとめて見られます）">${clientIcon(m.client_kind)} ${esc(m.client_name)}</span>`
   : "";
 const formTag = m => m.via_form
   ? ` <span class="form-tag" title="HPのお問い合わせフォームから届いたメールです（差出人: ${esc(m.from_addr)}）。相手は本文に書かれたお客様です">HPフォーム経由</span>`
   : "";
+
+/* メールの本文 (.mail-body) を入れる。長い本文はたたんで、すぐ下に「全文を表示」/「たたむ」の
+   ボタンを出す (本文の枠の中だけをスクロールさせると、スマホで指が枠に取られて下へ進みにくいので)。
+   たたまずに出せる短い本文 (はみ出しが2行ほどまで) にはボタンを出さない。
+   閉じたやり取りの中・隠れた返信画面では高さが測れないので、見えるようになった
+   ときと、幅が変わって折り返しが変わったとき (ResizeObserver) に測り直す
+   (たたむ・広げるで高さだけが変わったときは測り直さない)。文は textContent で入れる */
+const bodyWidths = new WeakMap();
+const bodyObserver = "ResizeObserver" in window
+  ? new ResizeObserver(entries => entries.forEach(e => {
+      const w = Math.round(e.contentRect.width);
+      if (bodyWidths.get(e.target) === w) return;
+      bodyWidths.set(e.target, w);
+      fitBody(e.target);
+    })) : null;
+function setBody(el, text) {
+  el.textContent = text;
+  delete el.dataset.open;              // 別の本文は、たたんだところから
+  fitBody(el);
+  if (bodyObserver && !el.dataset.watched) { el.dataset.watched = "1"; bodyObserver.observe(el); }
+}
+function bodyButton(el) {
+  let b = el.nextElementSibling;
+  if (b && b.classList.contains("body-more")) return b;
+  if (!el.id) el.id = "mb-" + (++bodyButton.n);
+  b = document.createElement("button");
+  b.type = "button";
+  b.className = "ghost body-more";
+  b.hidden = true;
+  b.setAttribute("aria-controls", el.id);
+  b.setAttribute("aria-expanded", "false");
+  el.after(b);
+  return b;
+}
+bodyButton.n = 0;
+function fitBody(el) {
+  const b = bodyButton(el);
+  if (!el.getClientRects().length) return;   // 見えていない (見えたら ResizeObserver で測り直す)
+  const open = el.dataset.open === "1";
+  el.classList.add("folded");
+  const style = getComputedStyle(el);
+  const line = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.6 || 24;
+  const long = el.scrollHeight - el.clientHeight > line * 2;
+  el.classList.toggle("folded", long && !open);
+  b.hidden = !long;
+  b.textContent = open ? "たたむ" : "全文を表示";
+  b.setAttribute("aria-expanded", String(long && open));
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest("button.body-more");
+  if (!b) return;
+  const el = b.previousElementSibling;
+  if (!el || !el.classList.contains("mail-body")) return;
+  const opening = el.dataset.open !== "1";
+  if (opening) el.dataset.open = "1"; else delete el.dataset.open;
+  fitBody(el);
+  // たたんだら、ボタンが画面の上に隠れていれば見えるところまで戻す (見失わないように)
+  if (!opening) b.scrollIntoView({ block: "nearest" });
+});
 
 let inboxSeq = 0;        // 受信箱を取り直した回数 (前の取り直しの結果で上書きしない用)
 let inboxStale = false;  // 返信画面・設定を開いている間に受信箱が変わった (戻ったときに取り直す)
@@ -1861,7 +1935,7 @@ async function openMail(id) {
     ? `元のメールの宛先・CC に ${(m.reply_cc_candidates || []).length}人` : "";
   $("m-subject").textContent = m.subject || "（件名なし）";
   renderMailClient(m);
-  $("m-body").textContent = m.body || "（本文なし）";
+  setBody($("m-body"), m.body || "（本文なし）");
   renderAttachments(id, m);
   renderThread(m);
   clearCalendar();   // 前のメールの予定の候補は出さない
@@ -2365,12 +2439,14 @@ function renderThread(m) {
         <div class="mail-body thr-body">読み込み中…</div>
         ${t.replied_at ? `
         <small>送った返信（${esc(fmtDate(t.replied_at))}${t.replied_by ? "・" + esc(t.replied_by) : ""}）${(t.reply_cc || []).length ? "<br>CC: " + esc(t.reply_cc.join(", ")) : ""}</small>
-        <div class="mail-body">${esc(t.reply_body) || "（本文なし）"}</div>` : ""}
+        <div class="mail-body thr-sent">${esc(t.reply_body) || "（本文なし）"}</div>` : ""}
         <button class="ghost" data-thr-open="${Number(t.id)}">このメールを開く</button>
       </div>
     </details>`;
   }).join("") +
     (total > list.length ? `<small>新しい${list.length}件を出しています（前のものは受信箱から探せます）</small>` : "");
+  // 送った返信の全文も、長ければたたむ (開いて見えたときに測る)
+  $("m-thread-list").querySelectorAll(".thr-sent").forEach(el => setBody(el, el.textContent));
   $("m-thread").open = threadOpen;
   $("m-thread").hidden = false;
 }
@@ -2385,13 +2461,13 @@ async function loadThreadBody(item) {
     if (!r.ok) throw new Error(r.status === 404 ? "gone" : "load");
     const d = await r.json();
     if (seq !== threadSeq) return;     // 待っている間に別のメールを開いた
-    el.textContent = d.body || "（本文なし）";
+    setBody(el, d.body || "（本文なし）");
   } catch (e) {
     if (seq !== threadSeq || e.message === "auth") return;
     delete item.dataset.loaded;        // 閉じてもう一度開くと読み直す
-    el.textContent = e.message === "gone"
+    setBody(el, e.message === "gone"
       ? "このメールは見つかりませんでした（保存日数を過ぎて消えた可能性があります）"
-      : "読み込めませんでした。閉じてもう一度開くと読み直します";
+      : "読み込めませんでした。閉じてもう一度開くと読み直します");
   }
 }
 // toggle は親に伝わらないので、捕まえる側 (capture) で受け取る
@@ -4039,7 +4115,7 @@ async function loadTimelineBody(item) {
   const [kind, idText] = item.dataset.tl.split(":");
   const el = item.querySelector(".tl-body");
   const cacheKey = item.dataset.tl;
-  if (tlBodies.has(cacheKey)) { el.textContent = tlBodies.get(cacheKey); return; }
+  if (tlBodies.has(cacheKey)) { setBody(el, tlBodies.get(cacheKey)); return; }
   if (item.dataset.loading) return;
   item.dataset.loading = "1";
   const seq = clientView.seq;
@@ -4049,12 +4125,12 @@ async function loadTimelineBody(item) {
     const m = await r.json();
     tlBodies.set(`in:${Number(idText)}`, m.body || "（本文なし）");
     if (m.replied_at) tlBodies.set(`out:${Number(idText)}`, m.reply_body || "（本文なし）");
-    if (seq === clientView.seq) el.textContent = tlBodies.get(cacheKey) || "（本文なし）";
+    if (seq === clientView.seq) setBody(el, tlBodies.get(cacheKey) || "（本文なし）");
   } catch (e) {
     if (e.message === "auth" || seq !== clientView.seq) return;
-    el.textContent = e.message === "gone"
+    setBody(el, e.message === "gone"
       ? "このメールは見つかりませんでした（保存日数を過ぎて消えた可能性があります）"
-      : "読み込めませんでした。閉じてもう一度開くと読み直します";
+      : "読み込めませんでした。閉じてもう一度開くと読み直します");
   } finally {
     delete item.dataset.loading;
   }
@@ -4221,8 +4297,9 @@ function renderMailClient(m) {
   const c = m.client;
   $("m-client").hidden = !c;
   if (!c) return;
-  $("m-client-name").textContent = "🏢 " + (c.name || "取引先");
-  $("m-client-name").title = c.named ? "取引先" : "取引先（名前はメールから自動で決めています）";
+  $("m-client-name").textContent = clientIcon(c.kind) + " " + (c.name || "取引先");
+  $("m-client-name").title = (c.kind === "person" ? "取引先（個人）" : "取引先（会社）") +
+    (c.named ? "" : "・名前はメールから自動で決めています");
   $("m-client-link").dataset.key = c.key;
 }
 $("m-client-link").onclick = async e => {

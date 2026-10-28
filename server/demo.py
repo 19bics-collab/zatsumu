@@ -373,6 +373,40 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
     add_mail(50, "青木 さくら", "demo.aoki@gmail.com", "チェックインの時間",
              "予約した青木です。チェックインは何時からできますか。", 2, "通常",
              category="予約・宿泊のお問い合わせ")
+    # 長い本文の確認用: Outlook の個人 (取引先の印は「個人」)。前のメールの引用に、区切りの無い
+    # 長い URL・「<mailto:…>」付きのアドレス・長い罫線が入る (スマホで横にはみ出さず、
+    # たたんで出す)。前のやり取り (返信済み) にも長い URL を入れる
+    long_url = ("https://reserve.example.com/booking/confirm?reservation_id=RSV2026102800123456789"
+                "&guest_token=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOp&lang=ja")
+    add_mail(3500, "木村 美咲", "kimura.demo@outlook.com", "宿泊の予約の確認",
+             "予約の確認のページが開けません。\n" + long_url, 2, "通常",
+             status="replied", category="予約・宿泊のお問い合わせ",
+             reply=("木村 様\n\nお問い合わせありがとうございます。\n"
+                    "こちらのページからご確認いただけます。\n" + long_url,
+                    3480, "管理者", ""))
+    add_mail(10, "木村 美咲", "kimura.demo@outlook.com", "Re: 宿泊の予約の確認",
+             "ビックス 予約係 様\n\nお世話になっております。木村です。\n"
+             "ご案内いただいたページから、予約の確認ができました。ありがとうございます。\n\n"
+             "あわせて、次の点を教えていただけますでしょうか。\n"
+             "1. チェックインの前に荷物を預けることはできますか。\n"
+             "2. 近くに駐車場はありますか（車1台で伺う予定です）。\n"
+             "3. 子ども用の布団を1組お借りすることはできますか。\n"
+             "4. チェックアウトの時間を少し遅らせることはできますか。\n\n"
+             "お忙しいところ恐れ入りますが、よろしくお願いいたします。\n\n"
+             "木村 美咲\n"
+             "____________________________________________________________________________________\n"
+             "差出人: ビックス 予約係 <info@example.com<mailto:info@example.com>>\n"
+             "送信日時: 2026年10月25日 10:12\n"
+             "宛先: 木村 美咲 <kimura.demo@outlook.com<mailto:kimura.demo@outlook.com>>\n"
+             "件名: Re: 宿泊の予約の確認\n\n"
+             "木村 様\n\nお問い合わせありがとうございます。\n"
+             "こちらのページからご確認いただけます。\n"
+             "<" + long_url + ">\n\n"
+             "--------------------------------------------------------------------------------------------\n"
+             "ビックス 予約係 info@example.com<mailto:info@example.com> "
+             "https://example.com/minpaku/contact/reservation-support/faq-and-guides\n"
+             "--------------------------------------------------------------------------------------------",
+             2, "通常", category="予約・宿泊のお問い合わせ")
 
     conn.commit()
     return True

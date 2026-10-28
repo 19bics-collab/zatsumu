@@ -563,9 +563,42 @@ def test_mail_page_has_thread_ui(client):
     # 外から来た文字 (件名・本文・差出人・返信) は esc() か textContent で出す
     for safe in ("${esc(t.subject)", "${esc(t.snippet)", "${esc(who)}",
                  "${esc(t.reply_body)", "${esc(snip(t.reply_body))}",
-                 'esc(t.reply_cc.join(", "))', "el.textContent = d.body"):
+                 'esc(t.reply_cc.join(", "))', 'setBody(el, d.body || "（本文なし）")',
+                 "el.textContent = text;"):
         assert safe in page, safe
     assert "${t.subject" not in page and "${t.snippet" not in page
     assert "${t.reply_body" not in page and '"・" + esc(t.replied_by)' in page
     # 相手 (フォームから届いたメールは本文のお客様) は文字にまとめてから esc() を通す
     assert 'const who = contactLine(t) + (t.via_form ? "（HPフォーム経由）" : "");' in page
+
+
+def test_mail_body_wraps_and_folds(client):
+    """メールの本文は横にスクロールさせず、長ければたたんで「全文を表示」で出す (スマホ用)."""
+    page = client.get("/mail").text
+    css = page[page.index("  .mail-body {"):page.index("  #m-draft {")]
+    # 区切りの無い長い URL・罫線も折り返す
+    assert "white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;" in css
+    # 本文の中だけをスクロールさせる枠にはしない (指が枠に取られて、下へ進みにくくなる)
+    base = css[:css.index("}")]
+    assert "overflow: auto" not in base and "max-height" not in base
+    assert "overflow: auto" not in page[page.index("  .thr-full .mail-body"):page.index("  .thr-full button")]
+    assert ".tl-full .mail-body { --fold: 16rem;" in page
+    # たたんだときは決まった高さで切って、下をぼかす
+    assert ".mail-body.folded { max-height: var(--fold); overflow: hidden;" in css
+    assert ".mail-body.folded::after" in css and "pointer-events: none;" in css
+    # 「全文を表示」/「たたむ」のボタン (読み上げ・キーボードでも分かるように aria-expanded)
+    for marker in ('"全文を表示"', '"たたむ"', 'b.type = "button";',
+                   'b.setAttribute("aria-controls", el.id);',
+                   'b.setAttribute("aria-expanded", String(long && open));',
+                   "new ResizeObserver(", "b.hidden = !long;"):
+        assert marker in page, marker
+    # 本文はどれも setBody で入れる (返信画面・やり取り・取引先のやり取り)
+    assert 'setBody($("m-body"), m.body || "（本文なし）");' in page
+    assert "setBody(el, d.body" in page and "setBody(el, tlBodies.get(cacheKey)" in page
+    assert '.querySelectorAll(".thr-sent").forEach(el => setBody(el, el.textContent));' in page
+    assert '$("m-body").textContent' not in page
+    # 返信文・差し戻しの欄も長い文字を折り返す
+    assert "font-family: inherit; margin-top: .3rem; overflow-wrap: break-word; }" in page
+    # 取引先の印: 個人は 👤、会社は 🏢
+    assert 'const clientIcon = kind => kind === "person" ? "👤" : "🏢";' in page
+    assert "clientIcon(c.kind)" in page and "clientIcon(m.client_kind)" in page

@@ -415,17 +415,29 @@ def test_mail_detail_and_inbox_show_client(client, users, tmp_path):
     a = _mail(tmp_path, "tanaka@abc.co.jp", "田中")
     g = _mail(tmp_path, "taro@gmail.com", "太郎")
     own = _mail(tmp_path, "sales@bics.co.jp", "社内")
+    j = _mail(tmp_path, "jiro@gmail.com", "次郎")
     assert client.get(f"/api/mail/{a}", headers=auth(staff)).json()["client"] == \
-        {"key": "d:abc.co.jp", "name": "田中", "named": False}
+        {"key": "d:abc.co.jp", "name": "田中", "named": False, "kind": "company"}
+    # Gmail などの個人は「個人」(返信画面の印の絵が 👤 になる)
+    assert client.get(f"/api/mail/{g}", headers=auth(staff)).json()["client"] == \
+        {"key": "a:taro@gmail.com", "name": "太郎", "named": False, "kind": "person"}
     assert client.get(f"/api/mail/{own}", headers=auth(staff)).json()["client"] is None
     key = client.post("/api/mail/clients", headers=auth(admin),
                       json={"name": "ABC", "from_key": "d:abc.co.jp"}).json()["key"]
     assert client.get(f"/api/mail/{a}", headers=auth(staff)).json()["client"] == \
-        {"key": key, "name": "ABC", "named": True}
+        {"key": key, "name": "ABC", "named": True, "kind": "company"}
+    # 名前を付けた個人 (アドレスだけの取引先) は「個人」
+    pkey = client.post("/api/mail/clients", headers=auth(admin),
+                       json={"name": "太郎さん", "from_key": "a:taro@gmail.com"}).json()["key"]
+    assert client.get(f"/api/mail/{g}", headers=auth(staff)).json()["client"] == \
+        {"key": pkey, "name": "太郎さん", "named": True, "kind": "person"}
     rows = {m["id"]: m for m in client.get("/api/mail", headers=auth(staff)).json()}
-    assert (rows[a]["client_name"], rows[a]["client_key"]) == ("ABC", key)
+    assert (rows[a]["client_name"], rows[a]["client_key"], rows[a]["client_kind"]) == \
+        ("ABC", key, "company")
+    assert (rows[g]["client_name"], rows[g]["client_kind"]) == ("太郎さん", "person")
     # 名前を付けていない取引先・取引先にしない相手には出さない
-    assert rows[g]["client_name"] == "" and rows[own]["client_name"] == ""
+    assert rows[j]["client_name"] == "" and rows[own]["client_name"] == ""
+    assert rows[j]["client_kind"] == "" and rows[own]["client_kind"] == ""
 
 
 # ---------- 使える人・操作の記録 ----------
@@ -901,7 +913,7 @@ def test_mail_page_has_client_screens(client):
     for safe in ("${esc(c.name)", "${esc(sub)", "${esc(t.subject)", "${esc(t.snippet)",
                  "${esc(who)}", "${esc(a.addr)}", "${esc(m.client_name)}", "${esc(ruleText(r.pattern))}",
                  '$("cd-name").textContent', '$("cd-note-view").textContent',
-                 '$("m-client-name").textContent', "el.textContent = tlBodies.get(cacheKey)"):
+                 '$("m-client-name").textContent', "setBody(el, tlBodies.get(cacheKey)"):
         assert safe in page, safe
     for unsafe in ("${c.name}", "${t.subject}", "${t.snippet}", "${a.addr}", "${m.client_name}",
                    "${d.note}"):

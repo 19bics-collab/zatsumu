@@ -2684,6 +2684,7 @@ def list_mail(
         c = named[addr]
         item["client_key"] = c["key"] if c else ""
         item["client_name"] = c["name"] if c else ""
+        item["client_kind"] = c["kind"] if c else ""
         out.append(item)
     return out
 
