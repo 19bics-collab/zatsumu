@@ -4072,3 +4072,115 @@ def mail_thread(conn, row, limit: int = THREAD_MAX) -> dict:
         "replied_by": r["replied_by"] if r["replied_at"] else "",
         "reply_cc": split_addresses(r["reply_cc"]) if r["replied_at"] else [],
     } for r in rows], "thread_total": total}
+
+
+# ---------- 一覧のプルダウン (本文とその後のやり取り) ----------
+
+# プルダウンに出すやり取りの最大件数 (この後のもの・前のもの、それぞれ)
+CONVO_MAX = 30
+# プルダウンに出す、ほかのメール・返信の本文の最大の文字数 (開いたメール自身は全部出す)。
+# 何十通も長いメールが続いても、一覧が重くならないように
+CONVO_BODY_CHARS = 20_000
+
+
+def _cut(text, limit: int | None = None) -> tuple[str, bool]:
+    text, limit = str(text or ""), limit or CONVO_BODY_CHARS
+    return (text, False) if len(text) <= limit else (text[:limit].rstrip(), True)
+
+
+def _convo_events(rows) -> list[dict]:
+    """メールの行を、届いたメール (in) と、こちらが送った返信 (out) の出来事にして時刻順に並べる."""
+    events = []
+    for r in rows:
+        name, addr = counterpart(r)
+        body, cut = _cut(r["body"])
+        events.append({
+            "kind": "in", "mail_id": r["id"], "at": r["received_at"],
+            "contact_addr": addr, "contact_name": name,
+            "via_form": bool(r["contact_via_form"]),
+            "subject": r["subject"], "status": r["status"],
+            "body": body, "body_cut": cut,
+        })
+        if r["replied_at"]:
+            body, cut = _cut(r["reply_body"])
+            events.append({
+                "kind": "out", "mail_id": r["id"], "at": r["replied_at"],
+                "subject": r["reply_subject"] or r["subject"],
+                "replied_by": r["replied_by"] or "",
+                "sent_to": r["reply_sent_to"] or r["from_addr"],
+                "cc": split_addresses(r["reply_cc"]),
+                "body": body, "body_cut": cut,
+            })
+    # 時刻が同じなら、届いたメールを先に (返信より先に届いている)
+    events.sort(key=lambda e: (e["at"] or "", e["mail_id"], e["kind"] != "in"))
+    return events
+
+
+def mail_conversation(conn, row, earlier: bool = False, limit: int | None = None) -> dict:
+    """受信箱のプルダウン用。このメールの後に続くやり取り (と、頼まれたら前のやり取り).
+
+    同じ相手 (mail_thread と同じ。大文字・小文字は区別しない) のメールと、
+    Message-ID・In-Reply-To・References でつながるメールを、このメールより後に届いたもの
+    (after) と前に届いたもの (earlier) に分け、どちらも古い順 (時刻順) に返す。
+    after には、このメールにこちらが送った返信 (先頭のあたり) も入る。
+    それぞれ届いたメールの近い方から limit 通まで (after は直後から、earlier は直前から)。
+    after_total・earlier_total は見つかったメールの数 (返信は数えない)。earlier=False なら
+    earlier は空で、earlier_total だけ数える (「前のやり取りも見る」を出すかを決める用)。
+    探すのは索引 (lower(contact_addr), received_at) と、ヘッダのつながりの索引だけ。
+    """
+    limit = limit or CONVO_MAX
+    mail_id, addr = row["id"], counterpart(row)[1]
+    at = row["received_at"] or ""
+    # 同じ時刻なら番号の大きい方を後とする
+    after_cond = "received_at >= ? AND NOT (received_at = ? AND id <= ?)"
+    before_cond = "received_at <= ? AND NOT (received_at = ? AND id >= ?)"
+    after_ids, before_ids, after_total, earlier_total = [], [], 0, 0
+    if addr:
+        same = "lower(contact_addr) = lower(?) AND "
+        after_total = conn.execute(
+            f"SELECT COUNT(*) FROM mails WHERE {same}{after_cond}",
+            (addr, at, at, mail_id)).fetchone()[0]
+        earlier_total = conn.execute(
+            f"SELECT COUNT(*) FROM mails WHERE {same}{before_cond}",
+            (addr, at, at, mail_id)).fetchone()[0]
+        after_ids = [r[0] for r in conn.execute(
+            f"SELECT id FROM mails WHERE {same}{after_cond}"
+            " ORDER BY received_at, id LIMIT ?", (addr, at, at, mail_id, limit))]
+        if earlier:
+            before_ids = [r[0] for r in conn.execute(
+                f"SELECT id FROM mails WHERE {same}{before_cond}"
+                " ORDER BY received_at DESC, id DESC LIMIT ?", (addr, at, at, mail_id, limit))]
+    # ヘッダでつながる、別の相手 (アドレス) からのメール (同じ相手のものは上で数えた)
+    linked = sorted(_linked_by_headers(conn, [mail_id, *after_ids, *before_ids]))
+    if linked:
+        for r in conn.execute(
+                f"SELECT id, received_at FROM mails WHERE id IN ({_marks(linked)})"
+                " AND (? = '' OR lower(contact_addr) != lower(?))", (*linked, addr, addr)):
+            if (r[1] or "", r[0]) > (at, mail_id):
+                after_total += 1
+                after_ids.append(r[0])
+            else:
+                earlier_total += 1
+                if earlier:
+                    before_ids.append(r[0])
+    cols = ("SELECT id, from_addr, subject, body, received_at, status, reply_body,"
+            " reply_subject, replied_at, replied_by, reply_cc, reply_sent_to,"
+            " contact_addr, contact_name, contact_source, contact_via_form FROM mails")
+
+    def load(ids):
+        ids = sorted(set(ids))
+        return conn.execute(f"{cols} WHERE id IN ({_marks(ids)})", ids).fetchall() if ids else []
+
+    key = lambda r: (r["received_at"] or "", r["id"])  # noqa: E731
+    after_rows = sorted(load(after_ids), key=key)[:limit]
+    before_rows = sorted(load(before_ids), key=key)[-limit:] if earlier else []
+    # このメールにこちらが送った返信は、この後のやり取りの先頭のあたりに入れる
+    me = dict(conn.execute(f"{cols} WHERE id = ?", (mail_id,)).fetchone())
+    mine = [e for e in _convo_events([me]) if e["kind"] == "out"]
+    after = sorted(mine + _convo_events(after_rows),
+                   key=lambda e: (e["at"] or "", e["mail_id"], e["kind"] != "in"))
+    return {
+        "after": after, "after_total": after_total,
+        "earlier": _convo_events(before_rows), "earlier_total": earlier_total,
+        "shown_after": len(after_rows), "shown_earlier": len(before_rows),
+    }

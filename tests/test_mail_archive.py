@@ -253,8 +253,10 @@ def test_mail_page_has_one_tap_archive_and_undo(client):
     page = client.get("/mail").text
     # 一覧の「対応不要」ボタン (管理者だけ・未対応の行だけ) と、その列
     assert 'id="th-act"' in page and 'class="row-archive"' in page
-    assert '$("th-act").hidden = !admin' in page
-    assert 'm.status === "unhandled"' in page and "${admin ?" in page
+    # 列は全員に出す (「本文 ▼」のボタンも入る)。「対応不要」は管理者の未対応の行だけ
+    assert '$("th-act").hidden' not in page
+    assert 'const canArchive = admin && m.status === "unhandled";' in page
+    assert '${canArchive ? archiveButton(m) : ""}' in page
     # ボタンを押しても返信画面は開かない
     assert 'e.target.closest("button.row-archive")' in page and "e.stopPropagation()" in page
     # 新しい API を使い、「元に戻す」で前の状態と時刻を送り返す

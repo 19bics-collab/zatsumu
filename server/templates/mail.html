@@ -101,9 +101,48 @@
   .row-archive:hover { background: #f3f4f6; border-color: #9ca3af; }
   .row-archive:focus-visible { outline: 2px solid #14532d; outline-offset: 2px; }
   /* 対応不要にした行が、受信箱 (未対応) から消えるときの動き */
-  .mail-row.leaving { opacity: 0; transform: translateX(1.5rem); pointer-events: none;
+  .mail-row.leaving, .peek-row.leaving { opacity: 0; transform: translateX(1.5rem); pointer-events: none;
                       transition: opacity .25s ease, transform .25s ease; }
-  @media (prefers-reduced-motion: reduce) { .mail-row.leaving { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .mail-row.leaving, .peek-row.leaving { transition: none; } }
+  /* 一覧のプルダウン (「本文 ▼」で、その行の下に本文とその後のやり取りを出す。返信画面は開かない) */
+  .row-peek { background: #fff; color: #166534; border: 1px solid #86efac; border-radius: 8px;
+              padding: .35rem .6rem; font-size: .82rem; min-height: 34px; white-space: nowrap;
+              font-weight: 600; margin-right: .35rem; }
+  .row-peek[aria-expanded="true"] { background: #dcfce7; border-color: #16a34a; }
+  .row-peek:hover { background: #f0fdf4; }
+  .row-peek:focus-visible { outline: 2px solid #14532d; outline-offset: 2px; }
+  .row-peek:last-child { margin-right: 0; }
+  @media (pointer: coarse) { .row-peek { min-height: 40px; padding: .45rem .7rem; } }
+  .mail-row.peeking > td { border-bottom-color: transparent; }
+  .peek-row > td { background: #f8fafc; padding: .2rem .8rem .9rem; white-space: normal;
+                   border-bottom: 2px solid #bbf7d0; }
+  /* 表が横にはみ出す幅でも、プルダウンは見えている幅に収めて、横にずらさなくても読めるように
+     (幅は表の外枠の幅。renderInbox が --peek-w に入れる) */
+  .peek { position: sticky; left: 0; max-width: var(--peek-w, 100%); box-sizing: border-box;
+          display: flex; flex-direction: column; gap: .5rem; font-size: .92rem;
+          overflow-wrap: anywhere; }
+  .peek small, .pk-note { color: #6b7280; }
+  .pk-sec { font-weight: 700; color: #374151; margin-top: .3rem; font-size: .9rem; }
+  .pk-ev { border-left: 3px solid #cbd5e1; padding-left: .6rem; display: flex;
+           flex-direction: column; gap: .25rem; }
+  .pk-ev.out { border-left-color: #16a34a; }
+  .pk-head { color: #6b7280; font-size: .8rem; }
+  .pk-ev.out .pk-kind { color: #166534; font-weight: 700; }
+  .pk-ev.in .pk-kind { color: #374151; font-weight: 700; }
+  .pk-subj { font-weight: 600; }
+  .peek .mail-body { background: #fff; }
+  .pk-ev.out .mail-body { background: #f0fdf4; border-color: #bbf7d0; }
+  .pk-act { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .2rem; }
+  .pk-act button { min-height: 40px; padding: .45rem .9rem; }
+  .pk-act .row-archive { min-height: 40px; }
+  .pk-more { align-self: flex-start; min-height: 40px; }
+  /* 表が横にはみ出しやすい中くらいの幅 (iPad の縦・iPhone の横向き) では、右端のボタンを
+     縦に重ねて、右に出したままの列を細くする (隠れる列を少なくする) */
+  @media (min-width: 641px) and (max-width: 1100px) {
+    .mail-row td.act .row-peek { display: block; margin: 0 0 .35rem auto; }
+    .mail-row td.act .row-peek:last-child { margin-bottom: 0; }
+    .mail-row td.act .row-archive { display: block; margin-left: auto; }
+  }
   /* 画面の下の知らせ (「対応不要にしました　元に戻す」)。返信画面より下に重ねる */
   #toasts { position: fixed; left: 50%; transform: translateX(-50%); z-index: 5;
             bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
@@ -593,6 +632,17 @@
     #mail-table td[data-label="担当"] { white-space: normal; }
     .table-wrap tr.mail-row td.act:empty { display: none; }
     .table-wrap tr.mail-row td:first-child { padding-right: 7.5rem; }
+    /* 「本文 ▼」と「対応不要」が並ぶとき (管理者の未対応の行) は、その分を空ける */
+    .table-wrap tr.mail-row.two-btn td:first-child { padding-right: 12.5rem; }
+    .table-wrap .row-peek { min-height: 40px; padding: .45rem .7rem; font-size: .85rem; }
+    /* 開いたプルダウンは、そのメールのカードの続きに見せる */
+    .table-wrap tr.mail-row.peeking { border-bottom: none; border-radius: 8px 8px 0 0;
+                                      margin-bottom: 0; box-shadow: none; }
+    .table-wrap tr.peek-row { margin-top: 0; border-top: 1px dashed #bbf7d0;
+                              border-radius: 0 0 8px 8px; padding: .2rem .8rem .7rem;
+                              background: #f8fafc; }
+    .table-wrap tr.peek-row > td { padding: .3rem 0 0; border: none; background: transparent; }
+    .peek { max-width: none; position: static; }
   }
 </style>
 </head>
@@ -693,7 +743,7 @@
     </div>
   </div>
   <div class="table-wrap"><table id="mail-table">
-    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th><th id="th-act" aria-label="対応不要にする"></th></tr></thead>
+    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th><th id="th-act" aria-label="本文を見る・対応不要にする"></th></tr></thead>
     <tbody></tbody>
   </table></div>
 </section>
@@ -1385,7 +1435,6 @@ async function showApp() {
 function applyRole() {
   const admin = isAdmin();
   $("nav-settings").hidden = !admin;
-  $("th-act").hidden = !admin;     // 一覧の「対応不要」ボタンの列 (管理者だけ)
   $("whoami").textContent = me.name ? me.name + (admin ? "" : "（メール担当）") : "";
   $("admin-help").hidden = !admin;
   $("fetch-error-hint").textContent = admin
@@ -1626,10 +1675,14 @@ function renderInbox(list, keepPlace) {
   const left = wrap.scrollLeft;
   // 自動で取り直したときは、見ていた場所を動かさない (一番上に見えていた行が、
   // 描き直した後も同じ位置に見えるようにする)。一番上にいるときは、上に増えた新着を見せる
+  // (開いているプルダウンの中を読んでいるときは、そのプルダウンの位置を動かさない)
   const anchor = keepPlace && window.scrollY > 0
-    ? [...tbody.querySelectorAll(".mail-row")].find(tr => tr.getBoundingClientRect().bottom > 0)
+    ? [...tbody.querySelectorAll(".mail-row, .peek-row")].find(tr => tr.getBoundingClientRect().bottom > 0)
     : null;
   const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+  const anchorSel = !anchor ? ""
+    : anchor.classList.contains("peek-row") ? `.peek-row[data-peek-row="${Number(anchor.dataset.peekRow)}"]`
+    : `.mail-row[data-id="${Number(anchor.dataset.id)}"]`;
   const newest = mailStatus && mailStatus.newest_id || 0;
   // 初めて開いた (覚えていない) ときは、今あるメールには印を付けない。
   // DB を作り直した (覚えている番号の方が大きい) ときも、今あるメールまでを見たことにする
@@ -1654,9 +1707,12 @@ function renderInbox(list, keepPlace) {
     if (before && before !== list.map(m => String(Number(m.id))).join()) rowsMovedAt = Date.now();
   }
   tbody.innerHTML = list.map(m => {
-    const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
+    const id = Number(m.id);
+    const isNew = id > seenId && !openedIds.has(id);
+    const canArchive = admin && m.status === "unhandled";
+    const peeking = peekOpen.has(id);
     return `
-    <tr class="mail-row ${["unhandled", "pending_approval"].includes(m.status) ? "" : "done"}${isNew ? " new" : ""}" data-id="${Number(m.id)}">
+    <tr class="mail-row ${["unhandled", "pending_approval"].includes(m.status) ? "" : "done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}" data-id="${id}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
       <td data-label="差出人"><strong>${esc(contactLabel(m))}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m)}</td>
       <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
@@ -1664,10 +1720,8 @@ function renderInbox(list, keepPlace) {
       <td data-label="状態"><span class="st-${esc(m.status)}">${esc(ST[m.status] || m.status)}</span>${m.status === "pending_approval" && m.requested_by ? `<small>（${esc(m.requested_by)}）</small>` : ""}${m.returned ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : ""}</td>
       <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
       <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
-      ${admin ? `<td class="act">${m.status === "unhandled"
-        ? `<button type="button" class="row-archive" data-archive="${Number(m.id)}"${archivingIds.has(Number(m.id)) ? " disabled" : ""}
-             aria-label="対応不要にする（${esc(snip(m.subject, 30)) || "件名なし"}）">対応不要</button>` : ""}</td>` : ""}
-    </tr>`;
+      <td class="act">${peekButton(m, peeking)}${canArchive ? archiveButton(m) : ""}</td>
+    </tr>${peeking ? peekRowHtml(id) : ""}`;
   }).join("") ||
     (filtered
       ? `<tr><td colspan="8"><small>この条件に合うメールはありません（上の${narrowed}を「すべて」に戻すと全部見られます）</small></td></tr>`
@@ -1676,6 +1730,13 @@ function renderInbox(list, keepPlace) {
         : `<tr><td colspan="8"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
     tr.onclick = e => {
+      // 「本文 ▼」は、その行の下に本文とやり取りを出す (返信画面は開かない)
+      const p = e.target.closest("button.row-peek");
+      if (p) {
+        e.stopPropagation();
+        togglePeek(Number(p.dataset.peek));
+        return;
+      }
       // 「対応不要」ボタンを押したときは、返信画面を開かない
       const b = e.target.closest("button.row-archive");
       if (b) {
@@ -1688,12 +1749,202 @@ function renderInbox(list, keepPlace) {
       }
       openMail(+tr.dataset.id);
     });
+  setPeekWidth();
   wrap.scrollLeft = left;
-  const again = anchor && tbody.querySelector(`.mail-row[data-id="${Number(anchor.dataset.id)}"]`);
+  const again = anchorSel && tbody.querySelector(anchorSel);
   if (again) window.scrollBy(0, again.getBoundingClientRect().top - anchorTop);
+  // 開いているプルダウンは、まだ読んでいない・メールが変わった (返信した・続きが届いた) ときだけ
+  // 読み直す (読み直す間も、前に読んだものを出したままにする)
+  for (const m of list) {
+    const id = Number(m.id), c = peekCache.get(id);
+    if (peekOpen.has(id) && !peekLoading.has(id) && (!c || !c.data || c.sig !== peekSig(m))) loadPeek(id);
+  }
   rememberShown(list);
 }
 $("filter").onchange = () => showInbox();
+
+/* ---------- 一覧のプルダウン (本文とその後のやり取り) ----------
+   行の「本文 ▼」で、その行のすぐ下に本文と、その後のやり取り (こちらの返信・後から届いた
+   同じ相手のメール) を時刻順に出す。返信画面は開かない (件名など行を押すと今までどおり開く)。
+   いくつでも開いたままにでき、自動の取り直し・タブの切り替えでも閉じない。
+   読んだものは行ごとに覚えておき、メールが変わった (返信した・続きが届いた) ときだけ読み直す。
+   外から来た文字 (本文・件名・相手) は esc() を通す */
+const peekOpen = new Set();      // プルダウンを開いている行 (メールの番号)
+const peekCache = new Map();     // 番号 → { data: 読んだもの, sig: 読んだときの行の様子, error }
+const peekLoading = new Map();   // 読み込み中の行 (番号 → 何回目の読み込みか)
+let peekSeqN = 0;
+// 行の様子 (これが変わったら読み直す)
+const peekSig = m => `${m.status}|${m.replied_at || ""}|${m.thread_count || 0}`;
+const mailRowOf = id => document.querySelector(`#mail-table .mail-row[data-id="${Number(id)}"]`);
+const peekRowOf = id => document.querySelector(`#mail-table .peek-row[data-peek-row="${Number(id)}"]`);
+const subjLabel = m => esc(snip(m.subject, 30)) || "件名なし";
+
+function peekButton(m, open) {
+  const id = Number(m.id);
+  return `<button type="button" class="row-peek" data-peek="${id}" aria-expanded="${open}"
+             aria-controls="peek-${id}" aria-label="本文とその後のやり取り（${subjLabel(m)}）">本文 ${open ? "▲" : "▼"}</button>`;
+}
+function archiveButton(m) {
+  const id = Number(m.id);
+  return `<button type="button" class="row-archive" data-archive="${id}"${archivingIds.has(id) ? " disabled" : ""}
+             aria-label="対応不要にする（${subjLabel(m)}）">対応不要</button>`;
+}
+
+// 開いたメールは「新着」の印を外す (返信画面・プルダウン)
+function markOpened(id) {
+  openedIds.add(Number(id));
+  const row = mailRowOf(id);
+  if (row) {
+    row.classList.remove("new");
+    row.querySelector(".new-badge")?.remove();
+  }
+}
+
+// 表が横にはみ出す幅 (iPad の縦・iPhone の横向き) でも、プルダウンは見えている幅に収める
+function setPeekWidth() {
+  const wrap = document.querySelector("#inbox .table-wrap");
+  if (wrap && wrap.clientWidth) wrap.style.setProperty("--peek-w", Math.max(240, wrap.clientWidth - 30) + "px");
+}
+window.addEventListener("resize", setPeekWidth);
+
+function peekRowHtml(id) {
+  return `<tr class="peek-row" data-peek-row="${Number(id)}"><td colspan="8">
+    <div class="peek" id="peek-${Number(id)}" role="region" aria-label="本文とその後のやり取り">${peekInner(id)}</div></td></tr>`;
+}
+
+// 長い本文は途中まで (開いたメール自身は全部出す)
+const pkCut = e => e.body_cut ? '<small>（長いので途中まで出しています。続きは「このメールを開く」で読めます）</small>' : "";
+function pkEvent(e) {
+  const at = esc(fmtDate(e.at));
+  if (e.kind === "out") {
+    return `<div class="pk-ev out">
+      <div class="pk-head"><span class="pk-kind">↩ こちらの返信</span> ・ ${at}${e.replied_by ? " ・ " + esc(e.replied_by) + " が送信" : ""}</div>
+      <small>宛先: ${esc(e.sent_to)}${(e.cc || []).length ? "・CC: " + esc(e.cc.join(", ")) : ""}</small>
+      <div class="mail-body">${esc(e.body) || "（本文なし）"}</div>${pkCut(e)}</div>`;
+  }
+  return `<div class="pk-ev in">
+      <div class="pk-head"><span class="pk-kind">📩 届いたメール</span> ・ ${at} ・ <span class="st-${esc(e.status)}">${esc(ST[e.status] || e.status)}</span></div>
+      <small>${esc(contactLine(e))}${e.via_form ? "（HPフォーム経由）" : ""}</small>
+      <div class="pk-subj">${esc(e.subject) || "（件名なし）"}</div>
+      <div class="mail-body">${esc(e.body) || "（本文なし）"}</div>${pkCut(e)}
+      <button type="button" class="ghost pk-more" data-pk-open="${Number(e.mail_id)}">このメールを開く</button></div>`;
+}
+
+function peekInner(id) {
+  const c = peekCache.get(id), d = c && c.data;
+  const m = shownMails.get(id) || {};
+  // 下のボタン: 返信画面を開く・対応不要 (管理者の未対応のメールだけ)・閉じる
+  const act = `<div class="pk-act">
+      <button type="button" data-pk-open="${Number(id)}">返信画面を開く</button>
+      ${isAdmin() && m.status === "unhandled" ? archiveButton(m) : ""}
+      <button type="button" class="ghost" data-pk-close="${Number(id)}">閉じる</button></div>`;
+  if (!d) {
+    return c && c.error
+      ? `<p class="pk-note">${esc(c.error)}</p><button type="button" class="ghost pk-more" data-pk-retry="${Number(id)}">もう一度読み込む</button>${act}`
+      : `<p class="pk-note">読み込み中…</p>${act}`;
+  }
+  const after = d.after || [], earlier = d.earlier || [];
+  let html = `<small>📩 このメール ・ ${esc(fmtDate(d.received_at))} ・ ${esc(contactLine(d))}${d.via_form ? "（HPフォーム経由）" : ""}</small>
+    <div class="mail-body">${esc(d.body) || "（本文なし）"}</div>
+    <div class="pk-sec">この後のやり取り</div>`;
+  html += after.length ? after.map(pkEvent).join("")
+    : '<p class="pk-note">この後のやり取りは、まだありません</p>';
+  const restAfter = (d.after_total || 0) - (d.shown_after || 0);
+  if (restAfter > 0) html += `<small>この後に届いたメールが、ほかに${restAfter}通あります（返信画面の「この相手とのやり取り」で見られます）</small>`;
+  if (d.earlierLoaded) {
+    html += `<div class="pk-sec">前のやり取り（古い順）</div>` +
+      (earlier.length ? earlier.map(pkEvent).join("") : '<p class="pk-note">前のやり取りはありません</p>');
+    const restEarlier = (d.earlier_total || 0) - (d.shown_earlier || 0);
+    if (restEarlier > 0) html += `<small>さらに前のメールが${restEarlier}通あります（取引先の画面で、まとめて見られます）</small>`;
+  } else if (d.earlier_total > 0) {
+    html += `<button type="button" class="ghost pk-more" data-pk-earlier="${Number(id)}"${peekLoading.has(id) ? " disabled" : ""}>前のやり取りも見る（${Number(d.earlier_total)}通）</button>`;
+  }
+  return html + act;
+}
+
+// プルダウンの中身を出し直す。画面より上にあるプルダウンの高さが変わっても、見ている所を動かさない
+function fillPeek(id) {
+  const box = $(`peek-${id}`), tr = peekRowOf(id);
+  if (!box || !tr) return;
+  const above = tr.getBoundingClientRect().bottom < 0, h0 = tr.offsetHeight;
+  box.innerHTML = peekInner(id);
+  if (above) window.scrollBy(0, tr.offsetHeight - h0);
+}
+
+async function loadPeek(id, earlier) {
+  const old = peekCache.get(id);
+  const want = earlier ?? !!(old && old.data && old.data.earlierLoaded);
+  const seq = ++peekSeqN;
+  peekLoading.set(id, seq);
+  const m = shownMails.get(id);
+  const sig = m ? peekSig(m) : "";
+  if (earlier) fillPeek(id);    // 「前のやり取りも見る」を押せないようにする
+  try {
+    const r = await api(`/api/mail/${Number(id)}/conversation${want ? "?earlier=true" : ""}`);
+    if (!r.ok) throw new Error(r.status === 404 ? "gone" : "load");
+    const d = await r.json();
+    if (peekLoading.get(id) !== seq) return;   // 待っている間に、もう一度読み始めた
+    d.earlierLoaded = want;
+    peekCache.set(id, { data: d, sig });
+  } catch (e) {
+    if (e.message === "auth" || peekLoading.get(id) !== seq) return;
+    const error = e.message === "gone"
+      ? "このメールは見つかりませんでした（保存日数を過ぎて消えた可能性があります）"
+      : "読み込めませんでした。通信が戻ってから「もう一度読み込む」を押してください";
+    // 前に読んだものがあれば、それを出したままにする (自動の読み直しの失敗では消さない。
+    // 様子は前のままにして、次に受信箱を取り直したときにもう一度読む)
+    peekCache.set(id, old && old.data ? old : { error, sig });
+    if (earlier && old && old.data) alert(error);   // 「前のやり取りも見る」を押したのに読めなかった
+  } finally {
+    if (peekLoading.get(id) === seq) peekLoading.delete(id);
+  }
+  fillPeek(id);
+}
+
+function togglePeek(id) {
+  const tr = mailRowOf(id);
+  if (!tr) return;
+  const btn = tr.querySelector("button.row-peek");
+  const open = !peekOpen.has(id);
+  if (open) peekOpen.add(id); else peekOpen.delete(id);
+  tr.classList.toggle("peeking", open);
+  btn.setAttribute("aria-expanded", String(open));
+  btn.textContent = `本文 ${open ? "▲" : "▼"}`;
+  if (!open) { peekRowOf(id)?.remove(); return; }
+  tr.insertAdjacentHTML("afterend", peekRowHtml(id));
+  markOpened(id);
+  const c = peekCache.get(id), m = shownMails.get(id);
+  if (!peekLoading.has(id) && (!c || !c.data || (m && c.sig !== peekSig(m)))) loadPeek(id);
+}
+
+// プルダウンの中のボタン (行の外なので、行を押したときの「返信画面を開く」は動かない)
+document.querySelector("#mail-table tbody").addEventListener("click", e => {
+  if (!e.target.closest(".peek-row")) return;
+  const b = e.target.closest("button");
+  if (!b) return;
+  const d = b.dataset;
+  if (d.pkOpen) { openMail(Number(d.pkOpen)).catch(() => {}); return; }
+  if (d.pkClose) {
+    const id = Number(d.pkClose);
+    togglePeek(id);
+    mailRowOf(id)?.querySelector("button.row-peek")?.focus({ preventScroll: true });
+    return;
+  }
+  if (d.pkEarlier) { loadPeek(Number(d.pkEarlier), true); return; }
+  if (d.pkRetry) {
+    const id = Number(d.pkRetry);
+    peekCache.delete(id);
+    fillPeek(id);                     // 「読み込み中…」にしてから読み直す
+    loadPeek(id);
+    return;
+  }
+  if (b.matches("button.row-archive")) {
+    // 行の「対応不要」と同じく、行が動いた直後は何もしない
+    if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
+    const tr = mailRowOf(Number(d.archive));
+    if (tr) archiveFromRow(b, tr);
+  }
+});
 
 /* ---------- 対応不要 (ワンタップ) と「元に戻す」 ----------
    未対応のメールを、確かめの画面を出さずにすぐ対応不要にする (管理者だけ。サーバも確かめる)。
@@ -1725,14 +1976,17 @@ async function archiveMail(id, fromStatus) {
 }
 
 // 一覧の行の「対応不要」。未対応だけを出しているときは、行を動かして消す
+// (b は行かプルダウンの中のボタン、tr はそのメールの行。開いているプルダウンも一緒に動かす)
 async function archiveFromRow(b, tr) {
   const id = +b.dataset.archive;
   if (archivingIds.has(id)) return;
   archivingIds.add(id);
-  b.disabled = true;
+  const btns = () => document.querySelectorAll(`button.row-archive[data-archive="${id}"]`);
+  btns().forEach(x => { x.disabled = true; });
   const m = shownMails.get(id) || {};
   const leave = $("filter").value === "unhandled";
-  if (leave) tr.classList.add("leaving");
+  const pk = peekRowOf(id);
+  if (leave) { tr.classList.add("leaving"); pk?.classList.add("leaving"); }
   const wait = new Promise(res => setTimeout(res, leave ? 260 : 0));
   let r = null;
   try { r = await archiveMail(id, "unhandled"); } catch {}
@@ -1741,11 +1995,12 @@ async function archiveFromRow(b, tr) {
   if (!r) {
     // 変えられなかった (理由はアラートで出した)。行を元に戻して、受信箱を取り直す
     tr.classList.remove("leaving");
-    b.disabled = false;
+    pk?.classList.remove("leaving");
+    btns().forEach(x => { x.disabled = false; });
     refreshInbox();
     return;
   }
-  if (leave && tr.isConnected) { tr.remove(); rowsMovedAt = Date.now(); }
+  if (leave && tr.isConnected) { pk?.remove(); tr.remove(); rowsMovedAt = Date.now(); }
   showArchivedToast(id, m.subject, r);
   refreshInbox();      // タブの数・未対応の数も取り直す
 }
@@ -2085,13 +2340,7 @@ $("fetch-now").onclick = async () => {
 /* ---------- 返信モーダル ---------- */
 async function openMail(id) {
   const m = await apiJson(`/api/mail/${id}`);
-  // 開いたメールは「新着」の印を外す
-  openedIds.add(Number(id));
-  const row = document.querySelector(`.mail-row[data-id="${Number(id)}"]`);
-  if (row) {
-    row.classList.remove("new");
-    row.querySelector(".new-badge")?.remove();
-  }
+  markOpened(id);
   const replied = m.status === "replied";
   modal = { ...EMPTY_MODAL, id, savedDraft: m.draft_reply || "",
             ccCandidates: (m.reply_cc_candidates || []).join(", "), notion: notionOf(m), mail: m,

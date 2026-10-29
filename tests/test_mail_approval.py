@@ -111,6 +111,7 @@ MATRIX = [
     ("GET", "/api/mail/assignees", None, True),
     ("GET", "/api/mail/{mid}", None, True),
     ("GET", "/api/mail/{mid}/templates", None, True),
+    ("GET", "/api/mail/{mid}/conversation", None, True),
     ("GET", "/api/mail/{mid}/attachments/{att}", None, True),
     ("POST", "/api/mail/{mid}/draft", {"instructions": ""}, True),
     ("POST", "/api/mail/{mid}/events", None, True),

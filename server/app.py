@@ -3440,6 +3440,32 @@ def mail_templates_for_mail(
     return out
 
 
+@app.get("/api/mail/{mail_id}/conversation")
+def mail_conversation(
+    mail_id: int, earlier: bool = False, _user=Depends(require_mail_user),
+    conn=Depends(get_conn),
+):
+    """受信箱のプルダウン用: このメールの本文と、その後のやり取り (時刻順).
+
+    after はこのメールにこちらが送った返信と、後から届いた同じ相手・同じ話のメール
+    (それぞれに送った返信も) を古い順に。earlier=true なら、前のやり取りも古い順に返す
+    (false なら数だけ)。返信画面を開く (/api/mail/{id}) より軽く、添付・取引先・定型文は見ない。
+    """
+    r = _mail_or_404(conn, mail_id)
+    name, addr = mail.counterpart(r)
+    return {
+        "id": r["id"],
+        "subject": r["subject"],
+        "status": r["status"],
+        "received_at": r["received_at"],
+        "contact_addr": addr,
+        "contact_name": name,
+        "via_form": bool(r["contact_via_form"]),
+        "body": r["body"],
+        **mail.mail_conversation(conn, r, earlier=earlier),
+    }
+
+
 @app.get("/api/mail/{mail_id}")
 def mail_detail(
     mail_id: int, thread: bool = True, _user=Depends(require_mail_user),
