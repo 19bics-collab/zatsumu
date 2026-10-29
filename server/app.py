@@ -511,6 +511,19 @@ class MailPatch(BaseModel):
     seen_request: str | None = None
 
 
+class MailArchiveBody(BaseModel):
+    # 画面が見ていたメールの状態 (受信箱の行・返信画面)。いまの状態と違えば 409
+    # (見ている間に、ほかの人が返信した・確認をお願いした など)
+    from_status: str
+
+
+class MailUnarchiveBody(BaseModel):
+    # 対応不要にする前の状態 (POST /api/mail/{id}/archive が返した previous_status) と、
+    # そのとき対応不要にした時刻 (同じく archived_at。その後に変わっていないかを確かめる)
+    restore_to: str
+    archived_at: str
+
+
 class MailDraftBody(BaseModel):
     instructions: str = ""    # 返信の方針 (例: 「金曜までに対応すると伝える」)
     seen_request: str | None = None   # MailPatch と同じ
@@ -2402,6 +2415,8 @@ def audit_csv(
         "mail_send": "メール返信送信",
         "mail_send_refused": "メール返信送信（宛先に届かず）",
         "mail_update": "メール状態変更",
+        "mail_archive": "メールを対応不要にした",
+        "mail_unarchive": "メールの対応不要を元に戻した",
         "mail_report_send": "メールの週ごとのまとめを送信",
         "mail_notion": "メールをNotionに登録",
         "mail_account_create": "受信するメールアドレスを追加",
@@ -3708,9 +3723,12 @@ def mail_patch(
     if "status" in changes and changes["status"] not in mail.MAIL_STATUSES:
         raise HTTPException(400, f"不明な状態です: {changes['status']}")
     if "status" in changes and staff:
-        raise HTTPException(403, "メールの状態（対応不要など）を変えられるのは管理者だけです")
+        raise HTTPException(403, STATUS_ADMIN_ONLY)
     if changes.get("status") == "pending_approval":
         raise HTTPException(400, "「確認待ち」には、返信画面の「確認をお願いする」からしてください")
+    if changes.get("status") == "archived" and row["status"] in ("replied", "pending_approval"):
+        # 返信したメール・確認待ちのメールは対応不要にしない (二重の対応・確認のお願いの見落とし)
+        raise HTTPException(409, _archive_refused(row["status"]))
     if staff and "draft_reply" in changes and row["status"] == "pending_approval":
         raise HTTPException(409, PENDING_LOCKED)
     if "draft_reply" in changes:
@@ -3760,10 +3778,13 @@ def mail_patch(
             (changes["priority"], "手動変更", mail_id),
         )
     if "status" in changes:
-        conn.execute(
-            "UPDATE mails SET status = ? WHERE id = ?",
-            (changes["status"], mail_id),
+        # 確かめた後に、ほかの人が返信した・確認をお願いしたときは変えない (ほかの変更もしない)
+        cur = conn.execute(
+            "UPDATE mails SET status = ? WHERE id = ? AND status = ?",
+            (changes["status"], mail_id, row["status"]),
         )
+        if not cur.rowcount:
+            raise HTTPException(409, STATUS_CHANGED)
         if changes["status"] == "archived" and row["status"] != "archived":
             # 対応不要にした時刻も残す (週ごとのまとめの「対応不要にした」の数)
             conn.execute("UPDATE mails SET archived_at = ? WHERE id = ?",
@@ -3790,6 +3811,89 @@ def mail_patch(
     return {"updated": mail_id, "category": r["category"],
             "assignee_user_id": r["assignee_user_id"],
             "assignee_name": r["assignee_name"] or ""}
+
+
+# メール担当者が、メールの状態 (対応不要など) を変えようとしたとき
+STATUS_ADMIN_ONLY = "メールの状態（対応不要など）を変えられるのは管理者だけです"
+# 画面で見ていた後に、ほかの人がメールの状態を変えたとき (返信した・確認をお願いした など)
+STATUS_CHANGED = "このメールの状態が、ほかの操作で変わりました。受信箱を開き直して確かめてください"
+
+
+def _archive_refused(status: str) -> str:
+    """対応不要にできない状態のときの、分かりやすい理由."""
+    return {
+        "replied": "このメールは、もう返信してあります（対応不要にはしていません）",
+        "pending_approval": "このメールは確認待ちです。返信画面で返信文を確かめて、"
+                            "「承認して送信」か「差し戻す」を押してください（対応不要にはしていません）",
+        "archived": "このメールは、もう対応不要になっています",
+    }.get(status, STATUS_CHANGED)
+
+
+@app.post("/api/mail/{mail_id}/archive")
+def mail_archive(
+    mail_id: int, body: MailArchiveBody, user=Depends(require_mail_user),
+    conn=Depends(get_conn),
+):
+    """未対応のメールを、ワンタップで「対応不要」にする (受信箱の行・返信画面のボタン).
+
+    画面が見ていた状態 (from_status) が未対応で、いまも未対応のときだけ変える。見ている間に
+    ほかの人が返信した・確認をお願いした・対応不要にしたときは 409 (分かりやすい理由を返す)。
+    確認待ちのメールは、確認のお願いを見落とさないよう、ここでは対応不要にしない。
+    返り値の previous_status と archived_at は「元に戻す」(/unarchive) で送り返してもらう。
+    メール担当者は 403 (対応不要にするかは管理者が決める)。
+    """
+    if _is_mail_staff(user):
+        raise HTTPException(403, STATUS_ADMIN_ONLY)
+    row = _mail_or_404(conn, mail_id)
+    if body.from_status != "unhandled":
+        raise HTTPException(400, "対応不要にできるのは、未対応のメールだけです")
+    if row["status"] != body.from_status:
+        raise HTTPException(409, _archive_refused(row["status"]))
+    at = now_iso()
+    # 確かめた後に返信・確認のお願いがあったときは変えない (書き込みの中でもう一度確かめる)
+    cur = conn.execute(
+        "UPDATE mails SET status = 'archived', archived_at = ? WHERE id = ? AND status = ?",
+        (at, mail_id, body.from_status))
+    if not cur.rowcount:
+        raise HTTPException(409, _archive_refused(_mail_or_404(conn, mail_id)["status"]))
+    _audit(conn, user, "mail_archive", detail=f"mail={mail_id} status={body.from_status}->archived")
+    return {"updated": mail_id, "status": "archived", "previous_status": body.from_status,
+            "archived_at": at, "subject": row["subject"]}
+
+
+@app.post("/api/mail/{mail_id}/unarchive")
+def mail_unarchive(
+    mail_id: int, body: MailUnarchiveBody, user=Depends(require_mail_user),
+    conn=Depends(get_conn),
+):
+    """「対応不要にしました」の「元に戻す」: 対応不要にする前の状態 (未対応) に戻す.
+
+    対応不要のままで、対応不要にした時刻が /archive の返した archived_at と同じときだけ戻す。
+    その間にほかの人が返信した・確認をお願いした・未対応に戻した・対応不要にし直したときは
+    409 (分かりやすい理由を返す)。メール担当者は 403。
+    """
+    if _is_mail_staff(user):
+        raise HTTPException(403, STATUS_ADMIN_ONLY)
+    row = _mail_or_404(conn, mail_id)
+    if body.restore_to != "unhandled":
+        raise HTTPException(400, "元に戻せるのは、未対応から対応不要にしたメールだけです")
+    if row["status"] != "archived":
+        raise HTTPException(409, {
+            "replied": "このメールは、対応不要にした後にほかの人が返信しました（元に戻していません）",
+            "pending_approval": "このメールは、対応不要にした後にメール担当者が確認をお願いしました"
+                                "（元に戻していません。確認待ちになっています）",
+            "unhandled": "このメールは、もう未対応に戻っています",
+        }.get(row["status"], STATUS_CHANGED))
+    cur = conn.execute(
+        "UPDATE mails SET status = ?, archived_at = NULL"
+        " WHERE id = ? AND status = 'archived' AND archived_at = ?",
+        (body.restore_to, mail_id, body.archived_at))
+    if not cur.rowcount:
+        # 同じ「対応不要」でも、その後にほかの人が対応不要にし直した (別の操作) か、書き込みの間に変わった
+        raise HTTPException(409, "このメールは、その後にほかの操作で状態が変わりました"
+                                 "（元に戻していません）。受信箱を開き直して確かめてください")
+    _audit(conn, user, "mail_unarchive", detail=f"mail={mail_id} status=archived->{body.restore_to}")
+    return {"updated": mail_id, "status": body.restore_to}
 
 
 def _check_send_approval(r, approve_request: str | None) -> None:

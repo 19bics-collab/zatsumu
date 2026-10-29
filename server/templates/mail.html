@@ -79,6 +79,38 @@
   .new-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
                border-radius: 99px; background: #b45309; color: #fff; font-weight: 700;
                margin-right: .35rem; vertical-align: 1px; white-space: nowrap; }
+  /* 一覧の「対応不要」ボタン (管理者だけ・未対応の行だけ)。押しても返信画面は開かない */
+  .mail-row td.act { text-align: right; white-space: nowrap; width: 1%; padding-left: .4rem; }
+  .row-archive { background: #fff; color: #374151; border: 1px solid #cbd5e1; border-radius: 8px;
+                 padding: .35rem .7rem; font-size: .82rem; min-height: 34px; white-space: nowrap;
+                 font-weight: 600; }
+  @media (pointer: coarse) { .row-archive { min-height: 40px; padding: .45rem .8rem; } }
+  /* 列が1つ増えても、見出しと短い欄 (優先度・担当・下書き) を1文字ずつ折り返さない */
+  #mail-table th { white-space: nowrap; }
+  #mail-table td[data-label="優先度"], #mail-table td[data-label="担当"],
+  #mail-table td[data-label="下書き"] { white-space: nowrap; }
+  .row-archive:hover { background: #f3f4f6; border-color: #9ca3af; }
+  .row-archive:focus-visible { outline: 2px solid #14532d; outline-offset: 2px; }
+  /* 対応不要にした行が、受信箱 (未対応) から消えるときの動き */
+  .mail-row.leaving { opacity: 0; transform: translateX(1.5rem); pointer-events: none;
+                      transition: opacity .25s ease, transform .25s ease; }
+  @media (prefers-reduced-motion: reduce) { .mail-row.leaving { transition: none; } }
+  /* 画面の下の知らせ (「対応不要にしました　元に戻す」)。返信画面より下に重ねる */
+  #toasts { position: fixed; left: 50%; transform: translateX(-50%); z-index: 5;
+            bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+            width: min(34rem, calc(100vw - 32px)); display: flex; flex-direction: column;
+            gap: .5rem; pointer-events: none; }
+  .toast { display: flex; align-items: center; gap: .6rem; background: #1f2937; color: #fff;
+           border-radius: 10px; padding: .45rem .5rem .45rem .9rem; font-size: .9rem;
+           box-shadow: 0 4px 14px rgba(0,0,0,.25); pointer-events: auto;
+           animation: toast-in .2s ease; }
+  .toast span { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.45; }
+  .toast button { background: transparent; color: #86efac; font-weight: 700; min-height: 40px;
+                  padding: .4rem .7rem; white-space: nowrap; font-size: .9rem; }
+  .toast button:hover { background: rgba(255,255,255,.08); }
+  .toast.out { opacity: 0; transition: opacity .3s ease; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(.5rem); } }
+  @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
   /* 最終受信の時刻など (今すぐ受信の横) */
   #fetch-info { margin-left: .6rem; font-size: .8rem; font-weight: normal; color: #6b7280;
                 overflow-wrap: anywhere; }
@@ -541,6 +573,14 @@
     .table-wrap tr td:last-child { border-bottom: none; }
     .table-wrap td[data-label]::before { content: attr(data-label); display: block;
                      font-weight: 600; color: #6b7280; font-size: .72rem; margin-bottom: .15rem; }
+    /* 「対応不要」ボタンはカードの右上 (優先度の横。短いので件名などを狭めない) */
+    .table-wrap tr.mail-row { position: relative; }
+    .table-wrap tr.mail-row td.act { position: absolute; top: .45rem; right: .6rem; width: auto;
+                                     padding: 0; border: none; }
+    .table-wrap .row-archive { min-height: 40px; padding: .45rem .8rem; font-size: .85rem; }
+    #mail-table td[data-label="担当"] { white-space: normal; }
+    .table-wrap tr.mail-row td.act:empty { display: none; }
+    .table-wrap tr.mail-row td:first-child { padding-right: 7.5rem; }
   }
 </style>
 </head>
@@ -627,7 +667,9 @@
   受信するメールアドレスが2つ以上あるときは、件名の前にどのアドレスに届いたか（宛先）が出て、
   上の「アドレス」で絞り込めます（返信は、届いたアドレスから送ります）。
   上の「取引先」を押すと、取引先（会社・お客様）ごとに、前に届いたメールと送った返信をまとめて見られます。
-  <span id="admin-help">受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
+  <span id="admin-help">返事のいらないメールは、行の右の「対応不要」を押すとすぐ一覧から外れます
+  （間違えたときは、画面の下に出る「元に戻す」で戻せます）。
+  受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
   </details>
   <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
   理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
@@ -639,7 +681,7 @@
     </div>
   </div>
   <div class="table-wrap"><table id="mail-table">
-    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th></tr></thead>
+    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th><th id="th-act" aria-label="対応不要にする"></th></tr></thead>
     <tbody></tbody>
   </table></div>
 </section>
@@ -1190,6 +1232,9 @@
   <button class="ghost">閉じる</button>
 </div>
 
+<!-- 画面の下の知らせ (対応不要にした・元に戻した)。中の文字は textContent で入れる -->
+<div id="toasts" role="status" aria-live="polite"></div>
+
 <script>
 // 勤怠画面と同じトークンキー。別ドメインで開いた場合は localStorage も別になるので、
 // メール画面では改めてログインが必要（意図的な分離）。
@@ -1269,6 +1314,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
 
 function showLogin(withError) {
   stopPolling();
+  $("toasts").textContent = "";   // 前の人の「元に戻す」を残さない
   $("app").hidden = true;
   $("device-verify").hidden = true;
   $("login").hidden = false;
@@ -1320,6 +1366,7 @@ async function showApp() {
 function applyRole() {
   const admin = isAdmin();
   $("nav-settings").hidden = !admin;
+  $("th-act").hidden = !admin;     // 一覧の「対応不要」ボタンの列 (管理者だけ)
   $("whoami").textContent = me.name ? me.name + (admin ? "" : "（メール担当）") : "";
   $("admin-help").hidden = !admin;
   $("fetch-error-hint").textContent = admin
@@ -1638,6 +1685,8 @@ function renderInbox(list, keepPlace) {
   const narrowed = [[$("filter").value, "「状態」"], [activeTab !== TAB_ALL, "タブ"],
                     [$("filter-asg").value, "「担当」"], [$("filter-acct").value, "「アドレス」"]]
     .filter(([on]) => on).map(([, name]) => name).join("・");
+  const admin = isAdmin();   // 「対応不要」ボタンは管理者だけ (サーバも確かめる)
+  shownMails = new Map(list.map(m => [Number(m.id), m]));
   tbody.innerHTML = list.map(m => {
     const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
     return `
@@ -1649,21 +1698,128 @@ function renderInbox(list, keepPlace) {
       <td data-label="状態"><span class="st-${esc(m.status)}">${esc(ST[m.status] || m.status)}</span>${m.status === "pending_approval" && m.requested_by ? `<small>（${esc(m.requested_by)}）</small>` : ""}${m.returned ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : ""}</td>
       <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
       <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
+      ${admin ? `<td class="act">${m.status === "unhandled"
+        ? `<button type="button" class="row-archive" data-archive="${Number(m.id)}"${archivingIds.has(Number(m.id)) ? " disabled" : ""}
+             aria-label="対応不要にする（${esc(snip(m.subject, 30)) || "件名なし"}）">対応不要</button>` : ""}</td>` : ""}
     </tr>`;
   }).join("") ||
     (filtered
-      ? `<tr><td colspan="7"><small>この条件に合うメールはありません（上の${narrowed}を「すべて」に戻すと全部見られます）</small></td></tr>`
+      ? `<tr><td colspan="8"><small>この条件に合うメールはありません（上の${narrowed}を「すべて」に戻すと全部見られます）</small></td></tr>`
       : isAdmin()
-        ? `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`
-        : `<tr><td colspan="7"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
+        ? `<tr><td colspan="8"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`
+        : `<tr><td colspan="8"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
-    tr.onclick = () => openMail(+tr.dataset.id));
+    tr.onclick = e => {
+      // 「対応不要」ボタンを押したときは、返信画面を開かない
+      const b = e.target.closest("button.row-archive");
+      if (b) { e.stopPropagation(); archiveFromRow(b, tr); return; }
+      openMail(+tr.dataset.id);
+    });
   wrap.scrollLeft = left;
   const again = anchor && tbody.querySelector(`.mail-row[data-id="${Number(anchor.dataset.id)}"]`);
   if (again) window.scrollBy(0, again.getBoundingClientRect().top - anchorTop);
   rememberShown(list);
 }
 $("filter").onchange = () => showInbox();
+
+/* ---------- 対応不要 (ワンタップ) と「元に戻す」 ----------
+   未対応のメールを、確かめの画面を出さずにすぐ対応不要にする (管理者だけ。サーバも確かめる)。
+   間違えたときのために、画面の下に「元に戻す」付きの知らせを6秒ほど出す (続けて押したときは
+   1通ずつ知らせを重ねて、どれも元に戻せる)。見ている間にほかの人が返信していたなどで
+   変えられなかったときは、サーバが返す理由を出す */
+let shownMails = new Map();       // 受信箱に出しているメール (番号 → 一覧の項目。件名を知らせに出す用)
+const archivingIds = new Set();   // 対応不要にしている途中のメール (取り直してもボタンを押せないままにする)
+const TOAST_MS = 6000, TOAST_MAX = 3;
+
+// メールを変えた後に、見ている画面を取り直す (受信箱は見ていた場所を動かさない)
+function afterMailChange() {
+  clientStale = true;
+  refreshInbox();
+  if (viewName === "client" && clientView.key && $("mail-modal").hidden) {
+    loadClient(clientView.key, { keepPlace: true });
+  }
+}
+
+async function archiveMail(id, fromStatus) {
+  return apiJson(`/api/mail/${id}/archive`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from_status: fromStatus }),
+  });
+}
+
+// 一覧の行の「対応不要」。未対応だけを出しているときは、行を動かして消す
+async function archiveFromRow(b, tr) {
+  const id = +b.dataset.archive;
+  if (archivingIds.has(id)) return;
+  archivingIds.add(id);
+  b.disabled = true;
+  const m = shownMails.get(id) || {};
+  const leave = $("filter").value === "unhandled";
+  if (leave) tr.classList.add("leaving");
+  const wait = new Promise(res => setTimeout(res, leave ? 260 : 0));
+  let r = null;
+  try { r = await archiveMail(id, "unhandled"); } catch {}
+  await wait;
+  archivingIds.delete(id);
+  if (!r) {
+    // 変えられなかった (理由はアラートで出した)。行を元に戻して、受信箱を取り直す
+    tr.classList.remove("leaving");
+    b.disabled = false;
+    refreshInbox();
+    return;
+  }
+  if (leave && tr.isConnected) tr.remove();
+  showArchivedToast(id, m.subject, r);
+  refreshInbox();      // タブの数・未対応の数も取り直す
+}
+
+// 「対応不要にしました（件名）　元に戻す」の知らせ。文字は textContent で入れる
+function showArchivedToast(id, subject, r) {
+  const box = $("toasts");
+  // 重ねすぎない (古い知らせから消す。対応不要にしたことはそのまま)
+  while (box.children.length >= TOAST_MAX) box.firstElementChild.remove();
+  const t = document.createElement("div");
+  t.className = "toast";
+  const text = document.createElement("span");
+  text.textContent = `対応不要にしました（${snip(subject, 18) || "件名なし"}）`;
+  const undo = document.createElement("button");
+  undo.type = "button";
+  undo.textContent = "元に戻す";
+  t.append(text, undo);
+  box.append(t);
+  let busy = false, timer = null;
+  const close = () => {
+    clearTimeout(timer);
+    t.classList.add("out");
+    setTimeout(() => t.remove(), 300);
+  };
+  const later = ms => { clearTimeout(timer); timer = setTimeout(() => { if (!busy) close(); }, ms); };
+  later(TOAST_MS);
+  undo.onclick = async () => {
+    if (busy) return;
+    busy = true;
+    undo.disabled = true;
+    undo.textContent = "戻しています…";
+    try {
+      await apiJson(`/api/mail/${id}/unarchive`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ restore_to: r.previous_status, archived_at: r.archived_at }),
+      });
+    } catch {
+      // 戻せなかった (ほかの人が返信した など。理由はアラートで出した)
+      busy = false;
+      close();
+      afterMailChange();
+      return;
+    }
+    busy = false;
+    text.textContent = `未対応に戻しました（${snip(subject, 18) || "件名なし"}）`;
+    undo.remove();
+    later(2500);
+    afterMailChange();
+  };
+}
+
 // 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱の横の「確認待ち」から)。
 // 種類に関係なく全部の確認待ちを見せるため、タブは「すべて」にする
 function showPending() {
@@ -2277,16 +2433,20 @@ $("m-send").onclick = async () => {
   }
 };
 
+// 返信画面の「対応不要にする」: すぐ対応不要にして閉じ、受信箱の下に「元に戻す」を出す。
+// 書きかけの返信文は、閉じるときに今までどおり下書きに残す
 $("m-archive").onclick = async () => {
-  try {
-    await apiJson(`/api/mail/${modal.id}`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "archived" }),
-    });
-    inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
-    clientStale = true;  // 取引先の画面から開いていたら、閉じたときに取り直す
-    await closeModal();
-  } catch {}
+  const b = $("m-archive");
+  const id = modal.id, m = modal.mail || {};
+  if (!id || b.disabled) return;
+  b.disabled = true;
+  let r;
+  try { r = await archiveMail(id, m.status || "unhandled"); }
+  catch { if (modal.id === id) b.disabled = false; return; }
+  inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
+  clientStale = true;  // 取引先の画面から開いていたら、閉じたときに取り直す
+  if (modal.id === id) await closeModal();
+  showArchivedToast(id, m.subject, r);
 };
 
 /* メール担当者の「確認をお願いする」: 返信文・CC・BCC を下書きに残して「確認待ち」にし、

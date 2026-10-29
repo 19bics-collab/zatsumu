@@ -123,6 +123,8 @@ MATRIX = [
     # ここから管理者だけ
     ("POST", "/api/mail/{mid}/send", {"body": "本文"}, False),
     ("POST", "/api/mail/{mid}/send-back", {"note": "直してください"}, False),
+    ("POST", "/api/mail/{mid}/archive", {"from_status": "unhandled"}, False),
+    ("POST", "/api/mail/{mid}/unarchive", {"restore_to": "unhandled", "archived_at": "x"}, False),
     ("POST", "/api/mail/{mid}/notion", {}, False),
     ("GET", "/api/mail/templates", None, False),
     ("POST", "/api/mail/templates", {"name": "新しい定型文", "body": "本文"}, False),
