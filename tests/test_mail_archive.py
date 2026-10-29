@@ -275,6 +275,32 @@ def test_mail_page_has_one_tap_archive_and_undo(client):
     assert "text.textContent = `対応不要にしました（" in page
 
 
+def test_mail_page_puts_archive_button_at_top_of_reply_screen(client):
+    """返信画面の「対応不要にする」は件名の上の列 (本文を全部出すので、下まで進まなくても押せる)."""
+    page = client.get("/mail").text
+    modal = page[page.index('<div id="mail-modal"'):page.index('<div id="att-viewer"')]
+    top = modal[modal.index('<div class="m-top">'):modal.index('<h2 id="m-subject"')]
+    # 上の列に「前のメールに戻る」「対応不要にする」「閉じる」が並び、件名より前にある
+    for marker in ('id="m-back"', 'id="m-archive"', 'id="m-close-top"'):
+        assert marker in top, marker
+    assert modal.count('id="m-archive"') == 1
+    # 下の列にも「閉じる」は残す (返信を送った後にそのまま閉じられる)
+    bar = modal[modal.index('<div class="bar"'):]
+    assert 'id="m-close"' in bar and 'id="m-archive"' not in bar
+    assert '$("m-close").onclick = $("m-close-top").onclick = () => closeModal();' in page
+    # 指で押しやすい高さ。赤 (消す操作) ではなく、「閉じる」(灰色) とも違う見た目
+    assert ".m-top button { min-height: 44px;" in page
+    css = page[page.index("  .m-archive {"):page.index("\n", page.index("  .m-archive {"))]
+    assert "border:" in css and "#b91c1c" not in css and "#c62828" not in css
+    assert 'class="m-archive"' in top and 'id="m-archive" class="ghost"' not in page
+    # 入りきらないときは、右の2つをまとめて次の行に回す
+    assert '<div class="m-top-act">' in top and ".m-top { display: flex;" in page
+    assert "flex-wrap: wrap;" in page[page.index(".m-top {"):page.index("\n", page.index(".m-top {"))]
+    # iPhone の縦では「← 戻る」と短くする (読み上げでは「前のメールに戻る」)
+    assert 'aria-label="前のメールに戻る"' in top and '<span class="m-back-long">前のメールに</span>戻る' in top
+    assert "@media (max-width: 480px) { .m-back-long { display: none; } }" in page
+
+
 def test_mail_page_guards_against_accidental_second_tap(client):
     """行が消えて下の行が上がってきた直後は、同じ所をもう一度押しても次のメールを対応不要にしない."""
     page = client.get("/mail").text

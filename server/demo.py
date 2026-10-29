@@ -375,7 +375,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              category="予約・宿泊のお問い合わせ")
     # 長い本文の確認用: Outlook の個人 (取引先の印は「個人」)。前のメールの引用に、区切りの無い
     # 長い URL・「<mailto:…>」付きのアドレス・長い罫線が入る (スマホで横にはみ出さず、
-    # たたんで出す)。前のやり取り (返信済み) にも長い URL を入れる
+    # 本文を最初から全部出す)。前のやり取り (返信済み) にも長い URL を入れる
     long_url = ("https://reserve.example.com/booking/confirm?reservation_id=RSV2026102800123456789"
                 "&guest_token=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOp&lang=ja")
     add_mail(3500, "木村 美咲", "kimura.demo@outlook.com", "宿泊の予約の確認",
