@@ -14,7 +14,7 @@ idx_sent_mails_sent_at・idx_sent_mails_account)。番号 (key) は「a<届い�
 """
 import re
 
-from . import clients, mail
+from . import clients, mail, mail_search
 
 # 一覧の1回に出す数 (既定と上限) と、「もっと見る」で進める位置の上限
 LIST_LIMIT = 50
@@ -84,13 +84,27 @@ def _client_tag(g, named: dict, addr: str) -> dict:
             "client_kind": c["kind"] if c else ""}
 
 
-def list_sent(conn, offset: int = 0, limit: int = LIST_LIMIT, account: str | None = None) -> dict:
-    """送信箱の一覧 (新しい順)。{"items": [...], "total": 全部の数, "has_more": 続きがあるか}."""
+def list_sent(conn, offset: int = 0, limit: int = LIST_LIMIT, account: str | None = None,
+              terms: list[str] | None = None) -> dict:
+    """送信箱の一覧 (新しい順)。{"items": [...], "total": 全部の数, "has_more": 続きがあるか}.
+
+    terms は検索欄の言葉 (mail_search.parse_query の結果)。あれば、全部を含むメールだけにし、
+    各メールに本文の抜き出し (snippet) を付け、"search" に探し方 (mode)・古いメールを探して
+    いないか (partial) を入れる。
+    """
     offset = max(0, min(int(offset), OFFSET_MAX))
     limit = max(1, min(int(limit), LIST_LIMIT_MAX))
     want = offset + limit + 1
     app_sql, app_params = _account_filter(account, "m.account_id")
     imp_sql, imp_params = _account_filter(account, "s.account_id")
+    g = clients.Grouping(conn)
+    search = None
+    if terms:
+        search = mail_search.Search(conn, terms, g)
+        w, p = search.app_sent_where()
+        app_sql, app_params = f"{app_sql} AND {w}", [*app_params, *p]
+        w, p = search.imported_where()
+        imp_sql, imp_params = f"{imp_sql} AND {w}", [*imp_params, *p]
     app_rows = conn.execute(
         f"SELECT {_APP_COLS} FROM mails m WHERE {_APP_WHERE}{app_sql}"
         " ORDER BY m.replied_at DESC LIMIT ?", (*app_params, want)).fetchall()
@@ -110,7 +124,15 @@ def list_sent(conn, offset: int = 0, limit: int = LIST_LIMIT, account: str | Non
     if linked:
         subjects = {r[0]: r[1] for r in conn.execute(
             f"SELECT id, subject FROM mails WHERE id IN ({','.join('?' * len(linked))})", linked)}
-    g = clients.Grouping(conn)
+    bodies: dict[tuple, str] = {}
+    if search:
+        # 抜き出し用の本文は、出す分だけ読む
+        for kind, table, col in (("a", "mails", "reply_body"), ("i", "sent_mails", "body")):
+            ids = [r["id"] for k, r in page if k == kind]
+            if ids:
+                bodies.update({(kind, r[0]): r[1] for r in conn.execute(
+                    f"SELECT id, substr({col}, 1, ?) FROM {table} WHERE id IN"
+                    f" ({','.join('?' * len(ids))})", (mail_search.BODY_CHARS, *ids))})
     named: dict = {}
     items = []
     for kind, r in page:
@@ -148,9 +170,14 @@ def list_sent(conn, offset: int = 0, limit: int = LIST_LIMIT, account: str | Non
         item["account_label"] = labels.get(acc, mail.DELETED_ACCOUNT_LABEL) if acc else \
             mail.DELETED_ACCOUNT_LABEL
         item.update(_client_tag(g, named, item["to_addr"]))
+        if search:
+            item["snippet"] = search.snippet(bodies.get((kind, r["id"]), ""))
         items.append(item)
-    return {"items": items, "total": total, "has_more": len(merged) > offset + limit,
-            "offset": offset}
+    out = {"items": items, "total": total, "has_more": len(merged) > offset + limit,
+           "offset": offset}
+    if search:
+        out["search"] = {"terms": search.terms, "mode": search.mode, "partial": search.partial}
+    return out
 
 
 def parse_key(key: str) -> tuple[str, int]:

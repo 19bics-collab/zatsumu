@@ -783,8 +783,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE mail_accounts ADD COLUMN {col} {decl}")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
+    # 送信箱の検索で、取引先の名前から宛先を探す用 (宛先のアドレスの種類だけを索引から読む)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sent_mails_to_key ON sent_mails(to_key)")
     _seed_mail_templates(conn)
     migrate_mail_accounts(conn)
+    # 受信箱・送信箱の検索の索引 (server/mail_search.py。表とトリガーを足すだけ。
+    # 前からあるメールが多いときは、起動した後に少しずつ入れる)
+    from . import mail_search
+    mail_search.ensure_index(conn)
 
 
 # 相手のアドレスのドメイン (@ の後ろを小文字にしたもの。@ が無ければ空) を出す SQL の式。

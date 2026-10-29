@@ -848,7 +848,7 @@ def test_mail_page_has_sent_box(client):
                    '"#sent"', "sent_mark", 'id="m-reply-via"'):
         assert marker in page, marker
     # 外から来た文字 (宛先・件名・本文) は esc() か textContent で入れる
-    for safe in ("${esc(it.subject)", "${esc(it.first_line)", "${esc(toLabel(it))",
+    for safe in ("${hl(it.subject, T)", "hl(it.first_line, T)", "${hl(toLabel(it), T)",
                  '$("sd-body").textContent', '$("sd-subject").textContent'):
         assert safe in page, safe
     for unsafe in ("${it.subject}", "${it.first_line}", "${d.body}"):

@@ -192,6 +192,26 @@
   .sort-tg button:first-of-type { border-radius: 6px 0 0 6px; }
   .sort-tg button:last-of-type { border-radius: 0 6px 6px 0; border-left: 0; }
   .sort-tg button[aria-pressed="true"] { background: #e5e7eb; color: #111827; font-weight: 700; }
+  /* 検索欄 (受信箱・送信箱の上)。iPhone で欄を押したときに画面が拡大されないよう、文字は16px以上 */
+  .mail-search { display: flex; align-items: center; gap: .5rem; margin: 0 0 .5rem; min-width: 0; }
+  .mail-search input { flex: 1 1 auto; min-width: 0; width: 100%; box-sizing: border-box;
+                       padding: .55rem .7rem; border: 1px solid #cbd5e1; border-radius: 8px;
+                       font-size: max(16px, 1rem); background: #fff; }
+  .mail-search input:focus { outline: 2px solid #86efac; outline-offset: 0; border-color: #16a34a; }
+  .mail-search input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+  .q-clear { white-space: nowrap; min-height: 40px; padding: .4rem .8rem; flex-shrink: 0; }
+  .q-clear[hidden] { display: none; }
+  .q-info { font-size: .85rem; color: #374151; margin: 0 0 .6rem; overflow-wrap: anywhere;
+            background: #fefce8; border: 1px solid #fde68a; border-radius: 8px; padding: .4rem .7rem; }
+  .q-info[hidden] { display: none; }
+  .q-info small { color: #6b7280; }
+  /* 探した言葉の印と、本文の言葉のあたりの抜き出し */
+  mark.hit { background: #fde047; color: inherit; padding: 0 .05em; border-radius: 2px; }
+  .hit-snip { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+              line-clamp: 2; overflow: hidden; white-space: normal; font-size: .82rem;
+              color: #4b5563; margin-top: .2rem; max-width: 34rem; overflow-wrap: anywhere;
+              font-weight: normal; line-height: 1.45; }
+  .mail-row.done .hit-snip { color: #9ca3af; }
   /* 問い合わせの種類 (一覧のバッジ) */
   .cat { display: inline-block; font-size: .75rem; line-height: 1.5; padding: 0 .45rem;
          border-radius: 99px; background: #e0f2fe; color: #075985; margin-right: .35rem;
@@ -536,6 +556,8 @@
   /* 送信箱 (一覧・1通) */
   .sent-count { font-size: .85rem; color: #6b7280; margin: 0 0 .5rem; }
   .sent-count:empty { display: none; }
+  .sent-count.q-on { color: #374151; background: #fefce8; border: 1px solid #fde68a;
+                     border-radius: 8px; padding: .4rem .7rem; overflow-wrap: anywhere; }
   .sent-list { display: flex; flex-direction: column; gap: .45rem; }
   .sent-row { display: flex; flex-direction: column; gap: .15rem; width: 100%; text-align: left;
               background: #fff; color: #111827; border: 1px solid var(--line); border-radius: 8px;
@@ -814,12 +836,23 @@
   受信するメールアドレスが2つ以上あるときは、件名の前にどのアドレスに届いたか（宛先）が出て、
   上の「アドレス」で絞り込めます（返信は、届いたアドレスから送ります）。
   上の「取引先」を押すと、取引先（会社・お客様）ごとに、前に届いたメールと送った返信をまとめて見られます。
+  一覧の上の検索欄に言葉を入れると、件名・本文・相手の名前とアドレス・取引先の名前・添付ファイルの名前から探します
+  （「鍵」のような1文字でも探せます。「清掃 10月」のように空白で区切ると、全部を含むメールだけが出ます）。
+  探している間は「状態」が「すべて」になり、返信済み・対応不要のメールからも探します
+  （「状態」を選び直せば、その中だけを探します。「✕ 検索をやめる」で元に戻ります）。
   <span id="admin-help">返事のいらないメールは、行の右の「対応不要」を押すとすぐ一覧から外れます
   （間違えたときは、画面の下に出る「元に戻す」で戻せます）。
   受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
   </details>
   <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
   理由は<a href="#" id="ai-warn-link">「設定」の「AI返信（Claude）」</a>で確認できます。</small></p>
+  <div class="mail-search" role="search">
+    <input type="search" id="inbox-q" placeholder="🔍 件名・本文・相手・取引先・添付の名前で探す"
+      aria-label="受信箱のメールを探す" autocomplete="off" autocapitalize="off" spellcheck="false"
+      maxlength="100" enterkeyhint="search">
+    <button type="button" id="inbox-q-clear" class="ghost q-clear" hidden>✕ 検索をやめる</button>
+  </div>
+  <p id="inbox-q-info" class="q-info" role="status" hidden></p>
   <div class="inbox-bar">
     <div id="cat-tabs" class="cat-tabs" role="tablist" aria-label="種類で分ける"></div>
     <div class="sort-tg" role="group" aria-label="並び順">並び順
@@ -844,9 +877,17 @@
     「送信済み」フォルダから自動で取り込みます（受信と同じ間隔です。メールボックスは変えません）。
     Webメールなどから返信したメールは、受信箱でも自動で「返信済み」になり、みんなの画面に出ます
     （つながりが分からないときは、宛先が相手で件名が同じ未対応のメールが1通だけのときに限ります）。
-    行を押すと、本文と宛先・CC、元のメールが見られます。</small></p>
+    行を押すと、本文と宛先・CC、元のメールが見られます。
+    上の検索欄に言葉を入れると、件名・本文・宛先の名前とアドレス・取引先の名前・添付ファイルの名前から探します
+    （空白で区切ると、全部を含むメールだけが出ます）。</small></p>
   </details>
-  <p id="sent-count" class="sent-count"></p>
+  <div class="mail-search" role="search">
+    <input type="search" id="sent-q" placeholder="🔍 件名・本文・宛先・取引先・添付の名前で探す"
+      aria-label="送ったメールを探す" autocomplete="off" autocapitalize="off" spellcheck="false"
+      maxlength="100" enterkeyhint="search">
+    <button type="button" id="sent-q-clear" class="ghost q-clear" hidden>✕ 検索をやめる</button>
+  </div>
+  <p id="sent-count" class="sent-count" role="status"></p>
   <div id="sent-list" class="sent-list"></div>
   <p class="cl-more-row"><button id="sent-more" class="ghost" hidden>もっと見る</button></p>
 </section>
@@ -1554,6 +1595,34 @@ async function apiJson(path, opts = {}) {
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+/* ---------- 検索 (受信箱・送信箱の上の検索欄) の言葉と印 ---------- */
+// 検索欄の言葉 (空白・全角の空白で区切る。サーバ (server/mail_search.py) の分け方と同じ)
+const qTerms = s => [...new Set(String(s || "").split(/\s+/).filter(Boolean))];
+// 印を付ける言葉。全角の英数字で打った言葉 (「１０月」) は、ふつうの形 (「10月」) にも付ける。
+// 長い言葉から先に当てる
+function hlTerms(q) {
+  const out = new Set();
+  for (const t of qTerms(q)) {
+    out.add(t);
+    try { out.add(t.normalize("NFKC")); } catch {}
+  }
+  return [...out].filter(t => t && !/\s/.test(t)).sort((a, b) => b.length - a.length);
+}
+const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// 外から来た文字を esc() してから、探した言葉に印 (<mark>) を付ける (文字をそのまま HTML にしない)
+function hl(text, terms) {
+  const str = String(text ?? "");
+  if (!terms || !terms.length || !str) return esc(str);
+  const re = new RegExp(terms.map(reEsc).join("|"), "gi");
+  let out = "", last = 0;
+  for (const m of str.matchAll(re)) {
+    if (!m[0]) continue;
+    out += esc(str.slice(last, m.index)) + '<mark class="hit">' + esc(m[0]) + "</mark>";
+    last = m.index + m[0].length;
+  }
+  return out + esc(str.slice(last));
+}
+
 function showLogin(withError) {
   stopPolling();
   $("toasts").textContent = "";   // 前の人の「元に戻す」を残さない
@@ -1768,8 +1837,8 @@ const contactLine = m => {
 // 取引先の印の絵: 会社は 🏢、個人 (Gmail・Outlook などのアドレスごとの取引先) は 👤
 const clientIcon = kind => kind === "person" ? "👤" : "🏢";
 // 名前を付けた取引先にまとめた相手なら、取引先の名前 (名前は esc() を通す)
-const clientTag = m => m.client_name
-  ? ` <span class="cl-tag" title="取引先（上の「取引先」で、この取引先とのやり取りをまとめて見られます）">${clientIcon(m.client_kind)} ${esc(m.client_name)}</span>`
+const clientTag = (m, terms) => m.client_name
+  ? ` <span class="cl-tag" title="取引先（上の「取引先」で、この取引先とのやり取りをまとめて見られます）">${clientIcon(m.client_kind)} ${hl(m.client_name, terms)}</span>`
   : "";
 const formTag = m => m.via_form
   ? ` <span class="form-tag" title="HPのお問い合わせフォームから届いたメールです（差出人: ${esc(m.from_addr)}）。相手は本文に書かれたお客様です">HPフォーム経由</span>`
@@ -1802,22 +1871,34 @@ async function showInbox(opts = {}) {
     if ($(id).value) q.set(key, $(id).value);
   }
   q.set("sort", sortMode);
+  // 検索欄の言葉 (自動で取り直すときも、そのまま使う)
+  const word = $("inbox-q").value.trim();
+  if (word) q.set("q", word);
   const path = "/api/mail?" + q;
-  let list;
+  let list, found = null;
   if (opts.auto) {
     try {
       const r = await api(path);
       if (!r.ok) throw new Error("list " + r.status);
       list = await r.json();
+      found = searchMeta(r, word);
     } catch (e) {
       // 次の確認のときにもう一度取り直す (アラートは出さない)
       if (e.message !== "auth" && seq === inboxSeq) { inboxStale = true; connLost = true; renderStatus(); }
       return;
     }
   } else {
-    list = await apiJson(path);
+    const r = await api(path);
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert(e.detail || "エラーが発生しました");
+      throw new Error(e.detail || "api error");
+    }
+    list = await r.json();
+    found = searchMeta(r, word);
   }
   if (seq !== inboxSeq) return;        // 待っている間に、もう一度取り直し始めた
+  inboxFound = found;
   renderInbox(list, opts.auto);
   refreshAiStatus();   // 自動受信の判定などで AI が失敗した・直ったかを、開くたびに出し直す
 }
@@ -1879,6 +1960,8 @@ function renderInbox(list, keepPlace) {
                     [$("filter-asg").value, "「担当」"], [$("filter-acct").value, "「アドレス」"]]
     .filter(([on]) => on).map(([, name]) => name).join("・");
   const admin = isAdmin();   // 「対応不要」ボタンは管理者だけ (サーバも確かめる)
+  // 探しているときは、探した言葉に印を付けて、本文の言葉のあたりを件名の下に出す
+  const T = inboxFound ? hlTerms(inboxFound.q) : null;
   shownMails = new Map(list.map(m => [Number(m.id), m]));
   // 自動で取り直して行が増えた・減ったときは、少しの間「対応不要」を押せないようにする
   // (押そうとした指の下に、別のメールのボタンが来ることがあるため)
@@ -1894,8 +1977,8 @@ function renderInbox(list, keepPlace) {
     return `
     <tr class="mail-row ${["unhandled", "pending_approval"].includes(m.status) ? "" : "done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}" data-id="${id}">
       <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
-      <td data-label="差出人"><strong>${esc(contactLabel(m))}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m)}</td>
-      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${esc(m.subject) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}</td>
+      <td data-label="差出人"><strong>${hl(contactLabel(m), T)}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m, T)}</td>
+      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${hl(m.subject, T) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}${T ? hitSnip(m, T) : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
       <td data-label="状態"><span class="st-${esc(m.status)}">${esc(ST[m.status] || m.status)}</span>${m.status === "pending_approval" && m.requested_by ? `<small>（${esc(m.requested_by)}）</small>` : ""}${m.returned ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : ""}</td>
       <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
@@ -1903,7 +1986,9 @@ function renderInbox(list, keepPlace) {
       <td class="act">${peekButton(m, peeking)}${canArchive ? archiveButton(m) : ""}</td>
     </tr>${peeking ? peekRowHtml(id) : ""}`;
   }).join("") ||
-    (filtered
+    (inboxFound
+      ? `<tr><td colspan="8"><small>「${esc(inboxFound.q)}」に合うメールはありません（言葉を短くするか、言葉を減らしてください${narrowed ? `。上の${narrowed}を「すべて」に戻すと、ほかのメールからも探します` : ""}）</small></td></tr>`
+      : filtered
       ? `<tr><td colspan="8"><small>この条件に合うメールはありません（上の${narrowed}を「すべて」に戻すと全部見られます）</small></td></tr>`
       : isAdmin()
         ? `<tr><td colspan="8"><small>メールはありません（「今すぐ受信」を押すか、設定画面の「受信するメールアドレス」を確認してください）</small></td></tr>`
@@ -1939,9 +2024,100 @@ function renderInbox(list, keepPlace) {
     const id = Number(m.id), c = peekCache.get(id);
     if (peekOpen.has(id) && !peekLoading.has(id) && (!c || !c.data || c.sig !== peekSig(m))) loadPeek(id);
   }
+  renderSearchInfo(list);
   rememberShown(list);
 }
-$("filter").onchange = () => showInbox();
+$("filter").onchange = () => {
+  // 探している間に「状態」を選んだら、その状態の中だけを探す (検索をやめても、選んだ状態のまま)
+  if (searchStatus) searchStatus.picked = true;
+  showInbox();
+};
+
+/* ---------- 受信箱の検索 ----------
+   打ち終わるのを少し待ってから探す (日本語の変換中は探さない。Enter ですぐ探す)。
+   探している間は「状態」を「すべて」にして、返信済み・対応不要のメールからも探す
+   (探している間に「状態」を選べば、その状態の中だけ)。検索をやめたら前の「状態」に戻す。
+   タブ・担当・アドレスの絞り込みと一緒に効く。言葉は自動の取り直しでもそのまま使う */
+let inboxFound = null;     // 今出している一覧を探した言葉と、合ったメールの数 (探していなければ null)
+let searchStatus = null;   // 探す前の「状態」{ before, picked } (探していなければ null)
+let inboxQTimer = null;
+
+// 一覧の答えのヘッダから、合ったメールの数など (探していなければ null)
+function searchMeta(r, word) {
+  if (!word) return null;
+  const total = Number(r.headers.get("X-Search-Total"));
+  return { q: word, total: Number.isFinite(total) ? total : null,
+           partial: r.headers.get("X-Search-Partial") === "1" };
+}
+// 件名の下の、本文の言葉のあたりと、名前の合った添付ファイル
+function hitSnip(m, T) {
+  const files = (m.match_files || []).slice(0, 3);
+  if (!m.snippet && !files.length) return "";
+  return `<span class="hit-snip">${m.snippet ? hl(m.snippet, T) : ""}${
+    files.map(f => `${m.snippet ? " " : ""}📎 ${hl(f, T)}`).join(" ")}</span>`;
+}
+function renderSearchInfo(list) {
+  const box = $("inbox-q-info");
+  const f = inboxFound;
+  box.hidden = !f;
+  if (!f) return;
+  const total = f.total ?? list.length;
+  const st = $("filter").value;
+  const parts = [`「${f.q}」に合うメール ${total}通`];
+  if (total > list.length) parts.push(`（新しい方から${list.length}通を出しています。言葉を足すと絞り込めます）`);
+  box.textContent = parts.join("");
+  const note = document.createElement("small");
+  note.textContent = "　" + [
+    st ? `状態「${ST[st] || st}」の中から探しています` : "返信済み・対応不要のメールからも探しています",
+    activeTab !== TAB_ALL ? "選んでいるタブの中だけです" : "",
+    f.partial ? "とても古いメールは探していません" : ""].filter(Boolean).join("・");
+  box.appendChild(note);
+}
+// 検索欄の言葉に合わせて「状態」を変える (探し始めたら「すべて」、やめたら前の状態)
+function syncSearchStatus(word) {
+  if (word && !searchStatus) {
+    searchStatus = { before: $("filter").value, picked: false };
+    $("filter").value = "";
+  } else if (!word && searchStatus) {
+    if (!searchStatus.picked) $("filter").value = searchStatus.before;
+    searchStatus = null;
+    renderStatus();
+  }
+}
+function applyInboxSearch() {
+  clearTimeout(inboxQTimer);
+  const word = $("inbox-q").value.trim();
+  $("inbox-q-clear").hidden = !$("inbox-q").value;
+  // 同じ言葉で出しているときは取り直さない (空白を足しただけ など)
+  if ((inboxFound ? inboxFound.q : "") === word && !!searchStatus === !!word) return;
+  syncSearchStatus(word);
+  showInbox().catch(() => {});
+}
+function clearInboxSearch() {
+  $("inbox-q").value = "";
+  applyInboxSearch();
+}
+$("inbox-q").addEventListener("input", e => {
+  $("inbox-q-clear").hidden = !$("inbox-q").value;
+  if (e.isComposing) return;           // 日本語の変換中は探さない (確定してから)
+  clearTimeout(inboxQTimer);
+  inboxQTimer = setTimeout(applyInboxSearch, 350);
+});
+$("inbox-q").addEventListener("compositionend", () => {
+  clearTimeout(inboxQTimer);
+  inboxQTimer = setTimeout(applyInboxSearch, 350);
+});
+$("inbox-q").addEventListener("keydown", e => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    applyInboxSearch();
+    e.target.blur();                   // スマホのキーボードを閉じて、結果を見やすくする
+  } else if (e.key === "Escape" && e.target.value) {
+    clearInboxSearch();
+  }
+});
+$("inbox-q-clear").onclick = () => clearInboxSearch();
 
 /* ---------- 一覧のプルダウン (本文とその後のやり取り) ----------
    行の「本文 ▼」で、その行のすぐ下に本文と、その後のやり取り (こちらの返信・後から届いた
@@ -2288,6 +2464,12 @@ function undoToast(items) {
 // 種類に関係なく全部の確認待ちを見せるため、タブは「すべて」にする
 function showPending() {
   if (viewName !== "inbox") pushNav({ v: "inbox" });   // 取引先などから来たら、戻るで戻れるように
+  // 確認待ちを全部見せるため、検索はやめる
+  if ($("inbox-q").value || searchStatus) {
+    $("inbox-q").value = "";
+    $("inbox-q-clear").hidden = true;
+    searchStatus = null;
+  }
   $("filter").value = "pending_approval";
   setTab(TAB_ALL);
   renderTabs();
@@ -5349,6 +5531,8 @@ async function loadSent(more, atLeast = 0) {
   const p = new URLSearchParams({ offset: String(offset),
                                   limit: String(Math.min(200, Math.max(50, atLeast))) });
   if ($("sent-acct").value) p.set("account", $("sent-acct").value);
+  const word = $("sent-q").value.trim();
+  if (word) p.set("q", word);
   $("sent-more").disabled = true;
   let r;
   try { r = await apiJson("/api/mail/sent?" + p); }
@@ -5357,11 +5541,15 @@ async function loadSent(more, atLeast = 0) {
   sentList.items = more ? sentList.items.concat(r.items) : r.items;
   sentList.total = r.total;
   sentList.hasMore = r.has_more;
+  sentList.q = word;
+  sentList.partial = !!(r.search && r.search.partial);
   sentStale = false;
   renderSent();
 }
 function sentRowHtml(it) {
   const more = it.more_to ? ` ほか${Number(it.more_to)}人` : "";
+  // 探しているときは、探した言葉に印を付け、書き出しの代わりに本文の言葉のあたりを出す
+  const T = sentList.q ? hlTerms(sentList.q) : null;
   return `
   <button type="button" class="sent-row" data-key="${esc(it.key)}">
     <span class="sent-top"><span>${esc(fmtDate(it.sent_at))}</span>
@@ -5370,17 +5558,21 @@ function sentRowHtml(it) {
       ${it.marked_replied ? '<span class="done-badge">✓ 受信箱のメールを返信済みにしました</span>' : ""}
       ${it.note ? '<span class="warn-badge">宛先に届かず</span>' : ""}
       ${it.attachment_count ? `<span>📎 ${Number(it.attachment_count)}</span>` : ""}</span>
-    <span><span class="sent-to">宛先: ${esc(toLabel(it))}</span>${esc(more)}${clientTag(it)}</span>
-    <span class="sent-subj">${esc(it.subject) || "（件名なし）"}</span>
-    <span class="sent-first">${esc(it.first_line) || "（本文なし）"}</span>
+    <span><span class="sent-to">宛先: ${hl(toLabel(it), T)}</span>${esc(more)}${clientTag(it, T)}</span>
+    <span class="sent-subj">${hl(it.subject, T) || "（件名なし）"}</span>
+    <span class="sent-first">${T && it.snippet ? hl(it.snippet, T) : hl(it.first_line, T) || "（本文なし）"}</span>
     ${it.mail_id ? `<span class="sent-orig">↩ 元のメール: ${esc(it.mail_subject) || "（件名なし）"}</span>` : ""}
   </button>`;
 }
 function renderSent() {
-  const { items, total } = sentList;
-  $("sent-count").textContent = `送ったメール ${Number(total)}通`;
+  const { items, total, q } = sentList;
+  $("sent-count").textContent = q
+    ? `「${q}」に合う送ったメール ${Number(total)}通` + (sentList.partial ? "（とても古いメールは探していません）" : "")
+    : `送ったメール ${Number(total)}通`;
+  $("sent-count").classList.toggle("q-on", !!q);
   $("sent-list").innerHTML = items.map(sentRowHtml).join("") ||
-    '<p class="cl-empty">まだ送ったメールはありません（この画面から返信するか、Webメールなどから送ると、ここに出ます）</p>';
+    (q ? `<p class="cl-empty">「${esc(q)}」に合う送ったメールはありません（言葉を短くするか、言葉を減らしてください）</p>`
+       : '<p class="cl-empty">まだ送ったメールはありません（この画面から返信するか、Webメールなどから送ると、ここに出ます）</p>');
   $("sent-more").hidden = !sentList.hasMore;
   $("sent-more").disabled = false;
 }
@@ -5397,6 +5589,39 @@ $("sent-list").onclick = e => {
 };
 $("sent-more").onclick = () => loadSent(true);
 $("sent-acct").onchange = () => loadSent(false);
+// 送信箱の検索 (受信箱と同じ: 打ち終わるのを少し待つ・変換中は探さない・Enter ですぐ)
+let sentQTimer = null;
+function applySentSearch() {
+  clearTimeout(sentQTimer);
+  $("sent-q-clear").hidden = !$("sent-q").value;
+  if ((sentList.q || "") === $("sent-q").value.trim()) return;
+  loadSent(false);
+}
+function clearSentSearch() {
+  $("sent-q").value = "";
+  applySentSearch();
+}
+$("sent-q").addEventListener("input", e => {
+  $("sent-q-clear").hidden = !$("sent-q").value;
+  if (e.isComposing) return;
+  clearTimeout(sentQTimer);
+  sentQTimer = setTimeout(applySentSearch, 350);
+});
+$("sent-q").addEventListener("compositionend", () => {
+  clearTimeout(sentQTimer);
+  sentQTimer = setTimeout(applySentSearch, 350);
+});
+$("sent-q").addEventListener("keydown", e => {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    applySentSearch();
+    e.target.blur();
+  } else if (e.key === "Escape" && e.target.value) {
+    clearSentSearch();
+  }
+});
+$("sent-q-clear").onclick = () => clearSentSearch();
 
 /* 送信箱の1通 (本文は折り返して全部出す。中で別にスクロールさせない) */
 async function showSentDetail(key) {

@@ -1000,7 +1000,7 @@ def test_mail_page_has_contact_ui(client):
                    "（担当者が直した宛先。元の相手: ${c}）"):
         assert marker in page, marker
     # 外から来た文字 (お客様の名前・アドレス) は esc() か textContent で入れる
-    assert "${esc(contactLabel(m))}" in page and 'title="HPのお問い合わせフォームから届いたメールです（差出人: ${esc(m.from_addr)}）' in page
+    assert "${hl(contactLabel(m), T)}" in page and 'title="HPのお問い合わせフォームから届いたメールです（差出人: ${esc(m.from_addr)}）' in page
     assert '$("m-to-note").innerHTML' not in page and '$("m-misdir-text").innerHTML' not in page
     assert '$("m-misdir-text").textContent' in page and "b.textContent = `${m.subject" in page
 

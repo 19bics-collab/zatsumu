@@ -911,7 +911,7 @@ def test_mail_page_has_client_screens(client):
         '<summary>使い方を見る</summary>\n  <p><small>受信メールを新しい順', "")
     # 外から来た文字 (名前・アドレス・件名・本文) は esc() か textContent で入れる
     for safe in ("${esc(c.name)", "${esc(sub)", "${esc(t.subject)", "${esc(t.snippet)",
-                 "${esc(who)}", "${esc(a.addr)}", "${esc(m.client_name)}", "${esc(ruleText(r.pattern))}",
+                 "${esc(who)}", "${esc(a.addr)}", "${hl(m.client_name, terms)}", "${esc(ruleText(r.pattern))}",
                  '$("cd-name").textContent', '$("cd-note-view").textContent',
                  '$("m-client-name").textContent', "el.textContent = tlBodies.get(cacheKey)"):
         assert safe in page, safe

@@ -2,6 +2,7 @@
 import asyncio
 import os
 import time
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,8 +17,8 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import (address_book, clients, db, devices, imaging, mail, mail_events, notify, notion,
-               sent_box,
+from . import (address_book, clients, db, devices, imaging, mail, mail_events, mail_search,
+               notify, notion, sent_box,
                reports, retention, tz)
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
@@ -180,6 +181,33 @@ async def _mail_loop() -> None:
             await asyncio.sleep(min(left, MAIL_LOOP_RECHECK_SEC))
 
 
+def _build_search_index() -> None:
+    """前からあるメールを検索の索引に入れる (起動の後に少しずつ。ほかの処理を長く待たせない).
+
+    入れ終わるまでの検索は、メールを1通ずつ見て探す (server/mail_search.py)。
+    失敗しても止めない (次の起動のときに続きから入れる。それまでは1通ずつ見て探す)。
+    """
+    try:
+        conn = db.connect(DATA_DIR / "zatsumu.db")
+        try:
+            if mail_search.index_ready(conn) or not mail_search.fts_supported():
+                return
+            started = time.monotonic()
+            n = mail_search.build_index(conn, pause=SEARCH_BUILD_PAUSE_SEC, stop=_search_build_stop)
+            if mail_search.index_ready(conn):
+                print(f"検索の索引に {n} 通を入れました（{time.monotonic() - started:.0f}秒）")
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"検索の索引を作れませんでした（1通ずつ見て探します）: {e}")
+
+
+# 検索の索引を作るとき、少しずつ入れる間に休む秒数 (受信・画面の書き込みを先に通す) と、
+# サーバを止めるときに作るのをやめる合図
+SEARCH_BUILD_PAUSE_SEC = 0.05
+_search_build_stop = threading.Event()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     conn = db.connect(DATA_DIR / "zatsumu.db")
@@ -232,9 +260,14 @@ async def lifespan(app: FastAPI):
         conn.close()
     task = asyncio.create_task(_background_loop())
     mail_task = asyncio.create_task(_mail_loop())
+    # 検索の索引 (前からあるメールの分) は、起動を待たせないよう別のスレッドで作る
+    _search_build_stop.clear()
+    search_task = asyncio.create_task(asyncio.to_thread(_build_search_index))
     yield
     task.cancel()
     mail_task.cancel()
+    _search_build_stop.set()
+    search_task.cancel()
 
 
 # 自動の API 説明ページ(/docs, /redoc, /openapi.json)は出さない。社内ツールで
@@ -2649,14 +2682,28 @@ def _mail_scope_filters(user, assignee: str | None, account: str | None,
             raise HTTPException(400, "account は届いたアドレスの番号か none で指定してください")
 
 
+# 受信箱の一覧に出す数 (並べた順に、この数まで)
+MAIL_LIST_LIMIT = 500
+
+
+def _search_terms(q: str | None) -> list[str]:
+    """検索欄の言葉 (空なら [])。長すぎる・多すぎるときは 400."""
+    try:
+        return mail_search.parse_query(q)
+    except mail_search.QueryError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.get("/api/mail")
 def list_mail(
+    response: Response = None,   # FastAPI が入れる (検索の数をヘッダに書く。関数として呼ぶときは無し)
     status: str | None = None,
     priority: int | None = None,
     category: str | None = None,
     assignee: str | None = None,
     account: str | None = None,
     sort: str | None = None,
+    q: str | None = None,
     user=Depends(require_mail_user),
     conn=Depends(get_conn),
 ):
@@ -2666,10 +2713,17 @@ def list_mail(
     (none で担当なし、me で自分の担当)、account は届いたアドレスの番号
     (none で削除したアドレス) で絞り込む。出すのは並べた順に500通まで
     (新しい順なら新しい方の500通)。
+    q は検索欄の言葉 (件名・本文・差出人と宛先・添付ファイルの名前・取引先の名前。空白で区切ると
+    全部を含むメール。server/mail_search.py)。ほかの絞り込みと一緒に効く (状態を送らなければ、
+    返信済み・対応不要も探す)。探したときは、各メールに本文の抜き出し (snippet) と名前の合った
+    添付ファイル (match_files) を付け、合ったメールの数をヘッダ X-Search-Total に、探し方
+    (index = 索引 / scan = 1通ずつ) を X-Search-Mode に、古いメールを探していないときは
+    X-Search-Partial: 1 を入れる。
     """
     order = MAIL_SORTS.get(sort or "date")
     if order is None:
         raise HTTPException(400, "sort は date (新しい順) か priority (優先度順) で指定してください")
+    terms = _search_terms(q)
     where, params = [], []
     if status:
         if status not in mail.MAIL_STATUSES:
@@ -2686,14 +2740,37 @@ def list_mail(
         where.append("m.category = ?")
         params.append("" if category == "none" else category)
     _mail_scope_filters(user, assignee, account, where, params)
+    # 名前を付けた取引先にまとめた相手には、取引先の名前も出す (決まりは表から1回だけ読む)
+    g = clients.Grouping(conn)
+    search = None
+    if terms:
+        search = mail_search.Search(conn, terms, g)
+        w, p = search.inbox_where()
+        where.append(w)
+        params += p
     sql = _MAIL_LIST_SELECT
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += order + " LIMIT 500"
+    sql += order + f" LIMIT {MAIL_LIST_LIMIT}"
     rows = conn.execute(sql, params).fetchall()
     counts = _thread_counts(conn, rows)
-    # 名前を付けた取引先にまとめた相手には、取引先の名前も出す (決まりは表から1回だけ読む)
-    g = clients.Grouping(conn)
+    files: dict[int, list[str]] = {}
+    if search:
+        total = len(rows)
+        if total >= MAIL_LIST_LIMIT:   # 出しきれないときだけ、合うメールを全部数える
+            total = conn.execute("SELECT COUNT(*) FROM mails m WHERE " + " AND ".join(where),
+                                 params).fetchone()[0]
+        if response is not None:
+            response.headers["X-Search-Total"] = str(total)
+            response.headers["X-Search-Mode"] = search.mode
+            if search.partial:
+                response.headers["X-Search-Partial"] = "1"
+        with_files = [r["id"] for r in rows if r["attachment_count"]]
+        for i in range(0, len(with_files), 400):
+            part = with_files[i:i + 400]
+            for a in conn.execute("SELECT mail_id, filename FROM mail_attachments WHERE mail_id IN ("
+                                  + ",".join("?" * len(part)) + ") ORDER BY id", part):
+                files.setdefault(a[0], []).append(a[1])
     named: dict[str, dict | None] = {}
     out = []
     for r in rows:
@@ -2706,6 +2783,9 @@ def list_mail(
         item["client_key"] = c["key"] if c else ""
         item["client_name"] = c["name"] if c else ""
         item["client_kind"] = c["kind"] if c else ""
+        if search:
+            item["snippet"] = search.snippet(r["body"])
+            item["match_files"] = search.matching_names(files.get(r["id"], []))
         out.append(item)
     return out
 
@@ -3526,16 +3606,19 @@ def delete_mail_client_rule(
 
 @app.get("/api/mail/sent")
 def list_sent_mail(
-    offset: int = 0, limit: int | None = None, account: str | None = None,
+    offset: int = 0, limit: int | None = None, account: str | None = None, q: str | None = None,
     _user=Depends(require_mail_user), conn=Depends(get_conn),
 ):
     """送信箱の一覧 (新しい順。管理者とメール担当者が見られる).
 
     account は送ったアドレスの番号 (none で削除したアドレス) で絞り込む。offset・limit で続きを読む。
+    q は検索欄の言葉 (件名・本文・宛先と差出人・添付ファイルの名前・取引先の名前。空白で区切ると
+    全部を含むメール)。
     """
     off, lim = _paging(offset, limit, sent_box.LIST_LIMIT, sent_box.LIST_LIMIT_MAX)
+    terms = _search_terms(q)
     try:
-        return sent_box.list_sent(conn, off, lim, account)
+        return sent_box.list_sent(conn, off, lim, account, terms)
     except ValueError as e:
         raise HTTPException(400, str(e))
 

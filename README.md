@@ -256,6 +256,14 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   「**送信済みだけ取り込む（受信箱には入れない）**」でつなぐと、受信箱には入れずに送ったメールだけを取り込む
   （IMAP を有効にし、2段階認証の「アプリ パスワード」で imap.gmail.com:993。送信済みフォルダは自動で探す）。
   アドレスごとに「送信済みも取り込む」を外すこともできる。
+  受信箱と送信箱の上の**検索欄**で、件名・本文・相手（差出人・宛先・CC の名前とアドレス）・
+  名前を付けた取引先の名前・添付ファイルの名前から探せます（日本語の言葉の途中・1文字でも見つかる。
+  空白で区切ると全部を含むメールだけ。全角の英数字で打っても見つかる。探した言葉に色が付き、
+  件名の下に本文の言葉のあたりが出る）。タブ・担当・アドレスの絞り込みと一緒に効き、探している間は
+  「状態」が「すべて」になって返信済み・対応不要からも探す（選び直せばその状態の中だけ。やめると元の状態）。
+  1分ごとの自動更新でも言葉はそのまま。何万通でも速いよう、SQLite の FTS5（trigram）の索引を
+  DB のトリガーでいつも合わせる（前からあるメールは起動後に少しずつ入れる。入れ終わるまでと、
+  FTS5 が使えない SQLite では、新しい方から2万通を1通ずつ見て探す）。
   **スタッフ（メール担当者）に下書きを任せる**こともできます（設定画面の「メール担当者」で、
   登録されている人を「担当にする」。その人は自分のトークンでメール画面に入り、受信箱を見て
   返信文を作れる（生成・定型文・CC・BCC・種類と担当も使える）が、**送信はできない**。
@@ -337,7 +345,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
-| GET | `/api/mail` | admin・メール担当者 | 受信メール一覧（既定は新しい順。`sort=priority` で優先度順。差出人の付けた日付が取り込んだ時刻より先なら取り込んだ時刻で並べる。status（`pending_approval`=確認待ち）/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
+| GET | `/api/mail` | admin・メール担当者 | 受信メール一覧（`q` で検索: 件名・本文・相手・取引先の名前・添付の名前。空白区切りは全部を含むもの・100文字・10語まで。各メールに `snippet`（本文の言葉のあたり）・`match_files`、ヘッダ `X-Search-Total`（合った数）・`X-Search-Mode`（`index` / `scan`）・古いメールを探していなければ `X-Search-Partial: 1`。既定は新しい順。`sort=priority` で優先度順。差出人の付けた日付が取り込んだ時刻より先なら取り込んだ時刻で並べる。status（`pending_approval`=確認待ち）/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
 | GET | `/api/mail/{id}` | admin・メール担当者 | メール詳細（確認のお願い・差し戻しの中身も。本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧・この相手とのやり取り `thread`（新しい順に30件まで。送った返信付き）と全部の件数 `thread_total`。`?thread=false` でやり取りを省く） |
 | GET | `/api/mail/{id}/conversation` | admin・メール担当者 | 受信箱のプルダウン用。本文と、この後のやり取り `after`（このメールへの返信・後から届いた同じ相手／ヘッダでつながるメールとその返信を古い順に。届いたメールは30通まで）と件数 `after_total`。`?earlier=true` で前のやり取り `earlier` も（直前の30通を古い順に。無しなら件数 `earlier_total` だけ） |
 | GET | `/api/mail/{id}/attachments/{添付id}` | admin・メール担当者 | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
@@ -356,7 +364,7 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | POST | `/api/mail/{id}/misdirect-checked` | admin・メール担当者 | 前の版で返信がHPのフォームの送信元に送られていたメールの注意を消す（お客様に連絡し直した。記録に残す） |
 | POST | `/api/mail/{id}/send-back` | admin | 確認待ちを「差し戻す」（`note` が必要。未対応に戻し、コメントをメール担当者に見せる） |
 | GET | `/api/mail/me` | admin・メール担当者 | ログインした人の役割（`admin` / `staff`）と、画面の表示に使う設定（秘密は入れない） |
-| GET | `/api/mail/sent` | admin・メール担当者 | 送信箱の一覧（新しい順。`items`・`total`・`has_more`。`offset`・`limit`（1〜200、既定50）・`account`（番号 / none）） |
+| GET | `/api/mail/sent` | admin・メール担当者 | 送信箱の一覧（新しい順。`items`・`total`・`has_more`。`offset`・`limit`（1〜200、既定50）・`account`（番号 / none）・`q`（検索。受信箱と同じ。各メールに `snippet`、答えに `search`: `terms`・`mode`・`partial`）） |
 | GET | `/api/mail/sent/{key}` | admin・メール担当者 | 送信箱の1通（`a<メール番号>` = この画面から送った返信 / `i<番号>` = 取り込んだもの。本文・宛先・CC・BCC・添付・元のメール・取引先） |
 | GET | `/api/mail/sent/{key}/attachments/{id}` | admin・メール担当者 | 取り込んだメールの添付ファイル |
 | GET | `/api/mail/staff` | admin | メール担当者にできる人の一覧 |
