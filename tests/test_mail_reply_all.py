@@ -461,13 +461,16 @@ def test_reply_all_cc_starts_as_the_server_says(client):
     page = client.get("/mail").text
     i = page.index("async function openMail(id)")
     block = page[i:page.index("\n}\n", i)]
-    assert ('$("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc)\n'
+    # 前に閉じたときに残した CC・BCC (draft_rcpt_saved) も、確認待ちと同じようにそのまま出す
+    assert "const kept = proposed || !!m.draft_rcpt_saved;" in block
+    assert ('$("m-cc").value = replied ? addrList(m.reply_cc) : kept ? addrList(m.draft_cc)\n'
             '    : m.reply_all_default ? modal.ccCandidates : "";') in block
     assert '$("m-cc-all").checked = !!$("m-cc").value;' in block
     assert "renderCcNote();" in block
     # BCC は自動では入れない
-    assert ('$("m-bcc").value = replied ? addrList(m.reply_bcc) : proposed ? addrList(m.draft_bcc) : "";'
+    assert ('$("m-bcc").value = replied ? addrList(m.reply_bcc) : kept ? addrList(m.draft_bcc) : "";'
             in block)
+    assert "modal.savedRcpt = rcptKey();" in block
     # 外すと空に、付け直すと (外す前の欄か) 候補に戻る
     assert 'if ($("m-cc-all").checked) cc.value = modal.ccSaved || modal.ccCandidates;' in page
     assert 'else { modal.ccSaved = cc.value; cc.value = ""; }' in page
@@ -891,3 +894,92 @@ def test_staff_draft_cc_is_kept_for_the_admin(client, users, tmp_path, monkeypat
     assert r.status_code == 200, r.text
     d = client.get(f"/api/mail/{mid2}", headers=auth(admin)).json()
     assert d["draft_cc"] == ["suzuki@y.jp"] and d["draft_bcc"] == ["boss@x.jp"]
+
+
+# ---------- 書きかけの CC・BCC を残す・確認に同じ人を2回出さない (レビューの指摘) ----------
+
+def test_draft_cc_and_bcc_are_kept_when_the_reply_screen_is_closed(client, users, tmp_path):
+    """返信画面を閉じたときに、書きかけの CC・BCC も残す (開き直したときに、外した人を
+    「全員に返信」で入れ直さない)。空にした (チェックを外した) ことも残す."""
+    _, admin = users
+    staff = _staff(tmp_path)
+    _setup(client, admin, mail_from="info@bics.example", imap_user="info@bics.example")
+    mid = _add_mail_with_cc(tmp_path, "info@bics.example, bucho@x.jp", "keiri@x.jp")
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["reply_all_default"] and d["draft_rcpt_saved"] is False
+    assert d["reply_cc_candidates"] == ["bucho@x.jp", "keiri@x.jp"]
+    # 返信文だけの保存 (前の画面) では、CC・BCC は残したことにならない
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_reply": "書きかけ", "seen_request": ""})
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/mail/{mid}", headers=auth(admin)).json()["draft_rcpt_saved"] is False
+    # keiri@ を外して閉じた
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_reply": "書きかけの返信文", "draft_cc": " bucho@x.jp ",
+                           "draft_bcc": "", "seen_request": ""})
+    assert r.status_code == 200, r.text
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["draft_rcpt_saved"] is True
+    assert (d["draft_reply"], d["draft_cc"], d["draft_bcc"]) == ("書きかけの返信文", ["bucho@x.jp"], [])
+    # チェックを外して (CC を空にして) 閉じた
+    r = client.patch(f"/api/mail/{mid}", headers=auth(staff),
+                     json={"draft_reply": "書きかけの返信文", "draft_cc": "",
+                           "draft_bcc": "boss@x.jp", "seen_request": ""})
+    assert r.status_code == 200, r.text
+    d = client.get(f"/api/mail/{mid}", headers=auth(staff)).json()
+    assert d["draft_rcpt_saved"] is True and d["draft_cc"] == [] and d["draft_bcc"] == ["boss@x.jp"]
+    # 改行は入れない・長すぎるものは断る
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_cc": "a@x.jp\nb@x.jp", "seen_request": ""})
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/mail/{mid}", headers=auth(admin)).json()["draft_cc"] == ["a@x.jp b@x.jp"]
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_cc": "a@x.jp, " * 2000, "seen_request": ""})
+    assert r.status_code == 400 and "CC" in r.json()["detail"]
+    # 書いたことは操作の記録 (状態の変更) には出さない
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert not conn.execute("SELECT 1 FROM audit_log WHERE action = 'mail_update'").fetchone()
+
+
+def test_staff_cannot_change_draft_cc_while_pending(client, users, tmp_path, monkeypatch):
+    """確認待ちの間は、メール担当者は CC・BCC も変えられない (管理者が見ている内容なので)."""
+    from server import app as app_module
+    _, admin = users
+    staff = _staff(tmp_path)
+    _setup(client, admin, mail_from="info@bics.example", imap_user="info@bics.example")
+    monkeypatch.setattr(app_module.notify, "deliver_async", lambda *a, **kw: None)
+    mid = _add_mail_with_cc(tmp_path, "info@bics.example, bucho@x.jp", "keiri@x.jp")
+    r = client.post(f"/api/mail/{mid}/request-approval", headers=auth(staff),
+                    json={"body": "返信です", "cc": ["keiri@x.jp"], "bcc": []})
+    assert r.status_code == 200, r.text
+    req_at = r.json()["requested_at"]
+    r = client.patch(f"/api/mail/{mid}", headers=auth(staff),
+                     json={"draft_cc": "", "seen_request": req_at})
+    assert r.status_code == 409
+    assert client.get(f"/api/mail/{mid}", headers=auth(admin)).json()["draft_cc"] == ["keiri@x.jp"]
+    # 画面を開いた後に確認をお願いされていたら、管理者の分も上書きしない
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_cc": "", "seen_request": ""})
+    assert r.status_code == 409
+    r = client.patch(f"/api/mail/{mid}", headers=auth(admin),
+                     json={"draft_cc": "bucho@x.jp", "seen_request": req_at})
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/mail/{mid}", headers=auth(admin)).json()["draft_cc"] == ["bucho@x.jp"]
+
+
+def test_mail_page_keeps_draft_cc_and_dedupes_the_confirm(client):
+    """閉じるときに CC・BCC も残し、送る前の確認・確認のお願いでは宛先と同じ人を CC・BCC から除く."""
+    page = client.get("/mail").text
+    i = page.index("async function saveDraft()")
+    block = page[i:page.index("\n}\n", i)]
+    assert "const rcptChanged = rcpt !== modal.savedRcpt;" in block
+    assert 'Object.assign(body, { draft_cc: $("m-cc").value, draft_bcc: $("m-bcc").value });' in block
+    assert "modal.savedRcpt = rcpt;" in block
+    dedupe = ('const [cc, bcc] = dedupeRcpts(to, splitAddrs($("m-cc").value), '
+              'splitAddrs($("m-bcc").value));')
+    for handler in ('$("m-send").onclick', '$("m-request").onclick'):
+        i = page.index(handler)
+        block = page[i:page.index("\n};\n", i)]
+        assert dedupe in block, handler
+        assert block.index(dedupe) < block.index("confirm("), handler

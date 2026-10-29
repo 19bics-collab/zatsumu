@@ -3064,6 +3064,21 @@ def _header_addrs(*headers) -> list[tuple[str, str]]:
     return out
 
 
+def _direct_parents(in_reply_to, references) -> list[str]:
+    """送ったメールの直接の返信の元の Message-ID (In-Reply-To。無ければ References の最後 = 一番新しいもの).
+
+    In-Reply-To を付けず References だけ付けるメールソフトもあるので、そのときは References の
+    最後を直接の元とみなす (前のメールを返信済みにして、続きのメールを未対応に残さないように)。
+    """
+    return message_ids(in_reply_to)[:3] or message_ids(references)[-1:]
+
+
+def _reply_subject(subject) -> bool:
+    """件名の一番前が「Re:」「返信:」「AW:」「SV:」など (返信の印) か (転送の印・印なしは違う)."""
+    mt = _SUBJECT_PREFIX_RE.match(unicodedata.normalize("NFKC", str(subject or "")))
+    return bool(mt) and mt.group(1).lower() not in _FORWARD_PREFIXES
+
+
 def _sent_refs(in_reply_to, references) -> list[str]:
     """返信の元を探す順の Message-ID (In-Reply-To、次に References の新しい方から)."""
     ids = message_ids(in_reply_to)[:3] + list(reversed(message_ids(references)))[:REFS_PER_MAIL]
@@ -3088,12 +3103,15 @@ def _find_by_refs(conn, refs: list[str]) -> int | None:
 def _sent_link_target(conn, p: dict) -> tuple[int | None, str, bool]:
     """送ったメールがどの届いたメールへの返信か (番号, 'header' / 'subject', 返信済みにしてよいか).
 
-    分からなければ (None, '', False)。In-Reply-To (直接の返信の元) が届いたメールに無いときは
-    (まだ取り込んでいない続きのメールへの返信かもしれない)、References・件名で同じやり取りの
-    前のメールにつなぐだけにし、返信済みにはしない (そのメールが後で届いたら、そちらにつなぎ直して
-    返信済みにする: link_new_mails_to_sent)。
+    分からなければ (None, '', False)。直接の返信の元 (In-Reply-To。無ければ References の最後:
+    _direct_parents) が届いたメールに無いときは (まだ取り込んでいない続きのメールへの返信かも
+    しれない)、References・件名で同じやり取りの前のメールにつなぐだけにし、返信済みにはしない
+    (そのメールが後で届いたら、そちらにつなぎ直して返信済みにする: link_new_mails_to_sent)。
+    件名だけでつながるときは、件名が「Re:」などで始まるとき (Webメールの「返信」で送ったもの)
+    だけ返信済みにする。「ご連絡」「お問い合わせ」のような、よくある件名で新しく書いたメール
+    (請求書の送付など、別の用件のことがある) では、つなぐだけにする。
     """
-    direct = message_ids(p.get("in_reply_to"))[:3]
+    direct = _direct_parents(p.get("in_reply_to"), p.get("references_hdr"))
     mail_id = _find_by_refs(conn, direct) if direct else None
     if mail_id is not None:
         return mail_id, "header", True
@@ -3103,6 +3121,7 @@ def _sent_link_target(conn, p: dict) -> tuple[int | None, str, bool]:
     if mail_id is not None:
         return mail_id, "header", may_mark
     # ヘッダでつながらないときだけ: 宛先が相手のアドレスで、件名が同じ未対応のメールが1通だけ
+    may_mark = may_mark and _reply_subject(p.get("subject"))
     key, forward = subject_key(p.get("subject"))
     to = list(dict.fromkeys(a.lower() for _n, a in _header_addrs(p.get("to_addr"))))[:_IN_MAX]
     if forward or not key or not to:
@@ -3115,14 +3134,34 @@ def _sent_link_target(conn, p: dict) -> tuple[int | None, str, bool]:
     return (hits[0], "subject", may_mark) if len(hits) == 1 else (None, "", False)
 
 
-def _mail_addrs(conn, mail_id: int) -> set[str]:
-    """届いたメールの相手のアドレス (相手・差出人・Reply-To。小文字)."""
+def _mail_addrs(conn, mail_id: int, rules: ContactRules) -> set[str]:
+    """届いたメールの相手として数えるアドレス (小文字).
+
+    相手 (受信したときに decide_contact で決めたお客様) と、ふつうの人のメールなら差出人・
+    Reply-To も。HPのフォームから届いたメールは、決めたお客様だけ (差出人・Reply-To は
+    フォームの送信元・webmaster@ などで、Webメールの「返信」でそこに送ってもお客様には届かない)。
+    お客様が分からない (本文にアドレスが無かった) フォームのメールは空 (返信済みにしない)。
+    相手以外のアドレスは、相手を決めるときに使わないもの (自分たち・社内の人・自社のドメイン・
+    フォームや自動送信の送信元 (noreply@ など)) なら数えない。
+    """
     row = conn.execute("SELECT * FROM mails WHERE id = ?", (mail_id,)).fetchone()
     if not row:
         return set()
     m = dict(row)
-    values = [counterpart(m)[1], m.get("from_addr"), m.get("contact_addr"), m.get("reply_to")]
-    return {str(v).strip().lower() for v in values if v and str(v).strip()}
+    out = set()
+    contact = counterpart(m)[1].strip().lower()
+    if contact and contact not in rules.own and not rules.automated(contact):
+        out.add(contact)
+    if m.get("contact_via_form"):
+        return out
+    for value in (m.get("from_addr"), m.get("reply_to")):
+        a = str(value or "").strip().lower()
+        if not a or a in out or a in rules.own or a in rules.people or rules.automated(a) \
+                or rules.form_kind(a) == "form" \
+                or _in_domains(a.rpartition("@")[2], rules.own_domains):
+            continue
+        out.add(a)
+    return out
 
 
 def _marks_reply(p: dict, own: set, mail_addrs: set) -> bool:
@@ -3140,31 +3179,151 @@ def _marks_reply(p: dict, own: set, mail_addrs: set) -> bool:
 
 def _mark_replied(conn, mail_id: int, sent_id: int, p: dict, source: str, account_label: str,
                   link_kind: str) -> bool:
-    """届いたメールを、送信済みフォルダの返信で返信済みにする (未対応のときだけ。コミットは呼び出し側).
+    """届いたメールを、送信済みフォルダの返信で返信済みにする (未対応・確認待ちのときだけ。
+    コミットは呼び出し側).
 
-    返信済み・対応不要・確認待ちのメールは変えない。送った時刻・件名・本文・宛先・CC も残し
-    (返信画面に出る)、操作の記録にも残す。変えたら True。
+    返信済み・対応不要のメールは変えない。確認待ち (メール担当者が確認をお願いした) のメールも
+    返信済みにする (相手にはもう返信が届いているので、後で「承認して送信」を押して2通目を
+    送ってしまわないように。担当者の下書きは送らずに残し、操作の記録に確認待ちだったことと
+    頼んだ人を書く)。送った時刻・件名・本文・宛先・CC も残し (返信画面に出る)、
+    操作の記録にも残す。変えたら True。
     """
+    before = conn.execute("SELECT status, requested_by FROM mails WHERE id = ?",
+                          (mail_id,)).fetchone()
+    if not before or before[0] not in ("unhandled", "pending_approval"):
+        return False
     to = _header_addrs(p.get("to_addr"))
     cc = [a for _n, a in _header_addrs(p.get("cc_addr"))]
     cur = conn.execute(
         "UPDATE mails SET status = 'replied', replied_at = ?, replied_by = ?, reply_subject = ?,"
         " reply_body = ?, reply_sent_to = ?, reply_cc = ?, reply_bcc = '', reply_source = ?,"
-        " reply_sent_id = ?,"
+        " reply_sent_id = ?, approved_by = '',"
         " reply_message_id = CASE WHEN reply_message_id = '' THEN ? ELSE reply_message_id END"
-        " WHERE id = ? AND status = 'unhandled'",
+        " WHERE id = ? AND status = ?",
         (p["sent_at"], REPLIED_BY_LABELS.get(source, "Webメール"), _header_text(p["subject"]),
          p["body"], to[0][1] if to else "", ", ".join(cc), source, sent_id,
-         p["message_id"], mail_id))
+         p["message_id"], mail_id, before[0]))
     if not cur.rowcount:
         return False
     conn.execute("UPDATE sent_mails SET marked_replied = 1 WHERE id = ?", (sent_id,))
     subject = " ".join(str(p.get("subject") or "").split())[:60]
+    was = (f" was=pending_approval requested_by={before[1] or '(不明)'}"
+           if before[0] == "pending_approval" else "")
     conn.execute(
         "INSERT INTO audit_log (admin_id, action, detail, at) VALUES (0, 'mail_auto_replied', ?, ?)",
         (f"mail={mail_id} sent={sent_id} via={source} account={account_label} link={link_kind}"
-         f" subject={subject}", tz.utc_iso(datetime.now(timezone.utc))))
+         f"{was} subject={subject}", tz.utc_iso(datetime.now(timezone.utc))))
     return True
+
+
+# この画面から送ったが宛先に届かなかった返信 (操作の記録 mail_send_refused) の控えを、
+# Message-ID が記録に無い (前の版の) ときに宛先・件名・時刻で見分ける幅 (記録は送った後に書くので、
+# 控えの Date より後になる。送信サーバの待ち時間の分も見る)
+REFUSED_COPY_BEFORE = timedelta(minutes=5)
+REFUSED_COPY_AFTER = timedelta(minutes=30)
+_REFUSED_TO_RE = re.compile(r"to=(\S*)")
+_REFUSED_MSGID_RE = re.compile(r" msgid=(<[^<>\s]*>)")
+
+
+def refused_sends(conn) -> list[dict]:
+    """操作の記録に残っている、宛先に届かなかった返信 ({to, subject, msgid, at}。読むだけ).
+
+    記録は「to=… refused=… delivered=… [msgid=<…> ]subject=…[ saved=…]」の形
+    (msgid はこの版から。前の版の記録には無い)。
+    """
+    out = []
+    for detail, at in conn.execute(
+            "SELECT detail, at FROM audit_log WHERE action = 'mail_send_refused'"):
+        d = str(detail or "")
+        mt = _REFUSED_TO_RE.match(d)
+        if not mt:
+            continue
+        idx = d.find(" subject=")
+        subject = d[idx + len(" subject="):] if idx >= 0 else ""
+        if " saved=" in subject:
+            subject = subject.rpartition(" saved=")[0]
+        mid = _REFUSED_MSGID_RE.search(d[:idx] if idx >= 0 else d)
+        out.append({"to": mt.group(1).strip().lower(), "subject": " ".join(subject.split()),
+                    "msgid": mid.group(1) if mid else "", "at": _parse_time(at)})
+    return out
+
+
+def refused_copy(p: dict, refused: list[dict]) -> dict | None:
+    """送ったメール p が、この画面から送って宛先に届かなかった返信の控えなら、その記録 (違えば None).
+
+    CC・BCC の人には届いたので送信済みフォルダに控えを残しているが、相手 (宛先) には届いて
+    いない。この版は送信箱に同じ Message-ID を入れておくので取り込まないが、前の版 (送信箱より前。
+    自動更新で戻ることがある) が残した控えは、Webメールからの返信に見えてしまう。
+    記録に Message-ID があればそれで、無ければ (前の版の記録) 宛先・件名と時刻で見分ける。
+    """
+    if not refused:
+        return None
+    msgid = str(p.get("message_id") or "")
+    for r in refused:
+        if r["msgid"] and r["msgid"] == msgid:
+            return r
+    to = {a.lower() for _n, a in _header_addrs(p.get("to_addr"))}
+    subject = " ".join(str(p.get("subject") or "").split())
+    sent = _parse_time(p.get("sent_at"))
+    if not to or sent is None:
+        return None
+    for r in refused:
+        if r["msgid"] or r["at"] is None or r["to"] not in to or r["subject"] != subject:
+            continue
+        if sent - REFUSED_COPY_BEFORE <= r["at"] <= sent + REFUSED_COPY_AFTER:
+            return r
+    return None
+
+
+def refused_copy_note(r: dict) -> str:
+    """届かなかった返信の控えを送信箱に出すときの注意."""
+    return (f"宛先（{r['to']}）には届きませんでした"
+            "（この画面から送ったもの。CC・BCC の人には届いています。メールは未対応に戻しました）")
+
+
+def undo_refused_auto_replies(conn) -> int:
+    """前の版が残した「宛先に届かなかった返信」の控えを取り込んで、返信済みにしてしまったメールを
+    未対応に戻す (起動時。何度呼んでも同じ。戻した数を返す).
+
+    戻すのは、その控えで自動で返信済みにしたままのメールだけ (その後に返信し直したものは
+    変えない)。控えは送信箱に「この画面」から送ったものとして残し、注意を付ける。操作の記録にも残す。
+    """
+    refused = refused_sends(conn)
+    tos = sorted({r["to"] for r in refused if r["to"]})
+    msgids = sorted({r["msgid"] for r in refused if r["msgid"]})
+    if not tos and not msgids:
+        return 0
+    rows = conn.execute(
+        "SELECT s.*, m.id AS mail_id FROM sent_mails s JOIN mails m ON m.reply_sent_id = s.id"
+        " WHERE s.marked_replied = 1 AND s.source != 'app' AND m.status = 'replied'"
+        " AND m.reply_source != '' AND (s.to_key IN (" + _marks(tos) + ")"
+        " OR s.message_id IN (" + _marks(msgids) + "))", (*tos, *msgids)).fetchall()
+    undone = 0
+    now = tz.utc_iso(datetime.now(timezone.utc))
+    for row in rows:
+        s = dict(row)
+        r = refused_copy(s, refused)
+        if r is None:
+            continue
+        cur = conn.execute(
+            "UPDATE mails SET status = 'unhandled', replied_at = NULL, replied_by = '',"
+            " reply_subject = '', reply_body = '', reply_sent_to = '', reply_cc = '',"
+            " reply_bcc = '', reply_source = '', reply_sent_id = NULL,"
+            " reply_message_id = CASE WHEN reply_message_id = ? THEN '' ELSE reply_message_id END"
+            " WHERE id = ? AND status = 'replied' AND reply_sent_id = ?",
+            (s["message_id"], s["mail_id"], s["id"]))
+        if not cur.rowcount:
+            continue
+        conn.execute("UPDATE sent_mails SET marked_replied = 0, source = 'app', note = ?"
+                     " WHERE id = ?", (refused_copy_note(r), s["id"]))
+        conn.execute(
+            "INSERT INTO audit_log (admin_id, action, detail, at)"
+            " VALUES (0, 'mail_auto_replied_undone', ?, ?)",
+            (f"mail={s['mail_id']} sent={s['id']} to={r['to']} reason=宛先に届かなかった返信の控え",
+             now))
+        undone += 1
+    conn.commit()
+    return undone
 
 
 # 届いたメール1通につなぎ直す・つなぐ送ったメールの数の上限 (細工したメールで重くならないように)
@@ -3177,9 +3336,10 @@ def link_new_mails_to_sent(conn, added: list[dict], settings: dict) -> int:
 
     つなぐのは、まだどのメールにもつながっていない送ったメールと、In-Reply-To がこのメールなのに
     同じやり取りの前のメールにつなぐだけにしていたもの (返信済みにはしていないもの)。
-    返信済みにするのは、送ったメールの In-Reply-To (直接の返信の元) がこのメールで、宛先・CC に
-    このメールの相手が入っていて、このメールが届いた後に送ったものだけ。Message-ID は差出人が
-    自由に付けられるので、References に入っているだけ・こちらが送ったメールと同じ Message-ID の
+    返信済みにするのは、送ったメールの直接の返信の元 (In-Reply-To。無ければ References の最後:
+    _direct_parents) がこのメールで、宛先・CC にこのメールの相手 (_mail_addrs) が入っていて、
+    このメールが届いた後に送ったものだけ。Message-ID は差出人が
+    自由に付けられるので、References の途中に入っているだけ・こちらが送ったメールと同じ Message-ID の
     メールでは返信済みにしない (外の人が、届いたとたんに返信済みのメールを作れないように)。
     返信済みにしたメールは added の status も 'replied' にする。返信済みにした数を返す.
     """
@@ -3187,6 +3347,7 @@ def link_new_mails_to_sent(conn, added: list[dict], settings: dict) -> int:
     if not ids or not conn.execute("SELECT 1 FROM sent_mails LIMIT 1").fetchone():
         return 0
     own = own_addresses(settings, list_accounts(conn))
+    rules = contact_rules(conn, settings)
     labels = {r[0]: r[1] for r in conn.execute("SELECT id, label FROM mail_accounts")}
     by_id = {a["id"]: a for a in added if a.get("id")}
     marked = 0
@@ -3204,7 +3365,7 @@ def link_new_mails_to_sent(conn, added: list[dict], settings: dict) -> int:
         done = False
         for row in rows:
             p = dict(row)
-            direct = message_id in message_ids(p["in_reply_to"])[:3]
+            direct = message_id in _direct_parents(p["in_reply_to"], p["references_hdr"])
             if p["linked_mail_id"] is not None and not direct:
                 continue   # ほかのメールにつながっている (このメールへの直接の返信ではない)
             conn.execute("UPDATE sent_mails SET linked_mail_id = ?, link_kind = 'header'"
@@ -3216,7 +3377,7 @@ def link_new_mails_to_sent(conn, added: list[dict], settings: dict) -> int:
                             ).fetchone()[0] != 1:
                 continue   # このメールが届く前に送ったもの (返信ではない)
             if addrs is None:
-                addrs = _mail_addrs(conn, mail_id)
+                addrs = _mail_addrs(conn, mail_id, rules)
             if _marks_reply(p, own, addrs) and _mark_replied(
                     conn, mail_id, p["id"], p, p["source"], labels.get(p["account_id"], ""),
                     "header"):
@@ -3231,10 +3392,13 @@ def business_sent_mail(conn, p: dict, rules: ContactRules) -> bool:
     """送信済みだけ取り込むアドレス (個人の Gmail など) から送ったメールのうち、送信箱に入れる
     仕事のメールか.
 
-    届いたメールへの返信 (ヘッダ・件名でつながる) か、宛先・CC に、前にメールをくれた相手か
-    アドレス帳の人が入っているもの (自分たち・社内の人・自社のドメインのアドレスは数えない)。
-    それ以外 (家族・友人・お店などへの個人のメール) は、メール担当者みんなが見られる送信箱にも
-    検索にも入れない (添付も保存しない)。
+    届いたメールへの返信 (ヘッダ・件名でつながる) か、宛先・CC に、アドレス帳の人か、
+    仕事の相手と分かる人が入っているもの (自分たち・社内の人・自社のドメインのアドレスは数えない)。
+    仕事の相手と分かる人は、前にメールをくれて、対応不要にしていないメールがある人。
+    Gmail などの誰でも作れるアドレスの人は、返信した (または確認待ちの) メールがある人だけ
+    (家族・知り合いが一度だけ info@ にくれたメールで、私用のメールを取り込まないように)。
+    それ以外 (家族・友人・お店などへの個人のメール、対応不要にしただけの人へのメール) は、
+    メール担当者みんなが見られる送信箱にも検索にも入れない (添付も保存しない)。
     """
     if _sent_link_target(conn, p)[0] is not None:
         return True
@@ -3248,12 +3412,18 @@ def business_sent_mail(conn, p: dict, rules: ContactRules) -> bool:
     addrs = list(dict.fromkeys(addrs))[:_IN_MAX]
     if not addrs:
         return False
-    marks = _marks(addrs)
-    return bool(
-        conn.execute("SELECT 1 FROM mails WHERE lower(contact_addr) IN (" + marks + ") LIMIT 1",
-                     addrs).fetchone()
-        or conn.execute("SELECT 1 FROM address_book WHERE lower(email) IN (" + marks + ") LIMIT 1",
-                        addrs).fetchone())
+    if conn.execute("SELECT 1 FROM address_book WHERE lower(email) IN (" + _marks(addrs) + ")"
+                    " LIMIT 1", addrs).fetchone():
+        return True
+    free = [a for a in addrs if a.rpartition("@")[2] in _FREE_MAIL_DOMAINS]
+    work = [a for a in addrs if a not in free]
+    if work and conn.execute(
+            "SELECT 1 FROM mails WHERE lower(contact_addr) IN (" + _marks(work) + ")"
+            " AND status != 'archived' LIMIT 1", work).fetchone():
+        return True
+    return bool(free and conn.execute(
+        "SELECT 1 FROM mails WHERE lower(contact_addr) IN (" + _marks(free) + ")"
+        " AND status IN ('replied', 'pending_approval') LIMIT 1", free).fetchone())
 
 
 def _record_sent_fetch(conn, account_id: int, error: str = "") -> None:
@@ -3331,7 +3501,9 @@ def fetch_sent_mail(conn, settings: dict, account: dict, attachment_dir=None) ->
     shown_folder = _mutf7_decode(folder)
     parsed: list[tuple[int, dict, bytes]] = []
     # 送信済みだけ取り込むアドレス (個人の Gmail など) は、仕事のメールだけ入れる
-    rules = contact_rules(conn, settings) if account.get("sent_only") else None
+    rules = contact_rules(conn, settings)
+    sent_only = bool(account.get("sent_only"))
+    refused = refused_sends(conn) if raws else []
     for uid, raw in raws:
         try:
             p = parse_message(raw)
@@ -3346,8 +3518,10 @@ def fetch_sent_mail(conn, settings: dict, account: dict, attachment_dir=None) ->
         if conn.execute("SELECT 1 FROM mails WHERE reply_message_id = ? AND reply_source = ''"
                         " LIMIT 1", (p["message_id"],)).fetchone():
             continue
-        if rules is not None and not business_sent_mail(conn, p, rules):
+        if sent_only and not business_sent_mail(conn, p, rules):
             continue
+        # 前の版がこの画面から送って、宛先に届かなかった返信の控え (返信済みにはしない)
+        p["refused"] = refused_copy(p, refused)
         parsed.append((uid, p, raw))
 
     own = own_addresses(settings, list_accounts(conn))
@@ -3374,13 +3548,14 @@ def fetch_sent_mail(conn, settings: dict, account: dict, attachment_dir=None) ->
             cur = conn.execute(
                 "INSERT OR IGNORE INTO sent_mails (account_id, message_id, imap_uid, folder,"
                 " from_addr, from_name, to_addr, cc_addr, to_key, to_name, subject, body,"
-                " sent_at, fetched_at, in_reply_to, references_hdr, source)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " sent_at, fetched_at, in_reply_to, references_hdr, source, note)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (account["id"], p["message_id"], uid, shown_folder, p["from_addr"],
                  _one_line(p["from_name"]), _header_text(p["to_addr"]), p["cc_addr"],
                  to[0][1].lower() if to else "", to[0][0] if to else "",
                  p["subject"], p["body"], p["sent_at"], now, p["in_reply_to"],
-                 p["references_hdr"], source))
+                 p["references_hdr"], "app" if p["refused"] else source,
+                 refused_copy_note(p["refused"]) if p["refused"] else ""))
             if not cur.rowcount:
                 continue
             sent_id = cur.lastrowid
@@ -3397,7 +3572,8 @@ def fetch_sent_mail(conn, settings: dict, account: dict, attachment_dir=None) ->
                 continue
             conn.execute("UPDATE sent_mails SET linked_mail_id = ?, link_kind = ? WHERE id = ?",
                          (mail_id, kind, sent_id))
-            if may_mark and _marks_reply(p, own, _mail_addrs(conn, mail_id)) and _mark_replied(
+            if may_mark and not p["refused"] and _marks_reply(
+                    p, own, _mail_addrs(conn, mail_id, rules)) and _mark_replied(
                     conn, mail_id, sent_id, p, source, account["label"], kind):
                 marked.append(mail_id)
         max_uid = max([u for u, _ in raws], default=0)

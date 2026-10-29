@@ -139,6 +139,9 @@ CREATE TABLE IF NOT EXISTS mails (
     approval_note TEXT NOT NULL DEFAULT '',
     draft_cc TEXT NOT NULL DEFAULT '',
     draft_bcc TEXT NOT NULL DEFAULT '',
+    -- 返信画面を閉じたときに、書きかけの CC・BCC も draft_cc・draft_bcc に残したら 1
+    -- (外した CC の人を、開き直したときに「全員に返信」で入れ直さないように。0 = 残していない)
+    draft_rcpt_saved INTEGER NOT NULL DEFAULT 0,
     approved_by TEXT NOT NULL DEFAULT '',
     -- 管理者が「差し戻す」した人・時刻・コメント (スタッフの返信画面に出す。次に頼んだら消す)
     returned_by TEXT NOT NULL DEFAULT '',
@@ -377,6 +380,8 @@ CREATE INDEX IF NOT EXISTS idx_screenshots_taken ON screenshots(taken_at);
 CREATE INDEX IF NOT EXISTS idx_leave_date ON leave_requests(date);
 CREATE INDEX IF NOT EXISTS idx_corrections_status ON corrections(status);
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+-- 操作の種類で探す用 (宛先に届かなかった返信の記録を、送信済みフォルダの取り込みのたびに見る)
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 """
 
 # 休暇の種別
@@ -725,6 +730,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("requested_at", "returned_at"):
         if col not in mcols:
             conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT")
+    # 返信画面を閉じたときに残した、書きかけの CC・BCC (以前のメールは残していない)
+    if "draft_rcpt_saved" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN draft_rcpt_saved INTEGER NOT NULL DEFAULT 0")
     # 相手 (お客様) の列。前からあるメールは、まず差出人を相手にしておく (すぐ終わる)。
     # フォームから届いたメールは、起動したときに本文から相手を読み直す
     # (server/mail.py の fill_missing_contacts。contact_source が空のものだけ)

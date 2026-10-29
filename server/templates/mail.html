@@ -1549,7 +1549,7 @@ const ST = { unhandled: "未対応", replied: "返信済み", archived: "対応�
 // category / assigneeId / assigneeName: 保存済みの種類と担当 (変えられなかったときに選択欄を戻す用)
 // notion: Notion に登録したページ (notion_page_url・登録した時刻・人。まだなら URL が空)
 // mail: 開いているメール (サーバから受け取った詳細。確認のお願い・差し戻しの表示を直す用)
-const EMPTY_MODAL = { id: null, savedDraft: "", cursorSet: false, autoSel: null,
+const EMPTY_MODAL = { id: null, savedDraft: "", savedRcpt: "", cursorSet: false, autoSel: null,
                       ccCandidates: "", ccSaved: "",
                       category: "", assigneeId: null, assigneeName: "", notion: {}, mail: null };
 let modal = { ...EMPTY_MODAL };
@@ -2761,7 +2761,9 @@ async function openMail(id) {
   // 付けたときだけ入れる。誰に届くかは、送る前の確認で全部見せる。
   // 送信済みなら、実際に送った CC・BCC を出す。確認待ち・差し戻したメールなら、
   // メール担当者が確認をお願いしたときの CC・BCC をそのまま出す (空でも入れ直さない。
-  // 管理者には、担当者が見て決めたとおりに見える)。値は textContent / value で入れる
+  // 管理者には、担当者が見て決めたとおりに見える)。前に閉じたときに書きかけの CC・BCC を
+  // 残していれば (draft_rcpt_saved)、それを出す (外した人を黙って入れ直さない。空でも
+  // そのまま)。値は textContent / value で入れる
   $("m-to").value = replied ? (m.reply_sent_to || m.from_addr || "") : modal.defaultTo;
   renderToNote(m);
   renderMisdirect(m);
@@ -2773,9 +2775,11 @@ async function openMail(id) {
   $("m-from-row").hidden = !m.reply_from && !showAccounts();
   const proposed = !replied && (m.status === "pending_approval" || !!m.return_note);
   const addrList = a => (a || []).join(", ");
-  $("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc)
+  const kept = proposed || !!m.draft_rcpt_saved;
+  $("m-cc").value = replied ? addrList(m.reply_cc) : kept ? addrList(m.draft_cc)
     : m.reply_all_default ? modal.ccCandidates : "";
-  $("m-bcc").value = replied ? addrList(m.reply_bcc) : proposed ? addrList(m.draft_bcc) : "";
+  $("m-bcc").value = replied ? addrList(m.reply_bcc) : kept ? addrList(m.draft_bcc) : "";
+  modal.savedRcpt = rcptKey();
   $("m-cc-all").checked = !!$("m-cc").value;
   $("m-cc-all-row").hidden = replied || !modal.ccCandidates;
   renderCcNote();
@@ -2921,7 +2925,10 @@ function renderControls(m) {
   if (via) {
     $("m-reply-via-text").textContent =
       `↩ ${m.reply_source_label || "Webメールなど"}から返信してあります（${fmtDate(m.replied_at)}）。` +
-      "送信済みフォルダから取り込んで、自動で「返信済み」にしました。";
+      "送信済みフォルダから取り込んで、自動で「返信済み」にしました。" +
+      // 確認待ちの間に Webメールなどから返信したとき (二重に送らないよう返信済みにした)
+      (m.requested_by && !m.approved_by
+        ? `${m.requested_by} さんが確認をお願いしていた下書きは送っていません。` : "");
     $("m-reply-via-link").dataset.key = m.reply_sent_key || "";
     $("m-reply-via-link").hidden = !m.reply_sent_key;
   }
@@ -3319,12 +3326,26 @@ const toChangedText = to => {
   return "";
 };
 
+// 宛先と同じ人を CC から、宛先・CC と同じ人を BCC から除く (サーバの確かめ方と同じ。
+// 大文字・小文字は区別しない)。宛先を CC の候補の人に変えたときに、送る前の確認に
+// 同じ人が2回出ないように
+function dedupeRcpts(to, cc, bcc) {
+  const seen = new Set([addrOnly(to).toLowerCase()]);
+  const keep = list => list.filter(a => {
+    const k = addrOnly(a).toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  return [keep(cc), keep(bcc)];
+}
+
 $("m-send").onclick = async () => {
   const text = $("m-draft").value.trim();
   if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
-  const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
   const to = toValue();
   if (!to) return;
+  const [cc, bcc] = dedupeRcpts(to, splitAddrs($("m-cc").value), splitAddrs($("m-bcc").value));
   // 誰に届くかを送る前に見せる (全員に返信のつもりが無かった、などに気付けるように)
   const approving = !!modal.mail && modal.mail.status === "pending_approval";
   if (!confirm((approving
@@ -3408,9 +3429,9 @@ $("m-archive").onclick = async () => {
 $("m-request").onclick = async () => {
   const text = $("m-draft").value.trim();
   if (!text) { alert("返信文を入力するか「返信文を生成」を押してください"); return; }
-  const cc = splitAddrs($("m-cc").value), bcc = splitAddrs($("m-bcc").value);
   const to = toValue();
   if (!to) return;
+  const [cc, bcc] = dedupeRcpts(to, splitAddrs($("m-cc").value), splitAddrs($("m-bcc").value));
   if (!confirm("この返信文で、管理者に確認をお願いしますか？\n\n" +
       "宛先: " + to + toChangedText(to) +
       (cc.length ? "\nCC: " + cc.join(", ") : "") +
@@ -3425,6 +3446,10 @@ $("m-request").onclick = async () => {
     });
     if (modal.id !== id) { inboxChanged(); return; }
     modal.savedDraft = text;
+    // CC・BCC の欄も、頼んだもの (宛先と同じ人を除いたもの) にする
+    $("m-cc").value = cc.join(", ");
+    $("m-bcc").value = bcc.join(", ");
+    modal.savedRcpt = rcptKey();
     Object.assign(modal.mail, { status: "pending_approval", requested_by: r.requested_by,
                                 requested_at: r.requested_at, approval_note: $("m-req-note").value.trim(),
                                 draft_cc: cc, draft_bcc: bcc, draft_to: to, return_note: "" });
@@ -3475,16 +3500,24 @@ $("m-return").onclick = async () => {
 // (見ていない下書きを上書きしたり、承認したことにしたりしない)
 const seenRequest = () => modal.mail ? (modal.mail.requested_at || "") : null;
 
-// 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき。送信済みは保存しない)
+// CC・BCC の欄の今の中身 (開いたとき・残したときから変えたかを比べる用)
+const rcptKey = () => $("m-cc").value + "\n" + $("m-bcc").value;
+
+// 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき。送信済みは保存しない)。
+// CC・BCC を変えていたら一緒に残す (開き直したときに、外した人を「全員に返信」で入れ直さない)
 async function saveDraft() {
-  const draft = $("m-draft").value;
-  if (modal.id && !$("m-draft").readOnly && draft !== modal.savedDraft) {
+  const draft = $("m-draft").value, rcpt = rcptKey();
+  const rcptChanged = rcpt !== modal.savedRcpt;
+  if (modal.id && !$("m-draft").readOnly && (draft !== modal.savedDraft || rcptChanged)) {
+    const body = { draft_reply: draft, seen_request: seenRequest() };
+    if (rcptChanged) Object.assign(body, { draft_cc: $("m-cc").value, draft_bcc: $("m-bcc").value });
     try {
       await api(`/api/mail/${modal.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ draft_reply: draft, seen_request: seenRequest() }),
+        body: JSON.stringify(body),
       });
       modal.savedDraft = draft;
+      modal.savedRcpt = rcpt;
     } catch {}
   }
 }

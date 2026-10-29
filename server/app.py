@@ -1,6 +1,7 @@
 """zatsumu server — テレワーク勤怠・稼働可視化 MVP (F-Chair+ 風)."""
 import asyncio
 import os
+import re
 import sqlite3
 import time
 import threading
@@ -266,6 +267,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             conn.rollback()
             print(f"メールの会社名を記録できませんでした: {e}")
+        # 前の版がこの画面から送って宛先に届かなかった返信 (CC・BCC の人にだけ届いたもの) の控えを
+        # 送信済みフォルダから取り込んで、Webメールの返信と見なして返信済みにしていたメールを
+        # 未対応に戻す (相手には届いていない)。失敗しても起動は止めない
+        try:
+            undone = mail.undo_refused_auto_replies(conn)
+            if undone:
+                print(f"届かなかった返信の控えで返信済みにしていたメール {undone} 通を未対応に戻しました")
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            print(f"届かなかった返信の控えを確かめられませんでした: {e}")
         # 自動更新で前の版 (受信するアドレスが1つだけの版) に戻っていた間に取り込んだメールに、
         # 届いたアドレス (旧設定から作ったもの) を付ける。失敗しても起動は止めない
         try:
@@ -558,6 +569,10 @@ class SettingsPatch(BaseModel):
 
 class MailPatch(BaseModel):
     draft_reply: str | None = None
+    # 書きかけの CC・BCC (返信画面の欄のまま。送るときにあらためて確かめる)。閉じて開き直したときに、
+    # 外した人を「全員に返信」で入れ直さないよう、返信文と一緒に残す
+    draft_cc: str | None = None
+    draft_bcc: str | None = None
     priority: int | None = None
     status: str | None = None
     category: str | None = None           # 問い合わせの種類 ("" で未分類に戻す)
@@ -2476,6 +2491,8 @@ def audit_csv(
         "mail_send_refused": "メール返信送信（宛先に届かず）",
         # 送信済みフォルダ (Webメール・Gmail など) の返信を見て、自動で返信済みにした (操作者は「（自動）」)
         "mail_auto_replied": "Webメールなどからの返信で返信済みにした",
+        # 前の版が残した「宛先に届かなかった返信」の控えで返信済みにしていたメールを、未対応に戻した
+        "mail_auto_replied_undone": "届かなかった返信の控えで返信済みにしていたのを戻した",
         "mail_update": "メール状態変更",
         "mail_archive": "メールを対応不要にした",
         "mail_unarchive": "メールの対応不要を元に戻した",
@@ -2637,6 +2654,9 @@ def _seen_request_sql(seen_request: str | None) -> tuple[str, tuple]:
         return "", ()
     return " AND COALESCE(requested_at, '') = ?", (seen_request,)
 
+
+# 返信画面を閉じたときに残す、書きかけの CC・BCC の長さの上限 (それぞれ)
+DRAFT_RCPT_MAX_CHARS = 8000
 
 # メール担当者が、確認待ちのメールの返信文を変えようとしたとき (管理者が見ている文を変えない)
 PENDING_LOCKED = ("確認待ちの間は、返信文を変えられません"
@@ -3814,6 +3834,9 @@ def mail_detail(
         "approval_note": r["approval_note"],
         "draft_cc": mail.split_addresses(r["draft_cc"]),
         "draft_bcc": mail.split_addresses(r["draft_bcc"]),
+        # 返信画面を閉じたときに、書きかけの CC・BCC を draft_cc・draft_bcc に残したか
+        # (残していれば、開き直したときに「全員に返信」の候補ではなく、それを出す)
+        "draft_rcpt_saved": bool(r["draft_rcpt_saved"]),
         "approved_by": r["approved_by"],
         "returned_by": r["returned_by"],
         "returned_at": r["returned_at"],
@@ -4038,9 +4061,16 @@ def mail_patch(
     if changes.get("status") == "archived" and row["status"] in ("replied", "pending_approval"):
         # 返信したメール・確認待ちのメールは対応不要にしない (二重の対応・確認のお願いの見落とし)
         raise HTTPException(409, _archive_refused(row["status"]))
-    if staff and "draft_reply" in changes and row["status"] == "pending_approval":
+    drafts = [k for k in ("draft_reply", "draft_cc", "draft_bcc") if k in changes]
+    if staff and drafts and row["status"] == "pending_approval":
         raise HTTPException(409, PENDING_LOCKED)
-    if "draft_reply" in changes:
+    for k in ("draft_cc", "draft_bcc"):
+        if k in changes:
+            changes[k] = re.sub(r"[\r\n\x00]+", " ", changes[k]).strip()
+            if len(changes[k]) > DRAFT_RCPT_MAX_CHARS:
+                raise HTTPException(400, f"{'CC' if k == 'draft_cc' else 'BCC'}が長すぎます"
+                                         f"（{DRAFT_RCPT_MAX_CHARS}文字まで）")
+    if drafts:
         _check_seen_request(row, body.seen_request)
     s = db.get_settings(conn)
     if "category" in changes:
@@ -4067,14 +4097,18 @@ def mail_patch(
         if uid is not None:
             changes["assignee_user_id"] = uid
 
-    if "draft_reply" in changes:
+    if drafts:
         # メール担当者の分は、確かめた後に確認をお願いしていたら書き込まない (ほかの変更もしない)。
-        # 管理者の分も、画面を開いた後に確認をお願いされていたら書き込まない
+        # 管理者の分も、画面を開いた後に確認をお願いされていたら書き込まない。
+        # CC・BCC を残したら draft_rcpt_saved を付ける (開き直したときに、それを出す)
+        sets = [f"{k} = ?" for k in drafts]
+        if "draft_cc" in changes or "draft_bcc" in changes:
+            sets.append("draft_rcpt_saved = 1")
         sql, params = _seen_request_sql(body.seen_request)
         cur = conn.execute(
-            "UPDATE mails SET draft_reply = ? WHERE id = ?"
+            "UPDATE mails SET " + ", ".join(sets) + " WHERE id = ?"
             + (" AND status != 'pending_approval'" if staff else "") + sql,
-            (changes["draft_reply"], mail_id, *params),
+            (*(changes[k] for k in drafts), mail_id, *params),
         )
         if not cur.rowcount:
             if staff:
@@ -4107,7 +4141,8 @@ def mail_patch(
     r = conn.execute(_MAIL_SELECT + " WHERE m.id = ?", (mail_id,)).fetchone()
     logged = []
     for k, v in changes.items():
-        if k == "draft_reply":
+        # 下書き (返信文・CC・BCC) と、画面が見ていた確認のお願いの時刻は記録しない
+        if k in ("draft_reply", "draft_cc", "draft_bcc", "seen_request"):
             continue
         if k == "category":
             v = v or "未分類"
@@ -4407,9 +4442,13 @@ def mail_send(
             except Exception:  # noqa: BLE001  控えの失敗で知らせ方は変えない
                 saved = " saved=failed"
         back_to_unhandled()
+        # Message-ID も残す (送信済みフォルダの控えを、取り込むときに確実に見分けられるように)
+        refused_id = mail.sent_message_id(raw) if raw else ""
         _audit(conn, admin, "mail_send_refused",
                detail=f"to={to} refused={','.join(refused)}"
-                      f" delivered={','.join(delivered)} subject={subject}{saved}")
+                      f" delivered={','.join(delivered)}"
+                      + (f" msgid={refused_id}" if refused_id else "")
+                      + f" subject={subject}{saved}")
         conn.commit()
         raise HTTPException(
             502, f"送信できませんでした: 宛先（{to}）は相手のメールサーバに"
