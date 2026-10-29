@@ -81,6 +81,15 @@
                margin-right: .35rem; vertical-align: 1px; white-space: nowrap; }
   /* 一覧の「対応不要」ボタン (管理者だけ・未対応の行だけ)。押しても返信画面は開かない */
   .mail-row td.act { text-align: right; white-space: nowrap; width: 1%; padding-left: .4rem; }
+  /* 画面が狭くて表が横にはみ出すとき (iPad の縦・iPhone の横向き・狭いウィンドウ) も、
+     ボタンの列は右端に出したままにする (下の行の色と同じ地の色を付けて、横の文字を隠す) */
+  #mail-table th#th-act, .mail-row td.act { position: sticky; right: 0; z-index: 1; }
+  #mail-table th#th-act { background: #f9fafb; }
+  .mail-row td.act { background: #fff; box-shadow: -8px 0 8px -8px rgba(0,0,0,.18); }
+  .mail-row td.act:empty { box-shadow: none; }
+  .mail-row:hover td.act { background: #f0fdf4; }
+  .mail-row.new td.act { background: #fefce8; }
+  .mail-row.new:hover td.act { background: #fef9c3; }
   .row-archive { background: #fff; color: #374151; border: 1px solid #cbd5e1; border-radius: 8px;
                  padding: .35rem .7rem; font-size: .82rem; min-height: 34px; white-space: nowrap;
                  font-weight: 600; }
@@ -576,7 +585,8 @@
     /* 「対応不要」ボタンはカードの右上 (優先度の横。短いので件名などを狭めない) */
     .table-wrap tr.mail-row { position: relative; }
     .table-wrap tr.mail-row td.act { position: absolute; top: .45rem; right: .6rem; width: auto;
-                                     padding: 0; border: none; }
+                                     padding: 0; border: none; background: transparent;
+                                     box-shadow: none; }
     .table-wrap .row-archive { min-height: 40px; padding: .45rem .8rem; font-size: .85rem; }
     #mail-table td[data-label="担当"] { white-space: normal; }
     .table-wrap tr.mail-row td.act:empty { display: none; }
@@ -1687,6 +1697,12 @@ function renderInbox(list, keepPlace) {
     .filter(([on]) => on).map(([, name]) => name).join("・");
   const admin = isAdmin();   // 「対応不要」ボタンは管理者だけ (サーバも確かめる)
   shownMails = new Map(list.map(m => [Number(m.id), m]));
+  // 自動で取り直して行が増えた・減ったときは、少しの間「対応不要」を押せないようにする
+  // (押そうとした指の下に、別のメールのボタンが来ることがあるため)
+  if (keepPlace) {
+    const before = [...tbody.querySelectorAll(".mail-row")].map(tr => tr.dataset.id).join();
+    if (before && before !== list.map(m => String(Number(m.id))).join()) rowsMovedAt = Date.now();
+  }
   tbody.innerHTML = list.map(m => {
     const isNew = Number(m.id) > seenId && !openedIds.has(Number(m.id));
     return `
@@ -1712,7 +1728,14 @@ function renderInbox(list, keepPlace) {
     tr.onclick = e => {
       // 「対応不要」ボタンを押したときは、返信画面を開かない
       const b = e.target.closest("button.row-archive");
-      if (b) { e.stopPropagation(); archiveFromRow(b, tr); return; }
+      if (b) {
+        e.stopPropagation();
+        // 行が消えて下の行が上がってきた直後は、同じ所をもう一度押しても何もしない
+        // (2回押したつもりで、次のメールまで対応不要にしてしまわないように)
+        if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
+        archiveFromRow(b, tr);
+        return;
+      }
       openMail(+tr.dataset.id);
     });
   wrap.scrollLeft = left;
@@ -1725,11 +1748,15 @@ $("filter").onchange = () => showInbox();
 /* ---------- 対応不要 (ワンタップ) と「元に戻す」 ----------
    未対応のメールを、確かめの画面を出さずにすぐ対応不要にする (管理者だけ。サーバも確かめる)。
    間違えたときのために、画面の下に「元に戻す」付きの知らせを6秒ほど出す (続けて押したときは
-   1通ずつ知らせを重ねて、どれも元に戻せる)。見ている間にほかの人が返信していたなどで
+   1通ずつ知らせを重ねて、どれも元に戻せる。4通目からは古い知らせを「（2通）」のように
+   1つにまとめるので、消えて戻せなくなることはない)。見ている間にほかの人が返信していたなどで
    変えられなかったときは、サーバが返す理由を出す */
 let shownMails = new Map();       // 受信箱に出しているメール (番号 → 一覧の項目。件名を知らせに出す用)
 const archivingIds = new Set();   // 対応不要にしている途中のメール (取り直してもボタンを押せないままにする)
 const TOAST_MS = 6000, TOAST_MAX = 3;
+const TOAST_AGAIN_MS = 4000;      // 返信画面などを閉じた後に、知らせを出し直す長さ
+const ROW_QUIET_MS = 600;         // 行が動いた後、「対応不要」を押しても何もしない長さ
+let rowsMovedAt = 0;              // 一覧の行が消えた・動いた時刻
 
 // メールを変えた後に、見ている画面を取り直す (受信箱は見ていた場所を動かさない)
 function afterMailChange() {
@@ -1768,7 +1795,7 @@ async function archiveFromRow(b, tr) {
     refreshInbox();
     return;
   }
-  if (leave && tr.isConnected) tr.remove();
+  if (leave && tr.isConnected) { tr.remove(); rowsMovedAt = Date.now(); }
   showArchivedToast(id, m.subject, r);
   refreshInbox();      // タブの数・未対応の数も取り直す
 }
@@ -1776,48 +1803,100 @@ async function archiveFromRow(b, tr) {
 // 「対応不要にしました（件名）　元に戻す」の知らせ。文字は textContent で入れる
 function showArchivedToast(id, subject, r) {
   const box = $("toasts");
-  // 重ねすぎない (古い知らせから消す。対応不要にしたことはそのまま)
-  while (box.children.length >= TOAST_MAX) box.firstElementChild.remove();
+  makeRoomForToast(box);
+  box.append(undoToast([{ id, subject, r }]));
+}
+
+// 知らせを重ねすぎない。戻し終わった知らせから消し、それでも多いときは古い2つを1つにまとめる
+// (まとめた知らせの「元に戻す」は、その全部を戻す。黙って消して戻せなくすることはしない)
+function makeRoomForToast(box) {
+  for (const t of [...box.children]) {
+    if (box.children.length < TOAST_MAX) return;
+    if (!t.undo || t.undo.done || t.classList.contains("out")) t.remove();
+  }
+  while (box.children.length >= TOAST_MAX) {
+    const idle = [...box.children].filter(t => !t.undo.busy);
+    if (idle.length < 2) return;   // 戻している途中ばかりのときは、そのまま重ねて出す
+    idle[1].undo.add(idle[0].undo.items);
+    idle[0].remove();
+  }
+}
+
+// 返信画面・添付の画面を開いている間は知らせが隠れるので、時間が来ても消さない。
+// 閉じたときに、残りが少ない知らせは数秒出し直す (読んでいる間に間違いに気づいても戻せるように)
+const anyModalOpen = () => !!document.querySelector(".modal:not([hidden])");
+let modalWasOpen = false;
+const modalWatch = new MutationObserver(() => {
+  const open = anyModalOpen();
+  if (modalWasOpen && !open) for (const t of $("toasts").children) t.undo?.again();
+  modalWasOpen = open;
+});
+document.querySelectorAll(".modal").forEach(el =>
+  modalWatch.observe(el, { attributes: true, attributeFilter: ["hidden"] }));
+
+function undoToast(items) {
   const t = document.createElement("div");
   t.className = "toast";
   const text = document.createElement("span");
-  text.textContent = `対応不要にしました（${snip(subject, 18) || "件名なし"}）`;
   const undo = document.createElement("button");
   undo.type = "button";
-  undo.textContent = "元に戻す";
   t.append(text, undo);
-  box.append(t);
-  let busy = false, timer = null;
+  const which = list => list.length === 1
+    ? (snip(list[0].subject, 18) || "件名なし") : `${list.length}通`;
+  const ctl = t.undo = { items, busy: false, done: false, timer: null, until: 0 };
+  const show = () => {
+    text.textContent = `対応不要にしました（${which(ctl.items)}）`;
+    undo.textContent = ctl.items.length === 1 ? "元に戻す" : `${ctl.items.length}通とも元に戻す`;
+  };
   const close = () => {
-    clearTimeout(timer);
+    clearTimeout(ctl.timer);
     t.classList.add("out");
     setTimeout(() => t.remove(), 300);
   };
-  const later = ms => { clearTimeout(timer); timer = setTimeout(() => { if (!busy) close(); }, ms); };
+  const later = ms => {
+    clearTimeout(ctl.timer);
+    ctl.until = Date.now() + ms;
+    ctl.timer = setTimeout(() => { if (!ctl.busy && !anyModalOpen()) close(); }, ms);
+  };
+  ctl.again = () => { if (!ctl.busy) later(Math.max(ctl.until - Date.now(), TOAST_AGAIN_MS)); };
+  ctl.add = older => { ctl.items = older.concat(ctl.items); show(); later(TOAST_MS); };
+  show();
   later(TOAST_MS);
   undo.onclick = async () => {
-    if (busy) return;
-    busy = true;
+    if (ctl.busy) return;
+    ctl.busy = true;
     undo.disabled = true;
     undo.textContent = "戻しています…";
-    try {
-      await apiJson(`/api/mail/${id}/unarchive`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ restore_to: r.previous_status, archived_at: r.archived_at }),
-      });
-    } catch {
-      // 戻せなかった (ほかの人が返信した など。理由はアラートで出した)
-      busy = false;
-      close();
-      afterMailChange();
-      return;
+    // 1通ずつ戻す。戻せなかった理由 (ほかの人が返信した など) は、最後に1回だけ出す
+    const back = [], why = [];
+    for (const it of ctl.items) {
+      let msg;
+      try {
+        const res = await api(`/api/mail/${it.id}/unarchive`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ restore_to: it.r.previous_status, archived_at: it.r.archived_at }),
+        });
+        if (res.ok) { back.push(it); continue; }
+        msg = (await res.json().catch(() => ({}))).detail || "エラーが発生しました";
+      } catch (err) {
+        if (err.message === "auth") return;   // ログインし直し (知らせは消える)
+        msg = "通信できませんでした";
+      }
+      why.push([snip(it.subject, 18) || "件名なし", msg]);
     }
-    busy = false;
-    text.textContent = `未対応に戻しました（${snip(subject, 18) || "件名なし"}）`;
+    ctl.busy = false;
+    afterMailChange();
+    if (why.length) {
+      alert(ctl.items.length === 1 ? why[0][1]
+        : `次のメールは戻せませんでした。\n${why.map(([n, m]) => `・${n}：${m}`).join("\n")}`);
+    }
+    if (!back.length) { close(); return; }
+    ctl.done = true;
+    text.textContent = `未対応に戻しました（${which(back)}）`;
     undo.remove();
     later(2500);
-    afterMailChange();
   };
+  return t;
 }
 
 // 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱の横の「確認待ち」から)。

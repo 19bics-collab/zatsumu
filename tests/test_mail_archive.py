@@ -259,7 +259,7 @@ def test_mail_page_has_one_tap_archive_and_undo(client):
     assert 'e.target.closest("button.row-archive")' in page and "e.stopPropagation()" in page
     # 新しい API を使い、「元に戻す」で前の状態と時刻を送り返す
     assert "/archive`" in page and "/unarchive`" in page
-    assert "restore_to: r.previous_status, archived_at: r.archived_at" in page
+    assert "restore_to: it.r.previous_status, archived_at: it.r.archived_at" in page
     # 画面の下の知らせ (6秒ほど・重ねる)
     assert 'id="toasts"' in page and "TOAST_MS = 6000" in page
     assert "対応不要にしました（" in page and '"元に戻す"' in page
@@ -273,3 +273,48 @@ def test_mail_page_has_one_tap_archive_and_undo(client):
     assert ".table-wrap tr.mail-row td.act { position: absolute;" in page
     # 外から来た件名は textContent で入れる
     assert "text.textContent = `対応不要にしました（" in page
+
+
+def test_mail_page_guards_against_accidental_second_tap(client):
+    """行が消えて下の行が上がってきた直後は、同じ所をもう一度押しても次のメールを対応不要にしない."""
+    page = client.get("/mail").text
+    assert "const ROW_QUIET_MS = 600;" in page
+    # 行を消したとき・自動で取り直して行が動いたときに時刻を覚え、その間のボタンは何もしない
+    assert "tr.remove(); rowsMovedAt = Date.now();" in page
+    assert "rowsMovedAt = Date.now();" in page.split("function renderInbox(")[1].split("tbody.innerHTML")[0]
+    m = re.search(r'tr\.onclick = e => \{(.*?)\n    \}\);', page, re.S)
+    assert m and "Date.now() - rowsMovedAt < ROW_QUIET_MS) return;" in m.group(1)
+    assert m.group(1).index("ROW_QUIET_MS") < m.group(1).index("archiveFromRow(b, tr)")
+
+
+def test_mail_page_keeps_archive_button_visible_when_table_is_wide(client):
+    """iPad の縦・iPhone の横向きなどで表が横にはみ出しても、ボタンの列は右端に出したまま."""
+    page = client.get("/mail").text
+    assert "#mail-table th#th-act, .mail-row td.act { position: sticky; right: 0;" in page
+    # 地の色は行と同じ (新着・マウスを乗せたとき)
+    assert ".mail-row.new td.act { background: #fefce8; }" in page
+    assert ".mail-row:hover td.act { background: #f0fdf4; }" in page
+    # スマホのカードでは今までどおり右上 (地の色は付けない)
+    assert "padding: 0; border: none; background: transparent;" in page
+
+
+def test_mail_page_merges_undo_notices_instead_of_dropping(client):
+    """続けて4通目を対応不要にしても、古い知らせは消さずにまとめ、全部元に戻せる."""
+    page = client.get("/mail").text
+    assert "box.firstElementChild.remove()" not in page
+    m = re.search(r"function makeRoomForToast\(box\) \{(.*?)\n\}", page, re.S)
+    assert m and "idle[1].undo.add(idle[0].undo.items)" in m.group(1)
+    # 消してよいのは、戻し終わった知らせ (ボタンのないもの) だけ
+    assert "t.undo.done" in m.group(1)
+    assert "通とも元に戻す" in page and "for (const it of ctl.items)" in page
+    # 戻せなかった理由は最後に1回だけ出す
+    assert "次のメールは戻せませんでした。" in page
+
+
+def test_mail_page_keeps_undo_while_mail_is_open(client):
+    """返信画面を開いている間は知らせの時間を数えず、閉じたら数秒出し直す."""
+    page = client.get("/mail").text
+    assert "TOAST_AGAIN_MS = 4000" in page
+    assert 'if (!ctl.busy && !anyModalOpen()) close();' in page
+    assert "if (modalWasOpen && !open) for (const t of $(\"toasts\").children) t.undo?.again();" in page
+    assert "Math.max(ctl.until - Date.now(), TOAST_AGAIN_MS)" in page
