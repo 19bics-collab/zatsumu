@@ -274,7 +274,7 @@ def test_status_counts_and_newest(client, users, tmp_path):
                  "tabs": {"all": 0, "high": 0, "categories": {}, "uncategorized": 0,
                           "has_uncategorized": False,
                           "statuses": ["unhandled", "pending_approval"]},
-                 "imap_set": False, "auto_fetch": False, "interval_min": 5}
+                 "imap_set": False, "auto_fetch": False, "interval_min": 5, "sent_mark": "0|"}
     _add_mail(tmp_path, n=1)
     _add_mail(tmp_path, n=2, status="replied")
     newest = _add_mail(tmp_path, n=3)

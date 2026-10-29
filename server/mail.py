@@ -34,6 +34,8 @@ Slack・通知先メールへまとめてお知らせする (1通につき1回�
 メールごとに「相手」(お客様) を受信したときに決めて覚える。HPのお問い合わせフォームから届く
 メールは差出人がどのお客様の分も同じ (wordpress@… など) なので、Reply-To か本文の
 「メールアドレス: …」の人を相手にし、やり取りのまとまり・返信の宛先などに使う (decide_contact)。
+受信の回ごとに、各アドレスの送信済みフォルダも読むだけで取り込み (送信箱。fetch_sent_mail)、
+Webメール・Gmail などから届いたメールに返信していれば、そのメールを返信済みにする (未対応のものだけ)。
 """
 import base64
 import email
@@ -376,10 +378,22 @@ def _mail_attachment_dir(attachment_dir, mail_id: int) -> Path:
     return Path(attachment_dir) / str(int(mail_id))
 
 
+# 送信箱 (送信済みフォルダから取り込んだメール) の添付ファイルの置き場所
+# (添付の保存先の中の sent/<sent_id>。数字だけの名前ではないので、受信メールの分の片付け
+# (remove_orphan_attachment_dirs) には入らない)
+SENT_ATTACHMENT_SUBDIR = "sent"
+
+
+def _sent_attachment_dir(attachment_dir, sent_id: int) -> Path:
+    return Path(attachment_dir) / SENT_ATTACHMENT_SUBDIR / str(int(sent_id))
+
+
 def stored_attachment_bytes(conn) -> int:
-    """今保存している添付ファイルの合計の大きさ (読むだけ)."""
-    return conn.execute("SELECT COALESCE(SUM(size), 0) FROM mail_attachments"
-                        " WHERE path != ''").fetchone()[0]
+    """今保存している添付ファイルの合計の大きさ (受信メールと送信箱の分。読むだけ)."""
+    return conn.execute(
+        "SELECT (SELECT COALESCE(SUM(size), 0) FROM mail_attachments WHERE path != '')"
+        " + (SELECT COALESCE(SUM(size), 0) FROM sent_mail_attachments WHERE path != '')"
+    ).fetchone()[0]
 
 
 def min_free_bytes(total: int) -> int:
@@ -459,7 +473,7 @@ def stage_attachments(attachment_dir, staging: Path | None, key: str,
 
 
 def save_attachments(conn, attachment_dir, mail_id: int, items: list[dict],
-                     now: str) -> None:
+                     now: str, sent: bool = False) -> None:
     """取り出した添付ファイルを保存する (メールの行を入れた後、同じトランザクションで呼ぶ).
 
     中身は attachment_dir/<mail_id>/<添付の id> に置く。stage_attachments で
@@ -468,16 +482,19 @@ def save_attachments(conn, attachment_dir, mail_id: int, items: list[dict],
     (お試し用のデータ等) は data をここで書く。保存しなかったもの
     (大きすぎる等) は名前と理由だけを残す。ディスクに書けなかったときもメールは
     取り込み、その添付は「保存できませんでした」として残す。
+    sent=True なら送信箱のメール (sent_mails) の添付として sent/<番号>/<添付の id> に置く。
     """
     if not items:
         return
-    folder = _mail_attachment_dir(attachment_dir, mail_id)
+    table, col = ("sent_mail_attachments", "sent_id") if sent else ("mail_attachments", "mail_id")
+    folder = (_sent_attachment_dir if sent else _mail_attachment_dir)(attachment_dir, mail_id)
+    prefix = f"{SENT_ATTACHMENT_SUBDIR}/" if sent else ""
     # メールの番号は確定した後は使い回さないので、フォルダが既にあるのは
     # 前に取り込みの途中で止まったときの残りもの (中身は DB に無い)
     shutil.rmtree(folder, ignore_errors=True)
     for item in items:
         cur = conn.execute(
-            "INSERT INTO mail_attachments (mail_id, filename, content_type, size,"
+            f"INSERT INTO {table} ({col}, filename, content_type, size,"
             " path, skip_reason, created_at) VALUES (?, ?, ?, ?, '', ?, ?)",
             (mail_id, item["filename"], item["content_type"], item["size"],
              item["skip"], now),
@@ -498,16 +515,16 @@ def save_attachments(conn, attachment_dir, mail_id: int, items: list[dict],
                 dest.unlink(missing_ok=True)   # 書きかけを残さない
             except OSError:
                 pass
-            conn.execute("UPDATE mail_attachments SET skip_reason = 'save_failed'"
+            conn.execute(f"UPDATE {table} SET skip_reason = 'save_failed'"
                          " WHERE id = ?", (att_id,))
             continue
-        conn.execute("UPDATE mail_attachments SET path = ? WHERE id = ?",
-                     (f"{int(mail_id)}/{att_id}", att_id))
+        conn.execute(f"UPDATE {table} SET path = ? WHERE id = ?",
+                     (f"{prefix}{int(mail_id)}/{att_id}", att_id))
 
 
-def remove_attachment_files(attachment_dir, mail_id: int) -> None:
-    """そのメールの添付ファイルをフォルダごと消す (無ければ何もしない)."""
-    folder = _mail_attachment_dir(attachment_dir, mail_id)
+def remove_attachment_files(attachment_dir, mail_id: int, sent: bool = False) -> None:
+    """そのメール (sent=True なら送信箱のメール) の添付ファイルをフォルダごと消す (無ければ何もしない)."""
+    folder = (_sent_attachment_dir if sent else _mail_attachment_dir)(attachment_dir, mail_id)
     try:
         shutil.rmtree(folder)
     except FileNotFoundError:
@@ -517,8 +534,9 @@ def remove_attachment_files(attachment_dir, mail_id: int) -> None:
 
 
 def attachment_file(attachment_dir, rel_path: str) -> Path | None:
-    """DB の path (「<mail_id>/<id>」) から実際のファイルの場所を返す (形が違えば None)."""
-    if not re.fullmatch(r"\d+/\d+", str(rel_path or "")):
+    """DB の path (「<mail_id>/<id>」・送信箱は「sent/<sent_id>/<id>」) から実際のファイルの
+    場所を返す (形が違えば None)."""
+    if not re.fullmatch(r"(?:sent/)?\d+/\d+", str(rel_path or "")):
         return None
     return Path(attachment_dir) / rel_path
 
@@ -2061,14 +2079,42 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 # 受信の接続先を決める項目 (変えたら、受信の続きの位置と、記録した失敗を消す)
 ACCOUNT_CONNECTION_KEYS = ("imap_host", "imap_port", "imap_ssl", "imap_user", "imap_folder")
 # 画面から変えられる項目 (保存する形は clean_account)
+# (DB に書く列。enabled・sent_only・sent_import の意味は account_active などを見る)
 ACCOUNT_FIELDS = ("label", "from_addr", "imap_host", "imap_port", "imap_ssl", "imap_user",
                   "imap_pass", "imap_folder", "imap_sent_folder", "save_sent",
-                  "smtp_user", "smtp_pass", "enabled")
+                  "smtp_user", "smtp_pass", "enabled", "sent_only", "sent_import")
+# 画面から届く項目 (enabled は「使う」、import_sent は「送信済みも取り込む」)
+ACCOUNT_INPUT_FIELDS = (*ACCOUNT_FIELDS[:-1], "import_sent")
 ACCOUNT_SECRET_FIELDS = ("imap_pass", "smtp_pass")
 _ACCOUNT_DEFAULTS = {"label": "", "from_addr": "", "imap_host": "", "imap_port": "",
                      "imap_ssl": 1, "imap_user": "", "imap_pass": "", "imap_folder": "INBOX",
                      "imap_sent_folder": "", "save_sent": 1, "smtp_user": "", "smtp_pass": "",
-                     "enabled": 1}
+                     "enabled": 1, "sent_only": 0, "sent_import": 1}
+# 送信済みの取り込みを変えたら、続きの位置と記録した失敗を消す項目
+ACCOUNT_SENT_KEYS = ("imap_sent_folder", "sent_only", "sent_import")
+
+
+# 「送信済みだけ取り込む」アドレス (Gmail など) は、DB の enabled を 0 にしておく
+# (自動更新で前の版に戻ったとき、前の版がそのアドレスの受信箱を取り込まないように)。
+# 使う/止めるは sent_import に入れる。ふつうのアドレスの sent_import は「送信済みも取り込む」
+
+def account_active(a: dict) -> bool:
+    """そのアドレスを使っているか (画面の「止める」をしていないか)."""
+    if a.get("sent_only"):
+        return bool(a.get("sent_import"))
+    return bool(a.get("enabled"))
+
+
+def receives_inbox(a: dict) -> bool:
+    """受信箱を受信するか (送信済みだけのアドレス・止めたアドレスは受信しない)."""
+    return not a.get("sent_only") and bool(a.get("enabled"))
+
+
+def imports_sent(a: dict) -> bool:
+    """送信済みフォルダを取り込むか (送信箱に出す)."""
+    if a.get("sent_only"):
+        return bool(a.get("sent_import"))
+    return bool(a.get("enabled")) and bool(a.get("sent_import", 1))
 
 
 def list_accounts(conn) -> list[dict]:
@@ -2085,9 +2131,10 @@ def get_account(conn, account_id) -> dict | None:
 
 
 def receiving_configured(conn) -> bool:
-    """受信するアドレス (止めていないもの) があるか (読むだけ)."""
+    """受信するアドレス (止めていないもの。送信済みだけ取り込むものも) があるか (読むだけ)."""
     return bool(conn.execute(
-        "SELECT 1 FROM mail_accounts WHERE enabled = 1 LIMIT 1").fetchone())
+        "SELECT 1 FROM mail_accounts WHERE enabled = 1 OR (sent_only = 1 AND sent_import = 1)"
+        " LIMIT 1").fetchone())
 
 
 def account_settings(settings: dict, account: dict) -> dict:
@@ -2165,11 +2212,19 @@ def account_info(a: dict, mail_count: int = 0) -> dict:
         "imap_folder": a["imap_folder"], "imap_sent_folder": a["imap_sent_folder"],
         "save_sent": bool(a["save_sent"]),
         "smtp_user": a["smtp_user"], "smtp_pass_set": bool(a["smtp_pass"]),
-        "enabled": bool(a["enabled"]), "sort_order": a["sort_order"],
+        # 使っているか (止めていないか)・送信済みだけ取り込むか・送信済みも取り込むか
+        "enabled": account_active(a), "sent_only": bool(a["sent_only"]),
+        "import_sent": True if a["sent_only"] else bool(a["sent_import"]),
+        "sort_order": a["sort_order"],
         "created_at": a["created_at"],
         "last_fetch_at": a["fetch_ok_at"],
         "last_error": a["fetch_error"],
         "last_error_at": a["fetch_error_at"] if a["fetch_error"] else None,
+        # 送信済みフォルダの取り込みの様子 (取り込んでいるフォルダ・最後に取り込めた時刻・失敗)
+        "sent_folder": _mutf7_decode(a["sent_state_folder"]) if a["sent_state_folder"] else "",
+        "last_sent_fetch_at": a["sent_fetch_ok_at"],
+        "last_sent_error": a["sent_fetch_error"],
+        "last_sent_error_at": a["sent_fetch_error_at"] if a["sent_fetch_error"] else None,
         "mail_count": mail_count,
     }
 
@@ -2216,7 +2271,7 @@ def clean_account(fields: dict, current: dict | None = None) -> dict:
     IMAP ユーザー (アドレスの形なら) を使い、名前が空ならアドレスの @ の前を使う。
     おかしなところがあれば、画面にそのまま出せる日本語の ValueError にする。
     """
-    f = {k: v for k, v in fields.items() if k in ACCOUNT_FIELDS and v is not None}
+    f = {k: v for k, v in fields.items() if k in ACCOUNT_INPUT_FIELDS and v is not None}
     out = dict(current or _ACCOUNT_DEFAULTS)
     texts = (("label", "名前", ACCOUNT_LABEL_MAX_CHARS), ("imap_host", "IMAPサーバ", 253),
              ("imap_user", "IMAPユーザー", _ACCOUNT_TEXT_MAX_CHARS),
@@ -2244,9 +2299,21 @@ def clean_account(fields: dict, current: dict | None = None) -> dict:
         if len(value) > _ACCOUNT_SECRET_MAX_CHARS:
             raise ValueError(f"{label}が長すぎます")
         out[key] = value
-    for key in ("imap_ssl", "save_sent", "enabled"):
+    for key in ("imap_ssl", "save_sent"):
         if key in f:
             out[key] = int(bool(f[key]))
+    # 使う/止める・送信済みだけ・送信済みも取り込む (画面の値から DB に入れる形にする)
+    sent_only = bool(f["sent_only"]) if "sent_only" in f else bool(out.get("sent_only"))
+    active = bool(f["enabled"]) if "enabled" in f else account_active(out)
+    if "import_sent" in f:
+        import_sent = bool(f["import_sent"])
+    else:
+        import_sent = True if out.get("sent_only") else bool(out.get("sent_import", 1))
+    if sent_only:
+        out["enabled"], out["sent_import"] = 0, int(active)
+    else:
+        out["enabled"], out["sent_import"] = int(active), int(import_sent)
+    out["sent_only"] = int(sent_only)
     if "imap_port" in f:
         port = str(f["imap_port"]).strip()
         if port and not (port.isascii() and port.isdigit() and 1 <= int(port) <= 65535):
@@ -2835,6 +2902,8 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None,
                 attachments.append(items)
         _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
                       added, written, account["id"] if account is not None else None)
+        # 送信箱に、このメールへの返信がもうあれば (前の回に取り込んだ送信済みフォルダ)、返信済みにする
+        link_new_mails_to_sent(conn, added, settings)
         # 取得に成功した UID までだけ進める (途中で break した分は次回再試行)
         max_uid = max([u for u, _ in raws], default=0)
         if max_uid > last_uid:
@@ -2904,8 +2973,326 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
             # メールの行が入って番号が決まってから移す (一時フォルダからの名前の変更だけ)
             written.append(cur.lastrowid)
             save_attachments(conn, attachment_dir, cur.lastrowid, items, now)
-        added.append({**p, "priority": prio, "category": category,
-                      "assignee_user_id": assignee, "account_id": account_id})
+        added.append({**p, "id": cur.lastrowid, "priority": prio, "category": category,
+                      "assignee_user_id": assignee, "account_id": account_id,
+                      "status": "unhandled"})
+
+
+# ---------- 送信箱 (送信済みフォルダの取り込み・自動で返信済み) ----------
+#
+# 受信するアドレスごとに、メールボックスの送信済みフォルダ (お名前メールの Webメール・Outlook・
+# スマホ・Gmail などから送ったメールが入る) を読むだけで取り込み (sent_mails)、この画面から送った
+# 返信 (mails の reply_*) と一緒に「送信箱」に出す。この画面から送った返信の控えも送信済み
+# フォルダに入るので、Message-ID が同じもの (mails.reply_message_id) は取り込まない。
+# 取り込んだメールが届いたメールへの返信なら (In-Reply-To・References がそのメールの Message-ID)、
+# そのメールが「未対応」のときだけ返信済みにする (Webメールから返信しても、みんなの画面で対応済みになる)。
+# ヘッダでつながらないときは、宛先が相手のアドレスで、件名 (Re: などを除く) が同じ未対応のメールが
+# ちょうど1通だけ、送った時刻より前に届いているときだけ返信済みにする (当て推量はしない)。
+# 転送 (Fw: など) や、自分たちのアドレスにしか送っていないものは返信済みにしない。
+
+# 送信箱の「どこから送ったか」の表示と、自動で返信済みにしたときの「送った人」
+SENT_SOURCE_LABELS = {"app": "この画面", "webmail": "Webメールなど", "gmail": "Gmail"}
+REPLIED_BY_LABELS = {"webmail": "Webメール", "gmail": "Gmail"}
+# 件名の前に付く「Re:」「Fw:」など (何重にも付く。全角のコロンや「Re[2]:」も)
+_SUBJECT_PREFIX_RE = re.compile(
+    r"^\s*(re|fw|fwd|aw|sv|wg|返信|転送)\s*(?:\[\d+\]|\(\d+\))?\s*:\s*", re.IGNORECASE)
+_FORWARD_PREFIXES = ("fw", "fwd", "wg", "転送")
+
+
+def subject_key(subject) -> tuple[str, bool]:
+    """件名から前の「Re:」「Fw:」などを除いた比べる用の文字 (小文字) と、転送か (一番前が Fw: など)."""
+    text = unicodedata.normalize("NFKC", str(subject or ""))
+    forward = None
+    while True:
+        mt = _SUBJECT_PREFIX_RE.match(text)
+        if not mt:
+            break
+        if forward is None:
+            forward = mt.group(1).lower() in _FORWARD_PREFIXES
+        text = text[mt.end():]
+    return " ".join(text.split()).lower(), bool(forward)
+
+
+def sent_source(account: dict | None) -> str:
+    """送信済みフォルダの持ち主から、どこから送ったか ('gmail' / 'webmail')."""
+    host = str((account or {}).get("imap_host") or "").strip().lower()
+    return "gmail" if host.endswith((".gmail.com", ".googlemail.com")) or \
+        host in ("gmail.com", "googlemail.com") else "webmail"
+
+
+def _header_addrs(*headers) -> list[tuple[str, str]]:
+    """ヘッダ (To・Cc) の (名前, アドレス) の一覧 (送れる形のアドレスだけ)."""
+    out = []
+    for header in headers:
+        try:
+            pairs = getaddresses([str(header or "")])
+        except Exception:  # noqa: BLE001  壊れたヘッダは無いものとする
+            continue
+        for name, addr in pairs:
+            addr = addr.strip()
+            if valid_address(addr):
+                out.append((_one_line(name), addr))
+    return out
+
+
+def _sent_refs(in_reply_to, references) -> list[str]:
+    """返信の元を探す順の Message-ID (In-Reply-To、次に References の新しい方から)."""
+    ids = message_ids(in_reply_to)[:3] + list(reversed(message_ids(references)))[:REFS_PER_MAIL]
+    return list(dict.fromkeys(ids))
+
+
+def _sent_link_target(conn, p: dict) -> tuple[int | None, str]:
+    """送ったメールがどの届いたメールへの返信か (番号, 'header' / 'subject')。分からなければ (None, '')."""
+    refs = _sent_refs(p.get("in_reply_to"), p.get("references_hdr"))
+    for ref in refs:
+        row = conn.execute("SELECT id FROM mails WHERE message_id = ?", (ref,)).fetchone()
+        if row:
+            return row[0], "header"
+    for ref in refs:
+        # こちらが前に送った返信への、続きの返信 (そのメールのやり取り)
+        row = conn.execute("SELECT id FROM mails WHERE reply_message_id = ? ORDER BY id LIMIT 1",
+                           (ref,)).fetchone()
+        if row:
+            return row[0], "header"
+    # ヘッダでつながらないときだけ: 宛先が相手のアドレスで、件名が同じ未対応のメールが1通だけ
+    key, forward = subject_key(p.get("subject"))
+    to = list(dict.fromkeys(a.lower() for _n, a in _header_addrs(p.get("to_addr"))))[:_IN_MAX]
+    if forward or not key or not to:
+        return None, ""
+    rows = conn.execute(
+        "SELECT id, subject FROM mails WHERE lower(contact_addr) IN (" + _marks(to) + ")"
+        " AND status = 'unhandled' AND julianday(received_at) < julianday(?)",
+        (*to, p["sent_at"])).fetchall()
+    hits = [r[0] for r in rows if subject_key(r[1])[0] == key]
+    return (hits[0], "subject") if len(hits) == 1 else (None, "")
+
+
+def _marks_reply(p: dict, own: set) -> bool:
+    """届いたメールを返信済みにしてよい送ったメールか (転送・自分たちだけへのメールは違う)."""
+    if subject_key(p.get("subject"))[1]:
+        return False
+    return any(a.lower() not in own for _n, a in _header_addrs(p.get("to_addr"), p.get("cc_addr")))
+
+
+def _mark_replied(conn, mail_id: int, sent_id: int, p: dict, source: str, account_label: str,
+                  link_kind: str) -> bool:
+    """届いたメールを、送信済みフォルダの返信で返信済みにする (未対応のときだけ。コミットは呼び出し側).
+
+    返信済み・対応不要・確認待ちのメールは変えない。送った時刻・件名・本文・宛先・CC も残し
+    (返信画面に出る)、操作の記録にも残す。変えたら True。
+    """
+    to = _header_addrs(p.get("to_addr"))
+    cc = [a for _n, a in _header_addrs(p.get("cc_addr"))]
+    cur = conn.execute(
+        "UPDATE mails SET status = 'replied', replied_at = ?, replied_by = ?, reply_subject = ?,"
+        " reply_body = ?, reply_sent_to = ?, reply_cc = ?, reply_bcc = '', reply_source = ?,"
+        " reply_sent_id = ?,"
+        " reply_message_id = CASE WHEN reply_message_id = '' THEN ? ELSE reply_message_id END"
+        " WHERE id = ? AND status = 'unhandled'",
+        (p["sent_at"], REPLIED_BY_LABELS.get(source, "Webメール"), _header_text(p["subject"]),
+         p["body"], to[0][1] if to else "", ", ".join(cc), source, sent_id,
+         p["message_id"], mail_id))
+    if not cur.rowcount:
+        return False
+    conn.execute("UPDATE sent_mails SET marked_replied = 1 WHERE id = ?", (sent_id,))
+    subject = " ".join(str(p.get("subject") or "").split())[:60]
+    conn.execute(
+        "INSERT INTO audit_log (admin_id, action, detail, at) VALUES (0, 'mail_auto_replied', ?, ?)",
+        (f"mail={mail_id} sent={sent_id} via={source} account={account_label} link={link_kind}"
+         f" subject={subject}", tz.utc_iso(datetime.now(timezone.utc))))
+    return True
+
+
+def link_new_mails_to_sent(conn, added: list[dict], settings: dict) -> int:
+    """今入れた届いたメールに、送信箱でまだどのメールにもつながっていない返信があれば、つないで
+    返信済みにする (届いたメールの方が後から取り込まれたとき。コミットは呼び出し側).
+
+    返信済みにしたメールは added の status も 'replied' にする。返信済みにした数を返す.
+    """
+    ids = [(a["id"], a["message_id"]) for a in added if a.get("id")]
+    if not ids or not conn.execute("SELECT 1 FROM sent_mails LIMIT 1").fetchone():
+        return 0
+    own = own_addresses(settings, list_accounts(conn))
+    labels = {r[0]: r[1] for r in conn.execute("SELECT id, label FROM mail_accounts")}
+    by_id = {a["id"]: a for a in added if a.get("id")}
+    marked = 0
+    for mail_id, message_id in ids:
+        row = conn.execute(
+            "SELECT s.* FROM sent_mail_refs r JOIN sent_mails s ON s.id = r.sent_id"
+            " WHERE r.ref = ? AND s.linked_mail_id IS NULL ORDER BY s.sent_at, s.id LIMIT 1",
+            (message_id,)).fetchone()
+        if not row:
+            continue
+        p = dict(row)
+        conn.execute("UPDATE sent_mails SET linked_mail_id = ?, link_kind = 'header' WHERE id = ?",
+                     (mail_id, p["id"]))
+        if p["source"] != "app" and _marks_reply(p, own) and _mark_replied(
+                conn, mail_id, p["id"], p, p["source"], labels.get(p["account_id"], ""), "header"):
+            by_id[mail_id]["status"] = "replied"
+            marked += 1
+    return marked
+
+
+def _record_sent_fetch(conn, account_id: int, error: str = "") -> None:
+    """そのアドレスの送信済みフォルダの取り込みの結果を記録してすぐ確定する (error が空なら成功)."""
+    now = tz.utc_iso(datetime.now(timezone.utc))
+    try:
+        if error:
+            conn.execute("UPDATE mail_accounts SET sent_fetch_error = ?, sent_fetch_error_at = ?"
+                         " WHERE id = ?", (error, now, account_id))
+        else:
+            conn.execute("UPDATE mail_accounts SET sent_fetch_ok_at = ?, sent_fetch_error = '',"
+                         " sent_fetch_error_at = NULL WHERE id = ?", (now, account_id))
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"送信済みの取り込みの結果を記録できませんでした: {e}")
+
+
+def fetch_sent_mail(conn, settings: dict, account: dict, attachment_dir=None) -> dict:
+    """そのアドレスの送信済みフォルダから、新しく送ったメールを取り込む (送信箱).
+
+    settings は account_settings でそのアドレスの受信サーバにしたもの。送信済みフォルダは
+    find_sent_folder で決め (設定の名前・\\Sent の目印・よくある名前)、読むだけで開く
+    (メールボックスは変えない)。UIDVALIDITY と最後の UID をアドレスごとに覚えて差分だけ読み、
+    初めて (またはフォルダが変わったとき) は設定の「初回に遡る日数」の分だけ遡る。
+    この画面から送った返信の控え・取り込み済みのものは Message-ID で除く。
+    届いたメールへの返信なら、未対応のときだけ返信済みにする。
+    {"added": 取り込んだ数, "marked": 返信済みにしたメールの番号} を返す。
+    受信サーバとのやりとり・AI は使わない処理の間、DB の書き込みのロックは持たない。
+    """
+    saved_folder = str(account.get("sent_state_folder") or "")
+    saved_uv = str(account.get("sent_state_uidvalidity") or "")
+    saved_uid = int(account.get("sent_state_last_uid") or 0)
+    m = _imap_connect(settings)
+    raws: list[tuple[int, bytes]] = []
+    try:
+        folder = find_sent_folder(m, settings)
+        typ, _ = m.select(_quote_mailbox(folder), readonly=True)
+        if typ != "OK":
+            raise RuntimeError(f"送信済みフォルダ（{_mutf7_decode(folder)}）を開けません。"
+                               "「くわしい設定」の「送信済みフォルダ」を確かめてください")
+        uv = ""
+        typ, resp = m.response("UIDVALIDITY")
+        if resp and resp[0]:
+            uv = resp[0].decode("ascii", "replace") if isinstance(resp[0], bytes) else str(resp[0])
+        last_uid = saved_uid if (uv and uv == saved_uv and folder == saved_folder) else 0
+        if last_uid:
+            criteria = f"(UID {last_uid + 1}:*)"
+        else:
+            criteria = f"(SINCE {_since_date(int(settings.get('mail_fetch_days') or 7))})"
+        typ, data = m.uid("search", None, criteria)
+        if typ != "OK":
+            raise RuntimeError("送信済みフォルダの検索に失敗しました")
+        uids = [int(u) for u in (data[0].split() if data and data[0] else [])]
+        uids = sorted(u for u in uids if u > last_uid)[:FETCH_LIMIT]
+        for u in uids:
+            typ, fd = m.uid("fetch", str(u), "(RFC822)")
+            raw = None
+            if typ == "OK" and fd:
+                for part in fd:
+                    if isinstance(part, tuple) and len(part) >= 2 and part[1]:
+                        raw = part[1]
+                        break
+            if raw is None:
+                print(f"送信済みのメールの取得に失敗 (UID {u}) — 次回の受信で再試行します")
+                break
+            raws.append((u, raw))
+    finally:
+        try:
+            m.logout()
+        except Exception:  # noqa: BLE001
+            pass
+
+    source = sent_source(account)
+    shown_folder = _mutf7_decode(folder)
+    parsed: list[tuple[int, dict, bytes]] = []
+    for uid, raw in raws:
+        try:
+            p = parse_message(raw)
+        except Exception as e:  # noqa: BLE001  壊れたメールは飛ばす
+            print(f"送信済みのメールのパースに失敗 (UID {uid}): {e}")
+            continue
+        p["sent_at"] = p.pop("received_at")
+        # 取り込み済み・この画面から送った返信の控え (返信済みのメールに本文が残っている) は入れない
+        if conn.execute("SELECT 1 FROM sent_mails WHERE message_id = ?",
+                        (p["message_id"],)).fetchone():
+            continue
+        if conn.execute("SELECT 1 FROM mails WHERE reply_message_id = ? AND reply_source = ''"
+                        " LIMIT 1", (p["message_id"],)).fetchone():
+            continue
+        parsed.append((uid, p, raw))
+
+    own = own_addresses(settings, list_accounts(conn))
+    now = tz.utc_iso(datetime.now(timezone.utc))
+    written: list[int] = []
+    staging = None
+    marked: list[int] = []
+    added = 0
+    try:
+        attachments: list[list[dict]] = []
+        if attachment_dir is not None and parsed:
+            staging = make_staging_dir(attachment_dir)
+            stored = stored_attachment_bytes(conn)
+            for i, (uid, _p, raw) in enumerate(parsed):
+                try:
+                    items = extract_attachments(raw)
+                except Exception as e:  # noqa: BLE001
+                    print(f"送信済みのメールの添付の取り出しに失敗 (UID {uid}): {e}")
+                    items = []
+                stored = stage_attachments(attachment_dir, staging, f"s{i}", items, stored)
+                attachments.append(items)
+        for i, (uid, p, _raw) in enumerate(parsed):
+            to = _header_addrs(p["to_addr"])
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO sent_mails (account_id, message_id, imap_uid, folder,"
+                " from_addr, from_name, to_addr, cc_addr, to_key, to_name, subject, body,"
+                " sent_at, fetched_at, in_reply_to, references_hdr, source)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (account["id"], p["message_id"], uid, shown_folder, p["from_addr"],
+                 _one_line(p["from_name"]), _header_text(p["to_addr"]), p["cc_addr"],
+                 to[0][1].lower() if to else "", to[0][0] if to else "",
+                 p["subject"], p["body"], p["sent_at"], now, p["in_reply_to"],
+                 p["references_hdr"], source))
+            if not cur.rowcount:
+                continue
+            sent_id = cur.lastrowid
+            added += 1
+            conn.executemany("INSERT OR IGNORE INTO sent_mail_refs (sent_id, ref) VALUES (?, ?)",
+                             [(sent_id, r) for r in thread_refs(p["in_reply_to"],
+                                                                p["references_hdr"])])
+            items = attachments[i] if attachment_dir is not None and attachments else []
+            if items:
+                written.append(sent_id)
+                save_attachments(conn, attachment_dir, sent_id, items, now, sent=True)
+            mail_id, kind = _sent_link_target(conn, p)
+            if mail_id is None:
+                continue
+            conn.execute("UPDATE sent_mails SET linked_mail_id = ?, link_kind = ? WHERE id = ?",
+                         (mail_id, kind, sent_id))
+            if _marks_reply(p, own) and _mark_replied(conn, mail_id, sent_id, p, source,
+                                                      account["label"], kind):
+                marked.append(mail_id)
+        max_uid = max([u for u, _ in raws], default=0)
+        new_uid = max(max_uid, last_uid)
+        if (folder, uv, new_uid) != (saved_folder, saved_uv, saved_uid) and (uv or new_uid):
+            # 取り込んでいる間に接続先・送信済みフォルダの設定を変えていたら書かない
+            conn.execute(
+                "UPDATE mail_accounts SET sent_state_folder = ?, sent_state_uidvalidity = ?,"
+                " sent_state_last_uid = ? WHERE id = ? AND imap_host = ? AND imap_port = ?"
+                " AND imap_ssl = ? AND imap_user = ? AND imap_folder = ? AND imap_sent_folder = ?",
+                (folder, uv, new_uid, account["id"],
+                 *(account[k] for k in ACCOUNT_CONNECTION_KEYS), account["imap_sent_folder"]))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        for sent_id in written:
+            remove_attachment_files(attachment_dir, sent_id, sent=True)
+        raise
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+    return {"added": added, "marked": marked}
 
 
 # ---------- 受信の重なり防止と、受信の様子 (最終受信・失敗) ----------
@@ -2995,10 +3382,12 @@ def clear_fetch_error(conn, account_id: int | None = None) -> None:
     """
     if account_id is None:
         _set_state(conn, FETCH_ERROR_KEY, "")
-        conn.execute("UPDATE mail_accounts SET fetch_error = '', fetch_error_at = NULL"
-                     " WHERE fetch_error != ''")
+        conn.execute("UPDATE mail_accounts SET fetch_error = '', fetch_error_at = NULL,"
+                     " sent_fetch_error = '', sent_fetch_error_at = NULL"
+                     " WHERE fetch_error != '' OR sent_fetch_error != ''")
     else:
-        conn.execute("UPDATE mail_accounts SET fetch_error = '', fetch_error_at = NULL"
+        conn.execute("UPDATE mail_accounts SET fetch_error = '', fetch_error_at = NULL,"
+                     " sent_fetch_error = '', sent_fetch_error_at = NULL"
                      " WHERE id = ?", (account_id,))
 
 
@@ -3010,10 +3399,19 @@ def fetch_state(conn) -> dict:
     その時刻までは受信できている)。失敗は、失敗しているアドレスのうち一番長く受信できていない
     ものを出し (どのアドレスかは last_error_account)、失敗しているアドレスの数を error_count に入れる。
     """
-    rows = conn.execute(
-        "SELECT id, label, enabled, fetch_ok_at, fetch_error, fetch_error_at"
-        " FROM mail_accounts ORDER BY sort_order, id").fetchall()
-    active = [r for r in rows if r["enabled"]]
+    rows = []
+    for r in conn.execute(
+            "SELECT id, label, enabled, sent_only, sent_import, fetch_ok_at, fetch_error,"
+            " fetch_error_at, sent_fetch_ok_at, sent_fetch_error, sent_fetch_error_at"
+            " FROM mail_accounts ORDER BY sort_order, id"):
+        r = dict(r)
+        if r["sent_only"]:
+            # 送信済みだけ取り込むアドレスは、送信済みフォルダの取り込みの様子を出す
+            r["fetch_ok_at"], r["fetch_error"], r["fetch_error_at"] = (
+                r["sent_fetch_ok_at"], r["sent_fetch_error"], r["sent_fetch_error_at"])
+        r["active"] = account_active(r)
+        rows.append(r)
+    active = [r for r in rows if r["active"]]
     oks = [r["fetch_ok_at"] for r in active if r["fetch_ok_at"]]
     failing = [r for r in active if r["fetch_error"]]
     # 一度も受信できていないアドレス (時刻が空) が一番前になる
@@ -3027,7 +3425,9 @@ def fetch_state(conn) -> dict:
         "error_count": len(failing),
         "fetching": fetching(),
         "accounts": [{
-            "id": r["id"], "label": r["label"], "enabled": bool(r["enabled"]),
+            "id": r["id"], "label": r["label"], "enabled": r["active"],
+            # 送信済みだけ取り込むアドレス (受信箱の「宛先」「アドレス」には出さない)
+            "sent_only": bool(r["sent_only"]),
             "last_fetch_at": r["fetch_ok_at"],
             "last_error": r["fetch_error"],
             "last_error_at": r["fetch_error_at"] if r["fetch_error"] else None,
@@ -3044,6 +3444,9 @@ def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
     受信サーバの不調など)、ほかのアドレスは受信する。失敗したアドレスは理由を記録し、
     failures (渡したとき) に {"account_id", "label", "error"} を足す。
     全部のアドレスで失敗したときは、最初の失敗の例外をそのまま送出する。
+    受信箱を全部受信した後に、送信済みフォルダ (送信箱) を取り込む (先に届いたメールを入れて
+    おくと、その返信で返信済みにできる)。送信済みの取り込みの失敗はアドレスごとに別に記録し、
+    受信箱の受信の結果は変えない (送信済みだけ取り込むアドレスは、それがそのアドレスの受信の結果)。
     """
     from . import notify  # 循環を避けるため遅延インポート
 
@@ -3056,7 +3459,7 @@ def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
         errors: list[Exception] = []
         tried = 0
         for acc in accounts:
-            if not acc["enabled"]:
+            if not receives_inbox(acc):
                 continue
             tried += 1
             acc_settings = account_settings(settings, acc)
@@ -3078,6 +3481,30 @@ def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
                 continue
             _record_account_fetch(conn, acc["id"])
             added += got
+        for acc in accounts:
+            if not imports_sent(acc):
+                continue
+            if acc["sent_only"]:
+                tried += 1
+            acc = get_account(conn, acc["id"]) or acc   # 受信箱の分で進めた位置などを読み直す
+            acc_settings = account_settings(settings, acc)
+            try:
+                fetch_sent_mail(conn, acc_settings, acc, attachment_dir=attachment_dir)
+            except Exception as e:  # noqa: BLE001  ほかのアドレスは続ける
+                conn.rollback()
+                if get_account(conn, acc["id"]) is None:
+                    continue
+                text = notify.safe_error(RuntimeError(fetch_error_text(e)), acc_settings,
+                                         secrets) or "送信済みフォルダを取り込めませんでした"
+                _record_sent_fetch(conn, acc["id"], text)
+                print(f"送信済みフォルダの取り込みに失敗しました（{acc['label']}）: {text}")
+                if acc["sent_only"]:
+                    errors.append(e)
+                    if failures is not None:
+                        failures.append({"account_id": acc["id"], "label": acc["label"],
+                                         "error": text})
+                continue
+            _record_sent_fetch(conn, acc["id"])
         if errors and len(errors) == tried:
             raise errors[0]
         return added
@@ -3105,7 +3532,8 @@ def check_mail(conn, notifier=None, attachment_dir=None) -> int:
     send = notifier or notify.deliver_async
     if s.get("notify_mail_high"):
         for row in added:
-            if row["priority"] == 1:
+            # 送信箱にもう返信があった (取り込んだときに返信済みにした) メールは知らせない
+            if row["priority"] == 1 and row.get("status") != "replied":
                 subj = _notify_text(row["subject"]) or "(件名なし)"
                 send(
                     s,
@@ -3847,6 +4275,17 @@ def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
     if days <= 0:
         return 0
     cutoff = tz.utc_iso(datetime.now(timezone.utc) - timedelta(days=days))
+    # 送信箱に取り込んだメールも、同じ日数で消す (この画面から送った返信は届いたメールと一緒に消える)
+    sent_ids = [(r[0],) for r in conn.execute(
+        "SELECT id FROM sent_mails WHERE fetched_at < ?", (cutoff,))]
+    if sent_ids:
+        if attachment_dir is not None:
+            for (sent_id,) in sent_ids:
+                remove_attachment_files(attachment_dir, sent_id, sent=True)
+        conn.executemany("DELETE FROM sent_mail_attachments WHERE sent_id = ?", sent_ids)
+        conn.executemany("DELETE FROM sent_mail_refs WHERE sent_id = ?", sent_ids)
+        conn.executemany("DELETE FROM sent_mails WHERE id = ?", sent_ids)
+        conn.commit()
     ids = [(r["id"],) for r in conn.execute(
         "SELECT id FROM mails WHERE fetched_at < ?", (cutoff,))]
     if not ids:

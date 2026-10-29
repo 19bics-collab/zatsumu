@@ -124,6 +124,10 @@ MATRIX = [
     # アドレス帳は見る・候補に使うだけ (登録・変更・削除は管理者だけ)
     ("GET", "/api/mail/address-book", None, True),
     ("GET", "/api/mail/address-suggest", None, True),
+    # 送信箱は見るだけ (管理者とメール担当者)
+    ("GET", "/api/mail/sent", None, True),
+    ("GET", "/api/mail/sent/{skey}", None, True),
+    ("GET", "/api/mail/sent/{skey}/attachments/{satt}", None, True),
     # ここから管理者だけ
     ("POST", "/api/mail/{mid}/send", {"body": "本文"}, False),
     ("POST", "/api/mail/{mid}/send-back", {"note": "直してください"}, False),
@@ -186,8 +190,17 @@ def _matrix_ids(tmp_path, staff):
                             " VALUES (?, '@abc.example.jp', 'now')", (cl,)).lastrowid
         ab = conn.execute("INSERT INTO address_book (name, email, created_at, updated_at)"
                           " VALUES ('山田', 'yamada@abc.example.jp', 'now', 'now')").lastrowid
+        # 送信箱に取り込んだメール (Webメールから送ったもの) と、その添付
+        sid = conn.execute(
+            "INSERT INTO sent_mails (account_id, message_id, to_addr, subject, body, sent_at,"
+            " fetched_at) VALUES (?, '<sent1@x>', 'a@abc.example.jp', '件名', '本文',"
+            " '2026-10-22T00:00:00+00:00', '2026-10-22T00:00:00+00:00')", (acc,)).lastrowid
+        mail.save_attachments(conn, tmp_path / "mail_attachments", sid, [
+            {"filename": "b.txt", "content_type": "text/plain", "size": 2, "data": b"hi",
+             "skip": ""}], "2026-10-22T00:00:00+00:00", sent=True)
+        satt = conn.execute("SELECT id FROM sent_mail_attachments").fetchone()[0]
     return {"mid": mid, "att": att, "tid": tid, "acc": acc, "staff": staff["id"], "dev": dev,
-            "ckey": f"c:{cl}", "rule": rule, "ab": ab}
+            "ckey": f"c:{cl}", "rule": rule, "ab": ab, "skey": f"i{sid}", "satt": satt}
 
 
 def test_every_mail_and_settings_api_is_in_the_matrix(client):

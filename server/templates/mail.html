@@ -530,6 +530,55 @@
   .howto[open] > summary::before { content: "▾ "; }
   .howto > p { margin: .3rem 0 0; line-height: 1.6; }
   .howto .staff-help { margin-top: .3rem; }
+  .gmail-steps { margin: .3rem 0; padding-left: 1.4rem; font-size: .82rem; color: #4b5563;
+                 line-height: 1.55; overflow-wrap: anywhere; }
+  .gmail-steps li { margin: .15rem 0; }
+  /* 送信箱 (一覧・1通) */
+  .sent-count { font-size: .85rem; color: #6b7280; margin: 0 0 .5rem; }
+  .sent-count:empty { display: none; }
+  .sent-list { display: flex; flex-direction: column; gap: .45rem; }
+  .sent-row { display: flex; flex-direction: column; gap: .15rem; width: 100%; text-align: left;
+              background: #fff; color: #111827; border: 1px solid var(--line); border-radius: 8px;
+              padding: .6rem .9rem; box-shadow: 0 1px 2px rgba(0,0,0,.05); font-size: .95rem;
+              min-width: 0; }
+  .sent-row:hover { background: #f0fdf4; }
+  .sent-row > span { display: block; min-width: 0; overflow-wrap: anywhere; }
+  .sent-top { display: flex !important; flex-wrap: wrap; gap: .2rem .5rem; align-items: center;
+              font-size: .8rem; color: #4b5563; }
+  .sent-to { font-weight: 700; }
+  .sent-subj { font-weight: 600; }
+  .sent-first { font-size: .85rem; color: #6b7280; }
+  .sent-orig { font-size: .8rem; color: #166534; }
+  .src-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+               border-radius: 99px; background: #e0e7ff; color: #3730a3; white-space: nowrap; }
+  .src-badge.app { background: #dcfce7; color: #166534; }
+  .src-badge.gmail { background: #fee2e2; color: #991b1b; }
+  .done-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+                border-radius: 99px; background: #ecfdf5; color: #065f46; white-space: nowrap; }
+  .warn-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
+                border-radius: 99px; background: #fef3c7; color: #92400e; white-space: nowrap; }
+  #sd-back { margin-bottom: .5rem; }
+  #sent-detail h2 { margin: .2rem 0 .3rem; overflow-wrap: anywhere; }
+  .sd-badges { display: flex; flex-wrap: wrap; gap: .3rem; margin: 0 0 .5rem; }
+  .sd-note { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: .5rem .8rem;
+             font-size: .9rem; overflow-wrap: anywhere; margin: 0 0 .6rem; }
+  .sd-note[hidden] { display: none; }
+  .sd-meta { display: grid; grid-template-columns: max-content 1fr; gap: .25rem .8rem; margin: 0 0 .6rem;
+             background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: .6rem .8rem;
+             font-size: .9rem; }
+  .sd-meta dt { color: #6b7280; font-weight: 600; white-space: nowrap; }
+  .sd-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .sd-links { display: flex; flex-wrap: wrap; gap: .4rem .8rem; margin: 0 0 .6rem; align-items: center; }
+  .sd-links:empty { display: none; }
+  .sd-links button { padding: .45rem .8rem; }
+  #sd-body { max-height: none; overflow: visible; }
+  .reply-via { display: flex; flex-wrap: wrap; gap: .3rem .7rem; align-items: center;
+               background: #eef2ff; border: 1px solid #c7d2fe; color: #312e81; border-radius: 8px;
+               padding: .45rem .8rem; margin: 0 0 .6rem; font-size: .88rem; overflow-wrap: anywhere; }
+  .reply-via[hidden] { display: none; }
+  #m-reply-via-link { color: #3730a3; }
+  @media (max-width: 480px) { .sd-meta { grid-template-columns: 1fr; gap: 0 .8rem; }
+                              .sd-meta dd { margin-bottom: .3rem; } }
   /* 取引先 (一覧) */
   .cl-search { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin: 0 0 .7rem; }
   #cl-q { flex: 1 1 16rem; min-width: 0; padding: .55rem .7rem; border: 1px solid #ccc;
@@ -712,6 +761,7 @@
 <header>
   <h1>📨 <span id="brand">メール対応</span></h1>
   <button id="nav-inbox">受信箱<span id="inbox-badge" class="ntf" hidden></span></button>
+  <button id="nav-sent">送信箱</button>
   <button id="nav-clients">取引先</button>
   <!-- 確認待ちの数は受信箱のボタンの中に入れない (スマホで受信箱を押したつもりが、
        こちらに当たって確認待ちだけの一覧になってしまうので、別のボタンにする) -->
@@ -781,6 +831,35 @@
     <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th><th id="th-act" aria-label="本文を見る・対応不要にする"></th></tr></thead>
     <tbody></tbody>
   </table></div>
+</section>
+
+<section id="sent-view" hidden>
+  <h2>送信箱
+    <select id="sent-acct" class="flt" aria-label="送ったアドレス" hidden><option value="">アドレス：すべて</option></select>
+  </h2>
+  <details class="howto" data-howto="sent">
+    <summary>使い方を見る</summary>
+    <p><small>こちらから送ったメールを、新しい順に出します。この画面から送った返信のほかに、
+    お名前メールの Webメール・Outlook・スマホ・Gmail などから送ったメールも、各アドレスの
+    「送信済み」フォルダから自動で取り込みます（受信と同じ間隔です。メールボックスは変えません）。
+    Webメールなどから返信したメールは、受信箱でも自動で「返信済み」になり、みんなの画面に出ます
+    （つながりが分からないときは、宛先が相手で件名が同じ未対応のメールが1通だけのときに限ります）。
+    行を押すと、本文と宛先・CC、元のメールが見られます。</small></p>
+  </details>
+  <p id="sent-count" class="sent-count"></p>
+  <div id="sent-list" class="sent-list"></div>
+  <p class="cl-more-row"><button id="sent-more" class="ghost" hidden>もっと見る</button></p>
+</section>
+
+<section id="sent-detail" hidden>
+  <button id="sd-back" class="ghost">← 送信箱に戻る</button>
+  <h2 id="sd-subject"></h2>
+  <div id="sd-badges" class="sd-badges"></div>
+  <p id="sd-note" class="sd-note" hidden></p>
+  <dl id="sd-meta" class="sd-meta"></dl>
+  <div id="sd-links" class="sd-links"></div>
+  <div class="atts" id="sd-atts" hidden></div>
+  <div class="mail-body" id="sd-body"></div>
 </section>
 
 <section id="clients-view" hidden>
@@ -898,8 +977,26 @@
         <input type="text" id="acct-imap-user" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
       <label class="set-row"><span>IMAPパスワード</span>
         <input type="password" id="acct-imap-pass" autocomplete="new-password" placeholder="(未設定)"></label>
+      <label class="set-row"><span>送信済みだけ取り込む（受信箱には入れない）</span>
+        <input type="checkbox" id="acct-sent-only"></label>
+      <p class="set-help"><small>Gmail など、そのアドレスに届いたメールは受信箱に入れず、そこから送ったメールだけを
+      「送信箱」に出したいときにチェックします（届いたメールへの返信なら、受信箱のメールも自動で「返信済み」になります）。
+      このアドレスから届いたメールは、自分たちが送ったものとして受信箱に入れません。</small></p>
+      <details class="acct-more" id="acct-gmail-help">
+        <summary>Gmail をつなぐには</summary>
+        <ol class="gmail-steps">
+          <li>Gmail の「設定」→「すべての設定を表示」→「メール転送と POP/IMAP」で「IMAP を有効にする」を選んで保存します。</li>
+          <li>Google アカウントの「セキュリティ」で「2段階認証プロセス」をオンにし、「アプリ パスワード」を作ります（16文字の英字。ふだんのパスワードではログインできません）。</li>
+          <li>ここで「メールアドレス」と「IMAPユーザー」に Gmail のアドレス、「IMAPサーバ」に <b>imap.gmail.com</b>、「IMAPポート」に <b>993</b>、「SSLで接続」をオン、「IMAPパスワード」にアプリ パスワードを入れ、「送信済みだけ取り込む」にチェックして追加します。</li>
+          <li>送信済みのフォルダ（[Gmail]/送信済みメール や [Gmail]/Sent Mail）は自動で見つけます。追加したら「接続テスト」で確かめてください。</li>
+        </ol>
+        <p class="set-help"><small>パスワードはこの欄にだけ入れてください（チャットやメールで人に送らないでください）。
+        画面には出ず、変えるときだけ入れ直します。</small></p>
+      </details>
       <details class="acct-more" id="acct-more">
         <summary>くわしい設定（ふつうはそのままで大丈夫です）</summary>
+        <label class="set-row"><span>送信済みも取り込む（Webメールなどから送ったメールを送信箱に出す）</span>
+          <input type="checkbox" id="acct-import-sent"></label>
         <label class="set-row"><span>フォルダ</span>
           <input type="text" id="acct-imap-folder" autocomplete="off" placeholder="INBOX"></label>
         <label class="set-row"><span>送った返信を送信済みフォルダに残す</span>
@@ -1263,6 +1360,10 @@
     </div>
     <h2 id="m-subject" style="margin:.2rem 0"></h2>
     <div class="mail-meta" id="m-meta"></div>
+    <div class="reply-via" id="m-reply-via" hidden>
+      <span id="m-reply-via-text"></span>
+      <a href="#" id="m-reply-via-link">送信箱で見る</a>
+    </div>
     <div class="m-client" id="m-client" hidden>
       <span class="cl-chip" id="m-client-name"></span>
       <a href="#" id="m-client-link">この取引先のやり取りをすべて見る</a>
@@ -1529,7 +1630,10 @@ function switchView(name) {
   $("settings-view").hidden = name !== "settings";
   $("clients-view").hidden = name !== "clients";
   $("client-view").hidden = name !== "client";
+  $("sent-view").hidden = name !== "sent";
+  $("sent-detail").hidden = name !== "sentmail";
   $("nav-inbox").classList.toggle("active", name === "inbox");
+  $("nav-sent").classList.toggle("active", name === "sent" || name === "sentmail");
   $("nav-clients").classList.toggle("active", name === "clients" || name === "client");
   $("nav-settings").classList.toggle("active", name === "settings");
 }
@@ -1563,6 +1667,8 @@ async function checkStatus() {
     (s.newest_id !== mailStatus.newest_id || s.unhandled !== mailStatus.unhandled ||
      s.pending_approval !== mailStatus.pending_approval || acctSig(s) !== acctSig(mailStatus) ||
      JSON.stringify(s.tabs || {}) !== JSON.stringify(mailStatus.tabs || {}));
+  // 送信箱が変わった (送った・取り込んだ) ら、送信箱を見ているときに取り直す
+  if (mailStatus && s.sent_mark !== mailStatus.sent_mark) sentStale = true;
   mailStatus = s;
   connLost = false;
   renderStatus();
@@ -1636,7 +1742,9 @@ function renderStatus() {
 const catBadge = c => c ? `<span class="cat">${esc(c)}</span>` : '<span class="cat none">未分類</span>';
 // 同じ相手 (同じアドレス) から届いたほかのメールの数。返信画面の「この相手とのやり取り」で見られる
 // 届いたアドレス (受信するアドレスが2つ以上のときだけ出す)。名前は esc() を通す
-const acctList = () => (mailStatus && mailStatus.accounts) || [];
+// (送信済みだけ取り込むアドレス (Gmail など) は、受信箱の「宛先」「アドレス」には出さない)
+const acctListAll = () => (mailStatus && mailStatus.accounts) || [];
+const acctList = () => acctListAll().filter(a => !a.sent_only);
 const showAccounts = () => acctList().length >= 2 ||
   (acctList().length >= 1 && ((mailStatus && mailStatus.deleted_mail_count) || 0) > 0);
 const acctBadge = m => !showAccounts() ? "" : m.account_id
@@ -2460,7 +2568,8 @@ async function openMail(id) {
   $("m-draft").value = m.status === "replied" ? m.reply_body : (m.draft_reply || "");
   cursorByProgram($("m-draft"));
   $("m-draft-src").textContent =
-    m.status === "replied" ? "（送信済みの本文）"
+    m.status === "replied" && m.reply_source ? `（${m.reply_source_label || "Webメールなど"}から送った本文）`
+    : m.status === "replied" ? "（送信済みの本文）"
     : m.draft_source === "ai" ? "（AI生成の下書き）"
     : m.draft_source === "template" ? "（定型文の下書き）" : "";
   $("m-status").textContent = "";
@@ -2571,8 +2680,19 @@ function renderControls(m) {
     contactLine(m) + (m.via_form ? `（HPフォーム経由・送信元: ${m.from_addr}）` : "") + " ・ " +
     `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${ST[m.status] || m.status}` +
     (!replied || !m.replied_by ? ""
+      : m.reply_source ? `（${m.reply_source_label || m.replied_by}から送信）`
       : m.approved_by && m.requested_by ? `（${m.requested_by} さんの下書きを ${m.approved_by} が確認して送信）`
       : `（${m.replied_by} が送信）`);
+  // Webメール・Gmail などから送った返信で、自動で返信済みにしたメール (送った文と送信箱へのつながり)
+  const via = replied && !!m.reply_source;
+  $("m-reply-via").hidden = !via;
+  if (via) {
+    $("m-reply-via-text").textContent =
+      `↩ ${m.reply_source_label || "Webメールなど"}から返信してあります（${fmtDate(m.replied_at)}）。` +
+      "送信済みフォルダから取り込んで、自動で「返信済み」にしました。";
+    $("m-reply-via-link").dataset.key = m.reply_sent_key || "";
+    $("m-reply-via-link").hidden = !m.reply_sent_key;
+  }
   // 送信済みと、メール担当者が確認待ちの間は、返信文・CC・BCC を変えない (管理者が見ている文なので)
   const locked = replied || (!admin && pending);
   $("m-draft").readOnly = locked;
@@ -3146,6 +3266,8 @@ async function closeModal(opts = {}) {
   if (inboxStale && viewName === "inbox") showInbox({ auto: true });
   // 取引先の画面から開いたメールを送った・変えたときは、取引先の画面を取り直す (見ていた場所はそのまま)
   if (clientStale && viewName === "client" && clientView.key) loadClient(clientView.key, { keepPlace: true });
+  // 送信箱から開いたメールを送ったときなども、送信箱を取り直す
+  if (sentStale && viewName === "sent") refreshSent();
 }
 $("m-close").onclick = $("m-close-top").onclick = () => closeModal();
 $("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
@@ -4359,18 +4481,24 @@ function renderAccountList() {
   const last = accounts.length - 1;
   $("acct-list").innerHTML = (accounts.length ? accounts.map((a, i) => {
     const id = Number(a.id);
-    const st = !a.enabled ? "<small>止めています（受信しません）</small>"
+    const st = !a.enabled ? `<small>止めています（${a.sent_only ? "取り込みません" : "受信しません"}）</small>`
+      : a.sent_only ? ""
       : a.last_error
         ? `<small class="acct-err">⚠ ${a.last_error_at ? esc(fmtTime(a.last_error_at)) + " の" : ""}受信に失敗しました: ${esc(a.last_error)}</small>`
         : `<small>最終受信: ${a.last_fetch_at ? esc(fmtTime(a.last_fetch_at)) : "まだありません"}</small>`;
+    // 送信済みフォルダの取り込み (送信箱) の様子
+    const sent = !a.enabled ? "" : !(a.sent_only || a.import_sent) ? "<small>送信済みは取り込みません</small>"
+      : a.last_sent_error
+        ? `<small class="acct-err">⚠ ${a.last_sent_error_at ? esc(fmtTime(a.last_sent_error_at)) + " の" : ""}送信済みフォルダの取り込みに失敗しました: ${esc(a.last_sent_error)}</small>`
+        : `<small>送信済みの取り込み: ${a.last_sent_fetch_at ? esc(fmtTime(a.last_sent_fetch_at)) : "まだありません"}${a.sent_folder ? `（${esc(a.sent_folder)}）` : ""}</small>`;
     return `
     <div class="acct-row${a.enabled ? "" : " off"}"><div>
-      <b>${esc(a.label)}</b> <small>${esc(a.address)}</small><br>${st}<br>
-      <small>受信箱のメール ${Number(a.mail_count) || 0}通${a.smtp_user ? "・送信用のユーザーで送ります" : ""}</small>
+      <b>${esc(a.label)}</b> <small>${esc(a.address)}</small>${a.sent_only ? ' <span class="src-badge">送信済みだけ取り込む</span>' : ""}<br>${st ? st + "<br>" : ""}${sent ? sent + "<br>" : ""}
+      <small>${a.sent_only ? "受信箱には入れません" : `受信箱のメール ${Number(a.mail_count) || 0}通`}${a.smtp_user ? "・送信用のユーザーで送ります" : ""}</small>
     </div><div class="acct-btns">
       <button class="ghost" data-acct="${id}" data-act="test">接続テスト</button>
       <button class="ghost" data-acct="${id}" data-act="edit">編集</button>
-      <button class="ghost" data-acct="${id}" data-act="toggle">${a.enabled ? "止める" : "受信する"}</button>
+      <button class="ghost" data-acct="${id}" data-act="toggle">${a.enabled ? "止める" : a.sent_only ? "取り込む" : "受信する"}</button>
       <button class="ghost" data-acct="${id}" data-act="del">削除</button>
       <span class="acct-move">
         <button class="ghost" data-acct="${id}" data-act="up" aria-label="上へ"${i === 0 ? " disabled" : ""}>↑</button>
@@ -4402,6 +4530,8 @@ function resetAcctForm() {
   $("acct-imap-port").value = base ? base.imap_port : "993";
   $("acct-imap-ssl").checked = base ? !!base.imap_ssl : true;
   $("acct-save-sent").checked = true;
+  $("acct-sent-only").checked = false;
+  $("acct-import-sent").checked = true;
   $("acct-imap-pass").value = $("acct-smtp-pass").value = "";
   $("acct-imap-pass").placeholder = $("acct-smtp-pass").placeholder = "(未設定)";
   $("acct-label").placeholder = "例：黒須";
@@ -4417,12 +4547,14 @@ function editAccount(a) {
   for (const [key, id] of Object.entries(ACCT_TEXT)) $(id).value = a[key] || "";
   $("acct-imap-ssl").checked = !!a.imap_ssl;
   $("acct-save-sent").checked = !!a.save_sent;
+  $("acct-sent-only").checked = !!a.sent_only;
+  $("acct-import-sent").checked = a.import_sent !== false;
   $("acct-imap-pass").value = $("acct-smtp-pass").value = "";
   $("acct-imap-pass").placeholder = a.imap_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
   $("acct-smtp-pass").placeholder = a.smtp_pass_set ? "設定済み（変更時のみ入力）" : "(未設定)";
   // 「くわしい設定」を変えてあるアドレスは、最初から開いておく
   $("acct-more").open = !!(a.smtp_user || a.imap_sent_folder || !a.save_sent ||
-                           (a.imap_folder && a.imap_folder !== "INBOX"));
+                           a.import_sent === false || (a.imap_folder && a.imap_folder !== "INBOX"));
   acctAutoUser = "";
   $("acct-form-title").textContent = `「${a.label}」を編集中`;
   $("acct-save").textContent = "変更を保存";
@@ -4443,6 +4575,14 @@ $("acct-from").addEventListener("input", () => {
     acctAutoUser = addr;
   }
   $("acct-label").placeholder = "例：" + (addr.split("@")[0] || "黒須");
+  // Gmail のアドレスを新しく足すときは、Gmail の受信サーバと「送信済みだけ取り込む」を入れておく
+  if (!acctEditing && /@(gmail|googlemail)\.com$/i.test(addr)) {
+    $("acct-imap-host").value = "imap.gmail.com";
+    $("acct-imap-port").value = "993";
+    $("acct-imap-ssl").checked = true;
+    $("acct-sent-only").checked = true;
+    $("acct-gmail-help").open = true;
+  }
 });
 
 $("acct-save").onclick = async () => {
@@ -4450,6 +4590,8 @@ $("acct-save").onclick = async () => {
   for (const [key, id] of Object.entries(ACCT_TEXT)) body[key] = $(id).value;
   body.imap_ssl = $("acct-imap-ssl").checked;
   body.save_sent = $("acct-save-sent").checked;
+  body.sent_only = $("acct-sent-only").checked;
+  body.import_sent = $("acct-import-sent").checked;
   // パスワードは入れたときだけ送る (空は「変えない」)
   if ($("acct-imap-pass").value) body.imap_pass = $("acct-imap-pass").value;
   if ($("acct-smtp-pass").value) body.smtp_pass = $("acct-smtp-pass").value;
@@ -5171,12 +5313,216 @@ $("m-client-link").onclick = async e => {
   navTo({ v: "client", key });
 };
 
+/* ---------- 送信箱 (こちらから送ったメール。この画面から送った返信と、Webメール・Gmail などから送ったもの) ----------
+   宛先・件名・本文などは外から来た文字なので、esc() か textContent で入れる */
+let sentList = { items: [], total: 0, hasMore: false, seq: 0 };
+let sentView = { key: null, data: null, seq: 0 };
+let sentStale = false;    // 送った・取り込んだ (送信箱を見ているときに取り直す)
+const srcClass = s => s === "app" ? "app" : s === "gmail" ? "gmail" : "";
+const toLabel = it => (it.to_name && it.to_addr ? `${it.to_name} <${it.to_addr}>` : it.to_addr || it.to_name) ||
+  "（宛先なし）";
+// (文字だけを作る。画面に入れるときは esc() を通す)
+const addrText = list => (list || []).map(a => a.name ? a.name + " <" + a.addr + ">" : a.addr).join(", ");
+
+// 「アドレス」の絞り込み (送ったアドレスが2つ以上のときだけ出す。送信済みだけ取り込むアドレスも入る)
+function renderSentAcct() {
+  const sel = $("sent-acct");
+  const all = acctListAll();
+  const opts = [["", "アドレス：すべて"], ...all.map(a => [String(a.id), a.label]),
+                ["none", "削除したアドレス"]];
+  const sig = JSON.stringify(opts);
+  if (sel.dataset.sig !== sig) {
+    setOptions(sel, opts, sel.value);
+    sel.dataset.sig = sig;
+  }
+  sel.hidden = all.length < 2 && !sel.value;
+}
+async function showSentBox(restore) {
+  switchView("sent");
+  renderSentAcct();
+  // 1通の画面から戻ったときは、前に出していた数だけ取り直して、見ていた場所に戻す
+  await loadSent(false, restore ? sentList.items.length : 0);
+}
+async function loadSent(more, atLeast = 0) {
+  const seq = ++sentList.seq;
+  const offset = more ? sentList.items.length : 0;
+  const p = new URLSearchParams({ offset: String(offset),
+                                  limit: String(Math.min(200, Math.max(50, atLeast))) });
+  if ($("sent-acct").value) p.set("account", $("sent-acct").value);
+  $("sent-more").disabled = true;
+  let r;
+  try { r = await apiJson("/api/mail/sent?" + p); }
+  catch { $("sent-more").disabled = false; return; }
+  if (seq !== sentList.seq) return;     // 待っている間に、絞り込みを変えた
+  sentList.items = more ? sentList.items.concat(r.items) : r.items;
+  sentList.total = r.total;
+  sentList.hasMore = r.has_more;
+  sentStale = false;
+  renderSent();
+}
+function sentRowHtml(it) {
+  const more = it.more_to ? ` ほか${Number(it.more_to)}人` : "";
+  return `
+  <button type="button" class="sent-row" data-key="${esc(it.key)}">
+    <span class="sent-top"><span>${esc(fmtDate(it.sent_at))}</span>
+      <span class="src-badge ${srcClass(it.source)}">${esc(it.source_label)}</span>
+      <span>送信元: ${esc(it.account_label)}</span>
+      ${it.marked_replied ? '<span class="done-badge">✓ 受信箱のメールを返信済みにしました</span>' : ""}
+      ${it.note ? '<span class="warn-badge">宛先に届かず</span>' : ""}
+      ${it.attachment_count ? `<span>📎 ${Number(it.attachment_count)}</span>` : ""}</span>
+    <span><span class="sent-to">宛先: ${esc(toLabel(it))}</span>${esc(more)}${clientTag(it)}</span>
+    <span class="sent-subj">${esc(it.subject) || "（件名なし）"}</span>
+    <span class="sent-first">${esc(it.first_line) || "（本文なし）"}</span>
+    ${it.mail_id ? `<span class="sent-orig">↩ 元のメール: ${esc(it.mail_subject) || "（件名なし）"}</span>` : ""}
+  </button>`;
+}
+function renderSent() {
+  const { items, total } = sentList;
+  $("sent-count").textContent = `送ったメール ${Number(total)}通`;
+  $("sent-list").innerHTML = items.map(sentRowHtml).join("") ||
+    '<p class="cl-empty">まだ送ったメールはありません（この画面から返信するか、Webメールなどから送ると、ここに出ます）</p>';
+  $("sent-more").hidden = !sentList.hasMore;
+  $("sent-more").disabled = false;
+}
+// 送信箱を取り直す (見ている場所はそのまま)。送信箱を見ていないときは、開いたときに取り直す
+function refreshSent() {
+  if (viewName === "sent" && $("mail-modal").hidden) {
+    const y = window.scrollY;
+    loadSent(false, sentList.items.length).then(() => window.scrollTo(0, y));
+  }
+}
+$("sent-list").onclick = e => {
+  const b = e.target.closest(".sent-row");
+  if (b) navTo({ v: "sentmail", key: b.dataset.key });
+};
+$("sent-more").onclick = () => loadSent(true);
+$("sent-acct").onchange = () => loadSent(false);
+
+/* 送信箱の1通 (本文は折り返して全部出す。中で別にスクロールさせない) */
+async function showSentDetail(key) {
+  switchView("sentmail");
+  if (sentView.key !== key) {
+    $("sd-subject").textContent = "読み込み中…";
+    for (const id of ["sd-badges", "sd-meta", "sd-links", "sd-body", "sd-atts"]) $(id).textContent = "";
+    $("sd-note").hidden = true;
+    $("sd-atts").hidden = true;
+  }
+  const seq = ++sentView.seq;
+  let d;
+  try {
+    const r = await api(`/api/mail/sent/${encodeURIComponent(key)}`);
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || "読み込めませんでした");
+    }
+    d = await r.json();
+  } catch (e) {
+    if (e.message === "auth" || seq !== sentView.seq) return;
+    sentView = { key, data: null, seq };
+    $("sd-subject").textContent = e.message === "Failed to fetch"
+      ? "読み込めませんでした（通信を確かめて、もう一度開いてください）" : e.message;
+    return;
+  }
+  if (seq !== sentView.seq) return;
+  sentView = { key, data: d, seq };
+  renderSentDetail(d);
+}
+function renderSentDetail(d) {
+  $("sd-subject").textContent = d.subject || "（件名なし）";
+  $("sd-badges").innerHTML =
+    `<span class="src-badge ${srcClass(d.source)}">${esc(d.source_label)}から送信</span>` +
+    (d.marked_replied ? '<span class="done-badge">✓ このメールで、受信箱のメールを返信済みにしました</span>' : "");
+  $("sd-note").textContent = d.note || "";
+  $("sd-note").hidden = !d.note;
+  const rows = [["送った日時", fmtDate(d.sent_at)],
+                ["送信元", d.account_label + (d.from ? `（${d.from}）` : "")],
+                ["宛先", addrText(d.to) || "—"]];
+  if ((d.cc || []).length) rows.push(["CC", addrText(d.cc)]);
+  // BCC は、この画面から送った返信だけ (取り込んだメールは、控えに残っているか分からないため出さない)
+  if (d.kind === "app") rows.push(["BCC", addrText(d.bcc) || "なし"]);
+  if (d.sent_by) rows.push(["送った人", d.sent_by]);
+  if (d.folder) rows.push(["取り込んだフォルダ", d.folder]);
+  $("sd-meta").innerHTML = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  const links = [];
+  if (d.mail) {
+    links.push(`<button class="ghost" data-sd-mail="${Number(d.mail.id)}">↩ 元のメールを開く</button>` +
+      `<small>${esc(contactLine(d.mail))}・${esc(d.mail.subject) || "（件名なし）"}・` +
+      `${esc(ST[d.mail.status] || d.mail.status)}</small>`);
+  }
+  if (d.client) {
+    links.push(`<button class="ghost" data-sd-client="${esc(d.client.key)}">` +
+      `${clientIcon(d.client.kind)} ${esc(d.client.name || "取引先")} のやり取りを見る</button>`);
+  }
+  $("sd-links").innerHTML = links.join("");
+  const atts = d.attachments || [], skipped = d.skipped_attachments || [];
+  $("sd-atts").innerHTML = (atts.length || skipped.length)
+    ? `<small>📎 添付ファイル（${atts.length + skipped.length}）</small>` +
+      atts.map(a => `
+      <div class="att"><span class="att-icon">📄</span>
+        <div class="att-name">${esc(a.filename)}<br><small>${esc(fmtSize(a.size))}</small></div>
+        <button class="ghost" data-sd-att="${Number(a.id)}" data-name="${esc(a.filename)}">ダウンロード</button></div>`).join("") +
+      skipped.map(a => `
+      <div class="att skipped"><span class="att-icon">⚠</span>
+        <div class="att-name">${esc(a.filename)}${a.size ? ` <small>（${esc(fmtSize(a.size))}）</small>` : ""}<br>
+        <small>${esc(a.reason)}</small></div></div>`).join("")
+    : "";
+  $("sd-atts").hidden = !atts.length && !skipped.length;
+  $("sd-body").textContent = d.body || "（本文なし）";
+}
+$("sd-links").onclick = e => {
+  const m = e.target.closest("button[data-sd-mail]");
+  if (m) { openMail(Number(m.dataset.sdMail)).catch(() => {}); return; }
+  const c = e.target.closest("button[data-sd-client]");
+  if (c) navTo({ v: "client", key: c.dataset.sdClient });
+};
+$("sd-atts").onclick = async e => {
+  const b = e.target.closest("button[data-sd-att]");
+  if (!b || !sentView.key) return;
+  b.disabled = true; b.textContent = "準備中…";
+  try {
+    const r = await api(`/api/mail/sent/${encodeURIComponent(sentView.key)}/attachments/${Number(b.dataset.sdAtt)}`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "添付ファイルを受け取れませんでした");
+    // 中身は「ただのデータ」として保存する (この画面の中で開かない)
+    const url = URL.createObjectURL(new Blob([await r.arrayBuffer()], { type: "application/octet-stream" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = b.dataset.name || "添付ファイル";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    if (err.message !== "auth") alert(err.message);
+  }
+  b.disabled = false; b.textContent = "ダウンロード";
+};
+$("sd-back").onclick = () => {
+  if (history.state && history.state.n > 0) history.back();
+  else { history.replaceState({ v: "sent", n: 0 }, "", urlFor({ v: "sent" })); showSentBox(); }
+};
+// 返信画面の「送信箱で見る」(Webメールなどから送った返信)
+$("m-reply-via-link").onclick = async e => {
+  e.preventDefault();
+  const key = $("m-reply-via-link").dataset.key;
+  if (!key) return;
+  await closeModal();
+  navTo({ v: "sentmail", key });
+};
+
 /* ---------- 画面の行き来 (ブラウザ・スマホの「戻る」で、前の画面の前の場所に戻れるように) ----------
-   履歴の1つ1つ: { v: "inbox" | "clients" | "client" | "settings", key (取引先の番号),
+   履歴の1つ1つ: { v: "inbox" | "sent" | "sentmail" | "clients" | "client" | "settings",
+   key (取引先の番号・送信箱の1通の番号),
    q (探す言葉), mail (開いていたメールの番号), scroll (見ていた位置), n (この画面までの数) } */
 function stateFromHash() {
   const h = location.hash;
   if (h === "#clients") return { v: "clients" };
+  if (h === "#sent") return { v: "sent" };
+  if (h.startsWith("#sent=")) {
+    try {
+      const key = decodeURIComponent(h.slice("#sent=".length));
+      if (/^[ai][0-9]+$/.test(key)) return { v: "sentmail", key };
+    } catch {}
+  }
   if (h === "#settings" && isAdmin()) return { v: "settings" };
   if (h.startsWith("#client=")) {
     try {
@@ -5189,10 +5535,13 @@ function stateFromHash() {
 function urlFor(st) {
   const base = location.pathname + location.search;
   return st.v === "clients" ? base + "#clients"
+    : st.v === "sent" ? base + "#sent"
+    : st.v === "sentmail" ? base + "#sent=" + encodeURIComponent(st.key)
     : st.v === "client" ? base + "#client=" + encodeURIComponent(st.key)
     : st.v === "settings" ? base + "#settings" : base;
 }
-const sameView = (a, b) => !!a && a.v === b.v && (a.v !== "client" || a.key === b.key);
+const sameView = (a, b) => !!a && a.v === b.v &&
+  ((a.v !== "client" && a.v !== "sentmail") || a.key === b.key);
 // 今の画面の見ていた位置を覚えてから、次の画面を履歴に足す (同じ画面なら足さない)
 function pushNav(st) {
   const cur = history.state || { v: viewName, n: 0 };
@@ -5211,6 +5560,8 @@ function navTo(st) {
 async function renderState(st, restore) {
   try {
     if (st.v === "clients") await showClients(st, restore);
+    else if (st.v === "sent") await showSentBox(restore);
+    else if (st.v === "sentmail") await showSentDetail(st.key);
     else if (st.v === "client") await showClient(st.key, restore ? st : null);
     else if (st.v === "settings" && isAdmin()) await openSettings();
     else await showInbox(restore ? { auto: true } : {});
@@ -5267,6 +5618,7 @@ async function pollNow() {
   }
   polling = false;
   if (changed || inboxStale) refreshInbox();
+  if (sentStale) refreshSent();
   schedulePoll();
 }
 // 受信箱を取り直す。返信画面を開いている間・設定を見ている間は取り直さない
@@ -5291,6 +5643,7 @@ window.addEventListener("pageshow", e => { if (e.persisted) pollNow(); });
 /* ---------- ナビ・ログイン ---------- */
 $("nav-inbox").onclick = () => navTo({ v: "inbox" });
 $("nav-clients").onclick = () => navTo({ v: "clients" });
+$("nav-sent").onclick = () => navTo({ v: "sent" });
 // 受信箱の横の「確認待ち N」を押したら、確認待ちのメールだけを出す
 $("nav-pending").onclick = () => showPending();
 $("nav-settings").onclick = () => navTo({ v: "settings" });

@@ -17,6 +17,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 
 from . import (address_book, clients, db, devices, imaging, mail, mail_events, notify, notion,
+               sent_box,
                reports, retention, tz)
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
@@ -588,7 +589,9 @@ class MailAccountBody(BaseModel):
     save_sent: bool | None = None
     smtp_user: str | None = None        # 空なら共通の SMTP 設定で送る
     smtp_pass: str | None = None
-    enabled: bool | None = None
+    enabled: bool | None = None         # 使う (false = 止める)
+    sent_only: bool | None = None       # 送信済みだけ取り込む (受信箱には入れない。Gmail など)
+    import_sent: bool | None = None     # 送信済みも取り込む (送信箱に出す)
 
 
 class MailAccountPatch(MailAccountBody):
@@ -2377,12 +2380,13 @@ def audit_csv(
     start, end = tz.month_window(month)
     rows = conn.execute(
         """
-        SELECT a.at, adm.name AS admin_name, a.action, tgt.name AS target_name,
-               a.session_id, a.detail
+        SELECT a.at, CASE WHEN a.admin_id = 0 THEN '（自動）' ELSE adm.name END AS admin_name,
+               a.action, tgt.name AS target_name, a.session_id, a.detail
         FROM audit_log a
-        JOIN users adm ON adm.id = a.admin_id
+        LEFT JOIN users adm ON adm.id = a.admin_id
         LEFT JOIN users tgt ON tgt.id = a.target_user_id
-        WHERE a.at >= ? AND a.at < ? ORDER BY a.at
+        WHERE a.at >= ? AND a.at < ? AND (adm.id IS NOT NULL OR a.admin_id = 0)
+        ORDER BY a.at
         """,
         (tz.utc_iso(start), tz.utc_iso(end)),
     ).fetchall()
@@ -2414,6 +2418,8 @@ def audit_csv(
         "correction_rejected": "修正申請を却下",
         "mail_send": "メール返信送信",
         "mail_send_refused": "メール返信送信（宛先に届かず）",
+        # 送信済みフォルダ (Webメール・Gmail など) の返信を見て、自動で返信済みにした (操作者は「（自動）」)
+        "mail_auto_replied": "Webメールなどからの返信で返信済みにした",
         "mail_update": "メール状態変更",
         "mail_archive": "メールを対応不要にした",
         "mail_unarchive": "メールの対応不要を元に戻した",
@@ -2713,7 +2719,7 @@ def fetch_mail_now(_user=Depends(require_mail_user), conn=Depends(get_conn)):
     """
     s = db.get_settings(conn)
     accounts = mail.list_accounts(conn)
-    if not any(a["enabled"] for a in accounts):
+    if not any(mail.account_active(a) for a in accounts):
         raise HTTPException(400, "受信するメールアドレスを全部止めています。設定画面の"
                                  "「受信するメールアドレス」で「受信する」に戻してください"
                             if accounts else
@@ -2806,11 +2812,13 @@ def mail_status(
         " (SELECT COUNT(*) FROM mails WHERE status = 'pending_approval'),"
         " (SELECT MAX(id) FROM mails)").fetchone()
     state = mail.fetch_state(conn)
-    # 受信するアドレス (止めていないもの) があるか
+    # 受信するアドレス (止めていないもの。送信済みだけ取り込むものも) があるか
     imap_set = any(a["enabled"] for a in state["accounts"])
     # 一覧から削除したアドレスに届いたメールの数 (受信箱の「アドレス」の絞り込みに出すか決める用)
     deleted = conn.execute("SELECT COUNT(*) FROM mails WHERE account_id IS NULL").fetchone()[0]
     return {
+        # 送信箱が変わったかの印 (送信箱を開いたままのとき、変わったら取り直す)
+        "sent_mark": sent_box.newest_mark(conn),
         "unhandled": unhandled,
         # 確認待ち (メール担当者が「確認をお願いする」を押して、管理者の確認を待っている) の数
         "pending_approval": pending,
@@ -3227,7 +3235,13 @@ def patch_mail_account(
         if any(k in mail.ACCOUNT_CONNECTION_KEYS for k in changed):
             conn.execute("UPDATE mail_accounts SET state_uidvalidity = '', state_last_uid = 0"
                          " WHERE id = ?", (account_id,))
-        if any(k in (*mail.ACCOUNT_CONNECTION_KEYS, "imap_pass", "enabled") for k in changed):
+        if any(k in (*mail.ACCOUNT_CONNECTION_KEYS, *mail.ACCOUNT_SENT_KEYS) for k in changed):
+            # 送信済みフォルダの続きの位置も消す (取り込み済みのものは同じ Message-ID なので二重には入らない)
+            conn.execute("UPDATE mail_accounts SET sent_state_folder = '',"
+                         " sent_state_uidvalidity = '', sent_state_last_uid = 0 WHERE id = ?",
+                         (account_id,))
+        if any(k in (*mail.ACCOUNT_CONNECTION_KEYS, *mail.ACCOUNT_SENT_KEYS, "imap_pass",
+                     "enabled") for k in changed):
             mail.clear_fetch_error(conn, account_id)
         # 旧設定から作ったアドレスなら、前の版が読む旧設定も同じにする (前の版に戻ったとき用)
         mail.sync_legacy_settings(conn, {**fields, "id": account_id}, changed)
@@ -3507,6 +3521,64 @@ def delete_mail_client_rule(
     return {"key": clients.client_key(out["id"]), "pattern": out["pattern"]}
 
 
+# ----- 送信箱 (こちらから送ったメール。この画面から送った返信と、送信済みフォルダから取り込んだもの) -----
+# /api/mail/sent... は /api/mail/{mail_id} より先に宣言する (後にすると "sent" が mail_id として読まれる)
+
+@app.get("/api/mail/sent")
+def list_sent_mail(
+    offset: int = 0, limit: int | None = None, account: str | None = None,
+    _user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """送信箱の一覧 (新しい順。管理者とメール担当者が見られる).
+
+    account は送ったアドレスの番号 (none で削除したアドレス) で絞り込む。offset・limit で続きを読む。
+    """
+    off, lim = _paging(offset, limit, sent_box.LIST_LIMIT, sent_box.LIST_LIMIT_MAX)
+    try:
+        return sent_box.list_sent(conn, off, lim, account)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/mail/sent/{key}")
+def sent_mail_detail(key: str, _user=Depends(require_mail_user), conn=Depends(get_conn)):
+    """送信箱の1通 (本文は全部・宛先・CC・BCC (この画面から送ったものだけ)・添付・元のメール・取引先)."""
+    try:
+        return sent_box.sent_detail(conn, key, db.get_settings(conn))
+    except sent_box.SentNotFound:
+        raise HTTPException(404, "送ったメールが見つかりません（保存日数を過ぎて消えた可能性があります）")
+
+
+@app.get("/api/mail/sent/{key}/attachments/{att_id}")
+def sent_mail_attachment(
+    key: str, att_id: int, inline: bool = False,
+    _user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """送信箱に取り込んだメールの添付ファイルの中身 (そのメールの添付でなければ 404)."""
+    try:
+        kind, num = sent_box.parse_key(key)
+    except sent_box.SentNotFound:
+        raise HTTPException(404, "添付ファイルが見つかりません")
+    row = conn.execute("SELECT * FROM sent_mail_attachments WHERE id = ? AND sent_id = ?",
+                       (att_id, num)).fetchone() if kind == "i" else None
+    if not row or row["skip_reason"]:
+        raise HTTPException(404, "添付ファイルが見つかりません")
+    path = mail.attachment_file(MAIL_ATTACHMENT_DIR, row["path"])
+    if path is None or not path.is_file():
+        raise HTTPException(404, "添付ファイルが見つかりません（削除された可能性があります）")
+    preview = row["content_type"] in mail.PREVIEW_TYPES
+    return FileResponse(
+        path,
+        media_type=row["content_type"] if preview else mail.OCTET_STREAM,
+        headers={
+            "Content-Disposition": mail.content_disposition(
+                "inline" if inline and preview else "attachment", row["filename"]),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
 @app.get("/api/mail/{mail_id}/templates")
 def mail_templates_for_mail(
     mail_id: int, _user=Depends(require_mail_user), conn=Depends(get_conn)
@@ -3605,6 +3677,13 @@ def mail_detail(
         "reply_cc": mail.split_addresses(r["reply_cc"]),
         "reply_bcc": mail.split_addresses(r["reply_bcc"]),
         "replied_by": r["replied_by"],
+        # どこから返信したか ('' = この画面。'webmail' / 'gmail' = 送信済みフォルダの返信を見て
+        # 自動で返信済みにした) と、送信箱のその返信の番号 (「送信箱で見る」用)
+        "reply_source": r["reply_source"],
+        "reply_source_label": mail.SENT_SOURCE_LABELS.get(r["reply_source"], "")
+        if r["reply_source"] else "",
+        "reply_sent_key": f"i{r['reply_sent_id']}" if r["reply_source"] and r["reply_sent_id"]
+        else "",
         # 添付ファイル (保存したもの) と、大きすぎるなどで保存しなかったもの (名前と理由)
         "attachments": [mail.attachment_info(a) for a in atts if not a["skip_reason"]],
         "skipped_attachments": [mail.skipped_attachment_info(a)
@@ -4058,6 +4137,30 @@ def _reply_to(r, requested: str | None) -> tuple[str, str]:
     return to, default
 
 
+def _remember_refused_send(conn, r, acc, raw: bytes, sender: str, to: str, cc: list,
+                           subject: str, text: str) -> None:
+    """宛先に届かなかった (CC・BCC の人には届いた) 返信を、送信箱に「この画面」の分として残す.
+
+    メールは未対応に戻すので、送った文がどこにも残らなくなるのを防ぐ。送信済みフォルダに控えを
+    残すと、取り込んだときに「Webメールなどから返信した」と見なして返信済みにしてしまうので、
+    同じ Message-ID をここで入れておく (取り込みは同じ Message-ID を入れない)。
+    控えの保存 (IMAP) の前にすぐ確定する (ロックを持ったまま待たない)。
+    """
+    msg_id = mail.sent_message_id(raw)
+    if not msg_id:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO sent_mails (account_id, message_id, folder, from_addr, to_addr,"
+        " cc_addr, to_key, subject, body, sent_at, fetched_at, in_reply_to, source, note,"
+        " linked_mail_id, link_kind) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'app', ?, ?,"
+        " 'header')",
+        (acc["id"] if acc else None, msg_id, mail.sender_address(sender), to, ", ".join(cc), to.lower(), subject, text,
+         now_iso(), now_iso(), r["message_id"],
+         f"宛先（{to}）には届きませんでした（CC・BCC の人には届いています。メールは未対応に戻しました）",
+         r["id"]))
+    conn.commit()
+
+
 def _to_changed(to: str, default: str) -> str:
     """宛先を画面で直したときに、操作の記録に足す文 (直していなければ空)."""
     if to.lower() == default.strip().lower():
@@ -4120,6 +4223,7 @@ def mail_send(
     cur = conn.execute(
         "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
         " reply_cc = ?, reply_bcc = ?, replied_at = ?, replied_by = ?, reply_sent_to = ?,"
+        " reply_source = '', reply_sent_id = NULL,"
         " approved_by = CASE WHEN status = 'pending_approval' THEN ? ELSE '' END"
         " WHERE id = ? AND status != 'replied' AND (? OR CASE WHEN ? IS NULL"
         " THEN status != 'pending_approval'"
@@ -4172,6 +4276,10 @@ def mail_send(
         # 肝心の相手 (宛先) に届いていない。CC・BCC の人には届いているが、
         # 「返信済み」にすると対応が終わったと思われてしまうので、未対応に戻して知らせる
         delivered = [a for a in (*cc, *bcc) if a.lower() not in refused_keys]
+        if delivered and raw:
+            # CC・BCC の人に届いたものは送信箱に残す。送信済みフォルダの控えを取り込んだときに
+            # 「Webメールから返信した」と見なして返信済みにしないよう、Message-ID もここで覚える
+            _remember_refused_send(conn, r, acc, raw, sender, to, cc, subject, text)
         # CC・BCC の人には届いているので、何を送ったかが分かるよう控えは残す
         # (未対応に戻すと返信文は消え、宛先は画面で直せないので、送り直さずに
         # 閉じたときに、届いた文がどこにも残らなくなる)。

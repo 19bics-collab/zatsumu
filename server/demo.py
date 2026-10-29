@@ -6,6 +6,7 @@ ZATSUMU_DEMO=1 で起動すると、DB が空の場合に固定トークンの�
 
   管理者: demo-admin / メンバー: demo-tanaka, demo-suzuki, demo-sato
   (田中 はメール担当者。demo-tanaka でメール画面に入ると、下書きと「確認をお願いする」だけできる)
+  送信箱には、Webメール・Gmail から送ったメール (取り込んだもの) も入る
 """
 import io
 import random
@@ -407,6 +408,62 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              "https://example.com/minpaku/contact/reservation-support/faq-and-guides\n"
              "--------------------------------------------------------------------------------------------",
              2, "通常", category="予約・宿泊のお問い合わせ")
+
+    # 送信箱の確認用: Webメールから返信したメール (受信箱のメールは自動で「返信済み」になる)・
+    # Gmail から送ったメール (Gmail は「送信済みだけ取り込む」アドレス。添付付き)・Webメールから新しく送ったメール
+    gmail_id = conn.execute(
+        "INSERT INTO mail_accounts (label, imap_host, imap_user, imap_pass, from_addr, enabled,"
+        " sent_only, sent_import, sort_order, created_at, sent_state_folder, sent_fetch_ok_at)"
+        " VALUES ('黒須Gmail', 'imap.gmail.com', 'kurosu.demo@gmail.com', 'demo-password',"
+        " 'kurosu.demo@gmail.com', 0, 1, 1, 2, ?, '[Gmail]/&kAFP4W4IMH8w4TD8MOs-', ?)",
+        (tz.utc_iso(now_utc), tz.utc_iso(now_utc))).lastrowid
+    for acc_id in accounts.values():
+        conn.execute("UPDATE mail_accounts SET sent_state_folder = 'INBOX.Sent',"
+                     " sent_fetch_ok_at = ? WHERE id = ?", (tz.utc_iso(now_utc), acc_id))
+
+    def add_sent(mins_ago, account_id, source, to, subject, body, in_reply_to="", cc="",
+                 folder="INBOX.Sent", frm="info@example.com"):
+        p = {"message_id": f"<demo-sent-{mins_ago}@example.com>", "to_addr": to, "cc_addr": cc,
+             "subject": subject, "body": body, "in_reply_to": in_reply_to,
+             "sent_at": (now_utc - timedelta(minutes=mins_ago)).isoformat()}
+        name, addr = mail._header_addrs(to)[0]
+        sent_id = conn.execute(
+            "INSERT INTO sent_mails (account_id, message_id, folder, from_addr, to_addr, cc_addr,"
+            " to_key, to_name, subject, body, sent_at, fetched_at, in_reply_to, references_hdr,"
+            " source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (account_id, p["message_id"], folder, frm, to, cc, addr.lower(), name, subject, body,
+             p["sent_at"], p["sent_at"], in_reply_to, in_reply_to, source)).lastrowid
+        if in_reply_to:
+            mail_id = conn.execute("SELECT id FROM mails WHERE message_id = ?",
+                                   (in_reply_to,)).fetchone()[0]
+            conn.execute("UPDATE sent_mails SET linked_mail_id = ?, link_kind = 'header'"
+                         " WHERE id = ?", (mail_id, sent_id))
+            mail._mark_replied(conn, mail_id, sent_id, p, source, "info", "header")
+        return sent_id
+
+    add_mail(300, "森 由紀", "mori.demo@yahoo.co.jp", "駐車場の有無について",
+             "来週宿泊予定の森です。近くに駐車場はありますか。", 2, "通常",
+             category="予約・宿泊のお問い合わせ")
+    add_sent(280, accounts["info@example.com"], "webmail", "森 由紀 <mori.demo@yahoo.co.jp>",
+             "Re: 駐車場の有無について",
+             "森 様\n\nお問い合わせありがとうございます。\n"
+             "建物の裏に1台分の駐車場がございます。ご到着の際にお使いください。\n\n"
+             "ビックス 予約係\n\n> 来週宿泊予定の森です。近くに駐車場はありますか。",
+             in_reply_to="<demo-300@example.com>")
+    plan_id = add_sent(1200, gmail_id, "gmail", "山本 清掃チーム <yamamoto@clean-partner.example.jp>",
+                       "来月の清掃の予定表",
+                       "山本さん\n\nお疲れさまです。黒須です。\n来月の清掃の予定表と間取り図を送ります。\n"
+                       "よろしくお願いします。", folder="[Gmail]/送信済みメール",
+                       frm="kurosu.demo@gmail.com")
+    if attachment_dir is not None:
+        plan = _fake_floor_plan()
+        mail.save_attachments(conn, attachment_dir, plan_id, [
+            {"filename": "間取り図.png", "content_type": "image/png", "size": len(plan),
+             "data": plan, "skip": ""}], now_utc.isoformat(), sent=True)
+    add_sent(2000, accounts["kurosu@example.com"], "webmail",
+             "tanaka@sakura-fudosan.example.co.jp", "定期清掃のお見積もり",
+             "田中 様\n\nいつもお世話になっております。\n3物件の定期清掃のお見積もりをお送りします。",
+             cc="suzuki@sakura-fudosan.example.co.jp", frm="kurosu@example.com")
 
     # よく使うアドレス (アドレス帳)。返信画面の宛先・CC・BCC に打つと候補の一番上に出る
     for name, addr, note in (

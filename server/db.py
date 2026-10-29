@@ -167,7 +167,11 @@ CREATE TABLE IF NOT EXISTS mails (
     -- (前の版のコードが入れたメールにも入る)。contact_company はHPのフォームの「会社名」
     -- (フォームから届いたメールだけ。取引先の名前の候補)
     contact_domain TEXT NOT NULL DEFAULT '',
-    contact_company TEXT NOT NULL DEFAULT ''
+    contact_company TEXT NOT NULL DEFAULT '',
+    -- どこから返信したか ('' = この画面 (前の版が送ったものも) / 'webmail' / 'gmail' =
+    -- 送信済みフォルダに入っていた返信を見て、自動で返信済みにした) と、その送ったメール (sent_mails.id)
+    reply_source TEXT NOT NULL DEFAULT '',
+    reply_sent_id INTEGER
 );
 -- 取引先 (管理者が名前を付けた・まとめたもの。server/clients.py)。名前を付けていない取引先は
 -- 表に入れず、メールの相手のアドレスから決まった分け方で毎回まとめる (会社のドメインごと・
@@ -217,7 +221,20 @@ CREATE TABLE IF NOT EXISTS mail_accounts (
     -- 受信の様子 (最後に受信できた時刻・直近の失敗の理由と時刻。受信できたら理由は空にする)
     fetch_ok_at TEXT,
     fetch_error TEXT NOT NULL DEFAULT '',
-    fetch_error_at TEXT
+    fetch_error_at TEXT,
+    -- 送信箱 (server/mail.py の fetch_sent_mail)。sent_only=1 は「送信済みだけ取り込む」
+    -- (Gmail など。受信箱には入れない)。そのアドレスは前の版のコードが受信箱を読まないよう
+    -- enabled を 0 にしておき、使う/止めるは sent_import に入れる。sent_only=0 のときの
+    -- sent_import は「送信済みも取り込む」(Webメールなどから送ったメールを送信箱に出す)
+    sent_only INTEGER NOT NULL DEFAULT 0,
+    sent_import INTEGER NOT NULL DEFAULT 1,
+    -- 送信済みフォルダの取り込みの続きの位置 (フォルダのサーバ上の名前・UIDVALIDITY・最後の UID) と様子
+    sent_state_folder TEXT NOT NULL DEFAULT '',
+    sent_state_uidvalidity TEXT NOT NULL DEFAULT '',
+    sent_state_last_uid INTEGER NOT NULL DEFAULT 0,
+    sent_fetch_ok_at TEXT,
+    sent_fetch_error TEXT NOT NULL DEFAULT '',
+    sent_fetch_error_at TEXT
 );
 -- 届いたメールが「どのメールへの返事か」を示す Message-ID (In-Reply-To・References の中身)。
 -- 返信画面の「この相手とのやり取り」で、同じ話のメールを探すのに使う (server/mail.py)。
@@ -240,6 +257,62 @@ CREATE TABLE IF NOT EXISTS mail_attachments (
     skip_reason TEXT NOT NULL DEFAULT '',   -- 保存しなかった理由 (空=保存した)
     created_at TEXT NOT NULL
 );
+-- 送信箱: メールボックスの送信済みフォルダから取り込んだ、送ったメール (server/mail.py)。
+-- お名前メールの Webメール・Outlook・スマホ・Gmail などから送ったもの。この画面から送った
+-- 返信は mails の reply_* に残っているので、ここには入れない (同じ Message-ID は取り込まない)。
+-- source は 'webmail' (Webメールなど) / 'gmail' / 'app' (この画面から送ったが宛先に届かず、
+-- 返信済みにしなかったものの控え)。linked_mail_id はどの届いたメールへの返信か
+-- (link_kind: 'header' = In-Reply-To・References / 'subject' = 宛先と件名から1通に決まった)。
+-- marked_replied=1 はこのメールでそのメールを「返信済み」にした
+CREATE TABLE IF NOT EXISTS sent_mails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER REFERENCES mail_accounts(id) ON DELETE SET NULL,
+    message_id TEXT NOT NULL,
+    imap_uid INTEGER,
+    folder TEXT NOT NULL DEFAULT '',          -- 取り込んだフォルダ (画面に出す名前)
+    from_addr TEXT NOT NULL DEFAULT '',
+    from_name TEXT NOT NULL DEFAULT '',
+    to_addr TEXT NOT NULL DEFAULT '',         -- To ヘッダ
+    cc_addr TEXT NOT NULL DEFAULT '',         -- Cc ヘッダ
+    to_key TEXT NOT NULL DEFAULT '',          -- 最初の宛先のアドレス (小文字。取引先の印用)
+    to_name TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL,                    -- UTC ISO (Date ヘッダ)
+    fetched_at TEXT NOT NULL,                 -- UTC ISO
+    in_reply_to TEXT NOT NULL DEFAULT '',
+    references_hdr TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'webmail',
+    note TEXT NOT NULL DEFAULT '',            -- 画面に出す一言 (宛先に届かなかった など)
+    linked_mail_id INTEGER REFERENCES mails(id) ON DELETE SET NULL,
+    link_kind TEXT NOT NULL DEFAULT '',
+    marked_replied INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sent_mails_msgid ON sent_mails(message_id);
+CREATE INDEX IF NOT EXISTS idx_sent_mails_sent_at ON sent_mails(sent_at);
+CREATE INDEX IF NOT EXISTS idx_sent_mails_account ON sent_mails(account_id, sent_at);
+CREATE INDEX IF NOT EXISTS idx_sent_mails_linked ON sent_mails(linked_mail_id);
+CREATE INDEX IF NOT EXISTS idx_sent_mails_fetched ON sent_mails(fetched_at);
+-- 送ったメールが「どのメールへの返信か」を示す Message-ID (mail_refs と同じ。届いたメールが
+-- 後から取り込まれたときにも、返信済みにできるように)
+CREATE TABLE IF NOT EXISTS sent_mail_refs (
+    sent_id INTEGER NOT NULL REFERENCES sent_mails(id) ON DELETE CASCADE,
+    ref TEXT NOT NULL,
+    PRIMARY KEY (sent_id, ref)
+);
+CREATE INDEX IF NOT EXISTS idx_sent_mail_refs_ref ON sent_mail_refs(ref);
+-- 送ったメールの添付ファイル (中身はデータフォルダの mail_attachments/sent/<sent_id>/<id>)
+CREATE TABLE IF NOT EXISTS sent_mail_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sent_id INTEGER NOT NULL REFERENCES sent_mails(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    path TEXT NOT NULL DEFAULT '',
+    skip_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sent_mail_attachments_sent ON sent_mail_attachments(sent_id);
 -- よく使う返信文 (定型文)。返信画面で選んで本文に入れる。
 -- {相手の名前} などの差し込みは、入れるときにそのメールの内容へ置き換える (server/mail.py)
 CREATE TABLE IF NOT EXISTS mail_templates (
@@ -688,6 +761,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_sent_to"
                  " ON mails(replied_at, reply_sent_to, reply_cc, reply_bcc)"
                  " WHERE replied_at IS NOT NULL")
+    # 送信箱 (どこから返信したか・取り込んだ送信済みフォルダ)。前からある返信は「この画面」
+    for col in ("reply_source",):
+        if col not in mcols:
+            conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    if "reply_sent_id" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN reply_sent_id INTEGER")
+    # 送信箱の「この画面から送った返信」を新しい順に読む用 (返信したメールだけの小さい索引)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_app_sent ON mails(replied_at)"
+                 " WHERE replied_at IS NOT NULL AND reply_source = ''")
+    acols = [r["name"] for r in conn.execute("PRAGMA table_info(mail_accounts)")]
+    for col, decl in (("sent_only", "INTEGER NOT NULL DEFAULT 0"),
+                      ("sent_import", "INTEGER NOT NULL DEFAULT 1"),
+                      ("sent_state_folder", "TEXT NOT NULL DEFAULT ''"),
+                      ("sent_state_uidvalidity", "TEXT NOT NULL DEFAULT ''"),
+                      ("sent_state_last_uid", "INTEGER NOT NULL DEFAULT 0"),
+                      ("sent_fetch_ok_at", "TEXT"),
+                      ("sent_fetch_error", "TEXT NOT NULL DEFAULT ''"),
+                      ("sent_fetch_error_at", "TEXT")):
+        if col not in acols:
+            conn.execute(f"ALTER TABLE mail_accounts ADD COLUMN {col} {decl}")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
     _seed_mail_templates(conn)

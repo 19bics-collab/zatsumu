@@ -69,12 +69,19 @@ class Box:
 
     def select(self, folder, readonly=False):
         assert readonly   # 受信箱は変更しない
+        self.selected = folder
         return ("OK", [str(len(self.mails)).encode()])
+
+    def list(self, *args):
+        # 送信済みフォルダ (送信箱の取り込み。ここでは空のフォルダ)
+        return ("OK", [b'(\\HasNoChildren \\Sent) "/" "Sent"'])
 
     def response(self, key):
         return ("UIDVALIDITY", [self.uidvalidity])
 
     def uid(self, cmd, *args):
+        if cmd == "search" and "Sent" in getattr(self, "selected", ""):
+            return ("OK", [b""])   # 送信済みフォルダは空 (送信箱のテストは test_mail_sent_box.py)
         if cmd == "search":
             self.criteria.append(args[1])
             if self.on_search:
@@ -295,8 +302,10 @@ def test_fetch_each_account_and_one_failure_does_not_block(client, users, tmp_pa
     assert "ログインできませんでした" in body["errors"][0]["error"]
     assert "kurosu-secret-pw" not in r.text                      # パスワードは伏せる
     # それぞれのアドレスのユーザー・パスワードでログインする
-    assert logins == [("imap.bics.example", "info@bics.example", "info-secret-pw"),
-                      ("imap2.bics.example", "kurosu@bics.example", "kurosu-secret-pw")]
+    # (受信箱の後に、送信済みフォルダ (送信箱) も同じログインで読む)
+    assert list(dict.fromkeys(logins)) == [
+        ("imap.bics.example", "info@bics.example", "info-secret-pw"),
+        ("imap2.bics.example", "kurosu@bics.example", "kurosu-secret-pw")]
     assert [(m["message_id"], m["account_id"]) for m in mails_rows(tmp_path)] == [
         ("<u5@example.com>", info["id"])]
     s = status(client, admin)
