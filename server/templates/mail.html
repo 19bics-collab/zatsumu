@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" class="inbox-on">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -104,6 +104,11 @@
   .mail-row.leaving, .peek-row.leaving { opacity: 0; transform: translateX(1.5rem); pointer-events: none;
                       transition: opacity .25s ease, transform .25s ease; }
   @media (prefers-reduced-motion: reduce) { .mail-row.leaving, .peek-row.leaving { transition: none; } }
+  /* 受信箱では、画面の上で行・プルダウンの高さが変わったときのブラウザの自動の位置合わせを止める
+     (合わせるかは機種で違う: Android の Chrome は合わせ、iPhone の Safari は合わせない。
+     合わせる機種では画面の手での合わせ (fillPeek・removeRows・renderInbox) と二重に動いてしまうので、
+     どの機種でも手で合わせる) */
+  html.inbox-on { overflow-anchor: none; }
   /* 一覧のプルダウン (「本文 ▼」で、その行の下に本文とその後のやり取りを出す。返信画面は開かない) */
   .row-peek { background: #fff; color: #166534; border: 1px solid #86efac; border-radius: 8px;
               padding: .35rem .6rem; font-size: .82rem; min-height: 34px; white-space: nowrap;
@@ -250,6 +255,7 @@
   .set-row select { width: 11rem; flex-shrink: 0; padding: .45rem; border: 1px solid #ccc;
                     border-radius: 6px; font-size: 1rem; background: #fff; }
   .set-help { margin: -.3rem 0 .7rem; color: #4b5563; line-height: 1.5; }
+  .set-warn { color: #92400e; }
   #ai-status { white-space: pre-wrap; font-size: .85rem; overflow-wrap: anywhere; }
   #test-ai-msg { font-size: .85rem; margin-top: .4rem; overflow-wrap: anywhere; }
   /* 返事をしていないメールのお知らせ (設定)。時間帯の2つの選択欄は、狭い画面では次の行へ */
@@ -876,7 +882,9 @@
     お名前メールの Webメール・Outlook・スマホ・Gmail などから送ったメールも、各アドレスの
     「送信済み」フォルダから自動で取り込みます（受信と同じ間隔です。メールボックスは変えません）。
     Webメールなどから返信したメールは、受信箱でも自動で「返信済み」になり、みんなの画面に出ます
-    （つながりが分からないときは、宛先が相手で件名が同じ未対応のメールが1通だけのときに限ります）。
+    （宛先か CC に相手が入っているときだけ。外注先や社内の人にだけ送ったものでは変わりません。
+    つながりが分からないときは、宛先が相手で件名が同じ未対応のメールが1通だけのときに限ります）。
+    「送信済みだけ取り込む」アドレス（個人の Gmail など）からは、仕事のメールだけを取り込みます。
     行を押すと、本文と宛先・CC、元のメールが見られます。
     上の検索欄に言葉を入れると、件名・本文・宛先の名前とアドレス・取引先の名前・添付ファイルの名前から探します
     （空白で区切ると、全部を含むメールだけが出ます）。</small></p>
@@ -1023,6 +1031,9 @@
       <p class="set-help"><small>Gmail など、そのアドレスに届いたメールは受信箱に入れず、そこから送ったメールだけを
       「送信箱」に出したいときにチェックします（届いたメールへの返信なら、受信箱のメールも自動で「返信済み」になります）。
       このアドレスから届いたメールは、自分たちが送ったものとして受信箱に入れません。</small></p>
+      <p class="set-help set-warn" id="acct-sent-only-warn"><small>⚠ 取り込んだメールは、メール担当者みんなが送信箱で見られます（本文・添付も）。
+      私用のメールを見られないよう、取り込むのは仕事のメールだけです: 受信箱のメールへの返信と、前にメールをくれた相手・
+      アドレス帳の人に送ったもの。それ以外（家族・友人・お店などへのメール）は取り込みません。</small></p>
       <details class="acct-more" id="acct-gmail-help">
         <summary>Gmail をつなぐには</summary>
         <ol class="gmail-steps">
@@ -1695,6 +1706,7 @@ function applyRole() {
 
 function switchView(name) {
   viewName = name;
+  document.documentElement.classList.toggle("inbox-on", name === "inbox");
   $("inbox").hidden = name !== "inbox";
   $("settings-view").hidden = name !== "settings";
   $("clients-view").hidden = name !== "clients";
@@ -2218,6 +2230,28 @@ function peekInner(id) {
   return html + act;
 }
 
+// 一覧の行・プルダウンを消す (els は上から順。keep は消した後に見せたい行: 閉じたメールの行・次のメールの行)。
+// 消すものが全部画面より上なら、見ている所を動かさない。読んでいた所 (画面の上にかかるプルダウン) を
+// 消したときは、keep の行を画面の上に出す (そのままだと、消した高さの分だけ先のメールが見えてしまい、
+// 何通か飛ばしたことに気づかない)。画面の中・下で消したときは、下の行が上がってくるだけ
+function removeRows(els, keep) {
+  els = els.filter(el => el && el.isConnected);
+  if (!els.length) return;
+  const top = els[0].getBoundingClientRect().top;
+  const last = els[els.length - 1];
+  const next = last.nextElementSibling;      // 消したものの次の行 (消した後に上がってくる)
+  const nextTop = next ? next.getBoundingClientRect().top : 0;
+  const allAbove = last.getBoundingClientRect().bottom <= 0;
+  const h = next ? 0 : els.reduce((sum, el) => sum + el.getBoundingClientRect().height, 0);
+  els.forEach(el => el.remove());
+  if (top >= 0) return;
+  if (allAbove) {
+    window.scrollBy(0, next ? next.getBoundingClientRect().top - nextTop : -h);
+  } else if (keep && keep.isConnected) {
+    window.scrollBy(0, keep.getBoundingClientRect().top - 8);
+  }
+}
+
 // プルダウンの中身を出し直す。画面より上にあるプルダウンの高さが変わっても、見ている所を動かさない
 function fillPeek(id) {
   const box = $(`peek-${id}`), tr = peekRowOf(id);
@@ -2266,7 +2300,7 @@ function togglePeek(id) {
   tr.classList.toggle("peeking", open);
   btn.setAttribute("aria-expanded", String(open));
   btn.textContent = `本文 ${open ? "▲" : "▼"}`;
-  if (!open) { peekRowOf(id)?.remove(); return; }
+  if (!open) { removeRows([peekRowOf(id)], tr); return; }
   tr.insertAdjacentHTML("afterend", peekRowHtml(id));
   markOpened(id);
   const c = peekCache.get(id), m = shownMails.get(id);
@@ -2356,7 +2390,12 @@ async function archiveFromRow(b, tr) {
     refreshInbox();
     return;
   }
-  if (leave && tr.isConnected) { pk?.remove(); tr.remove(); rowsMovedAt = Date.now(); }
+  if (leave && tr.isConnected) {
+    // 次のメールの行 (開いているプルダウンの下から読んでいたときは、それを画面の上に出す)
+    const next = (pk && pk.isConnected ? pk : tr).nextElementSibling;
+    removeRows([tr, pk], next && next.classList.contains("mail-row") ? next : null);
+    rowsMovedAt = Date.now();
+  }
   showArchivedToast(id, m.subject, r);
   refreshInbox();      // タブの数・未対応の数も取り直す
 }

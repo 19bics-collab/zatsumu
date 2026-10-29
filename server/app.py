@@ -1,6 +1,7 @@
 """zatsumu server — テレワーク勤怠・稼働可視化 MVP (F-Chair+ 風)."""
 import asyncio
 import os
+import sqlite3
 import time
 import threading
 from contextlib import asynccontextmanager
@@ -185,26 +186,46 @@ def _build_search_index() -> None:
     """前からあるメールを検索の索引に入れる (起動の後に少しずつ。ほかの処理を長く待たせない).
 
     入れ終わるまでの検索は、メールを1通ずつ見て探す (server/mail_search.py)。
-    失敗しても止めない (次の起動のときに続きから入れる。それまでは1通ずつ見て探す)。
+    ほかの書き込み (何万通もの古いメールの削除など) が長く続いて書けなかったときは、少し待って
+    続きから入れ直す (次の起動まで1通ずつ見て探すことにならないように)。ほかの失敗では止める
+    (次の起動のときに続きから入れる。それまでは1通ずつ見て探す)。
     """
-    try:
-        conn = db.connect(DATA_DIR / "zatsumu.db")
+    wait = SEARCH_BUILD_RETRY_SEC
+    for _ in range(SEARCH_BUILD_TRIES):
         try:
-            if mail_search.index_ready(conn) or not mail_search.fts_supported():
+            conn = db.connect(DATA_DIR / "zatsumu.db")
+            try:
+                if mail_search.index_ready(conn) or not mail_search.fts_supported():
+                    return
+                started = time.monotonic()
+                n = mail_search.build_index(conn, pause=SEARCH_BUILD_PAUSE_SEC,
+                                            stop=_search_build_stop)
+                if mail_search.index_ready(conn):
+                    print(f"検索の索引に {n} 通を入れました（{time.monotonic() - started:.0f}秒）")
                 return
-            started = time.monotonic()
-            n = mail_search.build_index(conn, pause=SEARCH_BUILD_PAUSE_SEC, stop=_search_build_stop)
-            if mail_search.index_ready(conn):
-                print(f"検索の索引に {n} 通を入れました（{time.monotonic() - started:.0f}秒）")
-        finally:
-            conn.close()
-    except Exception as e:  # noqa: BLE001
-        print(f"検索の索引を作れませんでした（1通ずつ見て探します）: {e}")
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) and "busy" not in str(e):
+                print(f"検索の索引を作れませんでした（1通ずつ見て探します）: {e}")
+                return
+            # ほかの書き込みが終わるのを待ってから続きを入れる (サーバを止めるときはやめる)
+            if _search_build_stop.wait(wait):
+                return
+            wait = min(wait * 2, SEARCH_BUILD_RETRY_MAX_SEC)
+        except Exception as e:  # noqa: BLE001
+            print(f"検索の索引を作れませんでした（1通ずつ見て探します）: {e}")
+            return
+    print("検索の索引を作れませんでした（ほかの書き込みが続いたため。次の起動のときに続きから入れます）")
 
 
-# 検索の索引を作るとき、少しずつ入れる間に休む秒数 (受信・画面の書き込みを先に通す) と、
+# 検索の索引を作るとき、少しずつ入れる間に休む秒数 (受信・画面の書き込みを先に通す)、
+# ほかの書き込みで書けなかったときに待つ秒数 (倍々に延ばす。上限あり) と試す回数、
 # サーバを止めるときに作るのをやめる合図
 SEARCH_BUILD_PAUSE_SEC = 0.05
+SEARCH_BUILD_RETRY_SEC = 5.0
+SEARCH_BUILD_RETRY_MAX_SEC = 120.0
+SEARCH_BUILD_TRIES = 60
 _search_build_stop = threading.Event()
 
 

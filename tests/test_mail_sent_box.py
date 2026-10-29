@@ -516,7 +516,9 @@ def test_mail_imported_after_its_reply_is_marked_replied(client, users, tmp_path
     r = row(tmp_path, "SELECT * FROM mails WHERE message_id = '<late@example.com>'")
     assert r["status"] == "replied" and r["reply_source"] == "webmail"
     assert row(tmp_path, "SELECT linked_mail_id FROM sent_mails")["linked_mail_id"] == r["id"]
-    assert notices == []   # もう返信してあるメールは「優先度[高]」で知らせない
+    # 優先度[高]の知らせは出す (Message-ID は差出人が付けられるので念のため)。返信済みにしたことを書き添える
+    assert notices == ["📧 優先度[高]のメールを受信しました（Webメールからの返信で返信済みにしました）:"
+                       " ご相談 (yamada@example.com)"]
 
 
 # ---------- 送信済みだけ取り込むアドレス (Gmail) ----------
@@ -583,6 +585,9 @@ def test_sent_only_account_alone_can_be_fetched(client, users, tmp_path, monkeyp
     use_servers(monkeypatch, {"imap.gmail.com": gmail})
     with db.get_db(tmp_path / "zatsumu.db") as conn:
         assert mail.receiving_configured(conn)
+        # 仕事の相手 (アドレス帳の人) へのメールなので取り込む
+        conn.execute("INSERT INTO address_book (name, email, created_at, updated_at)"
+                     " VALUES ('', 'A@b.example', '2026-10-01', '2026-10-01')")
     fetch(client, admin)
     assert row(tmp_path, "SELECT COUNT(*) AS n FROM sent_mails")["n"] == 1
     # 失敗したら「今すぐ受信」でも分かる (このアドレスの受信の結果)
@@ -855,3 +860,184 @@ def test_mail_page_has_sent_box(client):
         assert unsafe not in page, unsafe
     # 本文は折り返して全部出す (中で別にスクロールさせない)
     assert "#sd-body { max-height: none; overflow: visible; }" in page
+
+
+# ---------- 返信済みにするのは、相手に届いた返信だけ (レビューの指摘) ----------
+
+def inbox_raw(msgid, frm="taro@example.com", subject="件名", date="Tue, 27 Oct 2026 10:00:00 +0900",
+              in_reply_to="", references="", priority=""):
+    msg = EmailMessage()
+    msg["From"] = frm
+    msg["To"] = "info@bics.example"
+    msg["Subject"] = subject
+    msg["Message-ID"] = msgid
+    msg["Date"] = date
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
+    if priority:
+        msg["X-Priority"] = priority
+    msg.set_content("本文です")
+    return msg.as_bytes()
+
+
+def test_reply_only_to_a_third_party_or_colleague_does_not_mark_replied(client, users, tmp_path,
+                                                                       monkeypatch):
+    """Webメールで「返信」を押して、宛先を外注先・社内の人に変えて送ったものでは返信済みにしない."""
+    _, _, admin = users
+    add_account(client, admin, **INFO)
+    m_out = add_mail(tmp_path, n=1, subject="鍵の件")
+    m_in = add_mail(tmp_path, n=2, subject="ご相談")
+    m_ok = add_mail(tmp_path, n=3, subject="お見積もり")
+    srv = Server()
+    # 外注先にだけ (件名は Re: のまま・In-Reply-To はお客様のメール)
+    srv.folders["Sent"][1] = sent_raw(1, to="gaichu@sub.example", subject="Re: 鍵の件",
+                                      in_reply_to="<m1@example.com>", body="確認お願いします")
+    # 同じドメインの社内の人にだけ (受信するアドレスではない)
+    srv.folders["Sent"][2] = sent_raw(2, to="tanaka@bics.example", subject="Re: ご相談",
+                                      in_reply_to="<m2@example.com>", body="この件どうしましょう？")
+    # お客様に CC で入れて、外注先に送ったもの (お客様に届いているので返信済み)
+    srv.folders["Sent"][3] = sent_raw(3, to="gaichu@sub.example", cc="Taro@Example.com",
+                                      subject="Re: お見積もり", in_reply_to="<m3@example.com>")
+    use_servers(monkeypatch, {"imap.bics.example": srv})
+    fetch(client, admin)
+    got = {g["message_id"]: g for g in rows(tmp_path, "SELECT * FROM sent_mails")}
+    # つなぐ (送信箱と返信画面の「元のメール」には出る) が、返信済みにはしない
+    assert got["<w1@webmail.example>"]["linked_mail_id"] == m_out
+    assert got["<w2@webmail.example>"]["linked_mail_id"] == m_in
+    assert got["<w1@webmail.example>"]["marked_replied"] == 0
+    assert got["<w2@webmail.example>"]["marked_replied"] == 0
+    for mid in (m_out, m_in):
+        r = mail_status(tmp_path, mid)
+        assert (r["status"], r["reply_source"], r["reply_sent_id"]) == ("unhandled", "", None), mid
+    r = mail_status(tmp_path, m_ok)
+    assert (r["status"], r["reply_source"]) == ("replied", "webmail")
+    assert got["<w3@webmail.example>"]["marked_replied"] == 1
+
+
+def test_late_mail_is_marked_only_by_a_direct_reply_to_its_sender(client, users, tmp_path,
+                                                                 monkeypatch):
+    """後から届いたメールを返信済みにするのは、そのメールへの直接の返信 (In-Reply-To) で、
+    相手に送っていて、届いた後に送ったものだけ。Message-ID は差出人が付けられるので、
+    こちらが送ったメールと同じ Message-ID のメールや、References に入っているだけのものではしない."""
+    from server import db, mail
+    _, _, admin = users
+    add_account(client, admin, **INFO)
+    srv = Server()
+    # S1: Webメールから新しく送ったメール。S2: その続き (In-Reply-To・References は S1)
+    srv.folders["Sent"][1] = sent_raw(1, to="yamada@example.com", subject="ご案内",
+                                      date="Mon, 26 Oct 2026 10:00:00 +0900")
+    srv.folders["Sent"][2] = sent_raw(2, to="yamada@example.com", subject="Re: ご案内",
+                                      in_reply_to="<w1@webmail.example>",
+                                      references="<w1@webmail.example> <old@example.com>",
+                                      date="Mon, 26 Oct 2026 11:00:00 +0900")
+    # S3: <q@example.com> への返信 (宛先は相手)。S4: <early@example.com> への返信 (届く前の時刻)
+    srv.folders["Sent"][3] = sent_raw(3, to="yamada@example.com", subject="Re: 質問",
+                                      in_reply_to="<q@example.com>",
+                                      date="Wed, 28 Oct 2026 10:00:00 +0900")
+    srv.folders["Sent"][4] = sent_raw(4, to="yamada@example.com", subject="Re: 早い",
+                                      in_reply_to="<early@example.com>",
+                                      date="Sun, 25 Oct 2026 10:00:00 +0900")
+    use_servers(monkeypatch, {"imap.bics.example": srv})
+    fetch(client, admin)
+    assert all(g["linked_mail_id"] is None for g in rows(tmp_path, "SELECT * FROM sent_mails"))
+    # 外の人が、こちらの S1 と同じ Message-ID のメールを送ってくる (優先度[高])
+    srv.folders["INBOX"][1] = inbox_raw("<w1@webmail.example>", frm="yamada@example.com",
+                                        subject="至急 ご案内", priority="1")
+    # References に入っているだけ (S2 の References の <old@…>)
+    srv.folders["INBOX"][2] = inbox_raw("<old@example.com>", frm="yamada@example.com",
+                                        subject="前の件")
+    # S3 の返信の元だが、差出人が別の人 (S3 の宛先ではない)
+    srv.folders["INBOX"][3] = inbox_raw("<q@example.com>", frm="other@else.example",
+                                        subject="質問")
+    # S4 の返信の元だが、S4 を送った後に届いた (日付の上で)
+    srv.folders["INBOX"][4] = inbox_raw("<early@example.com>", frm="yamada@example.com",
+                                        subject="早い", date="Tue, 27 Oct 2026 10:00:00 +0900")
+    notices = []
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        db.set_setting(conn, "mail_fetch_enabled", 1)
+        db.set_setting(conn, "notify_mail_high", 1)
+        db.set_setting(conn, "mail_urgent_keywords", "至急")
+        mail.check_mail(conn, notifier=lambda s, text: notices.append(text))
+    by_msgid = {r["message_id"]: r for r in rows(tmp_path, "SELECT * FROM mails")}
+    assert len(by_msgid) == 4
+    assert all(r["status"] == "unhandled" and r["reply_source"] == "" for r in by_msgid.values())
+    got = {g["message_id"]: g for g in rows(tmp_path, "SELECT * FROM sent_mails")}
+    assert got["<w1@webmail.example>"]["linked_mail_id"] is None
+    assert got["<w2@webmail.example>"]["linked_mail_id"] == by_msgid["<old@example.com>"]["id"]
+    assert got["<w3@webmail.example>"]["linked_mail_id"] == by_msgid["<q@example.com>"]["id"]
+    assert got["<w4@webmail.example>"]["linked_mail_id"] == by_msgid["<early@example.com>"]["id"]
+    assert all(g["marked_replied"] == 0 for g in got.values())
+    assert row(tmp_path, "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'mail_auto_replied'")["n"] == 0
+    assert len(notices) == 1 and "返信済み" not in notices[0]
+
+
+def test_reply_to_a_follow_up_not_yet_fetched_marks_that_mail_later(client, users, tmp_path,
+                                                                   monkeypatch):
+    """お客様の続きのメール B を取り込む前に、B への返信を取り込んだとき: 前のメール A は返信済みに
+    せず (A にはつなぐだけ)、B が届いたら B につなぎ直して返信済みにする (二重の返信を防ぐ)."""
+    _, _, admin = users
+    add_account(client, admin, **INFO)
+    a = add_mail(tmp_path, n=1, subject="ご相談")
+    srv = Server()
+    srv.folders["Sent"][1] = sent_raw(1, subject="Re: ご相談", in_reply_to="<b@example.com>",
+                                      references="<m1@example.com> <b@example.com>")
+    use_servers(monkeypatch, {"imap.bics.example": srv})
+    fetch(client, admin)
+    s = row(tmp_path, "SELECT * FROM sent_mails")
+    assert (s["linked_mail_id"], s["marked_replied"]) == (a, 0)
+    assert mail_status(tmp_path, a)["status"] == "unhandled"
+    # 件名だけでも A に決まりそうだが、In-Reply-To の元 (B) があるので件名では返信済みにしない
+    srv.folders["INBOX"][1] = inbox_raw("<b@example.com>", subject="Re: ご相談",
+                                        in_reply_to="<m1@example.com>",
+                                        references="<m1@example.com>")
+    fetch(client, admin)
+    b = row(tmp_path, "SELECT * FROM mails WHERE message_id = '<b@example.com>'")
+    assert (b["status"], b["reply_source"], b["reply_sent_id"]) == ("replied", "webmail", s["id"])
+    s = row(tmp_path, "SELECT * FROM sent_mails")
+    assert (s["linked_mail_id"], s["marked_replied"]) == (b["id"], 1)
+    assert mail_status(tmp_path, a)["status"] == "unhandled"
+
+
+def test_sent_only_account_imports_only_business_mail(client, users, tmp_path, monkeypatch):
+    """個人の Gmail (送信済みだけ取り込む) は、仕事のメールだけ送信箱に入れる (私用のメールと
+    その添付は、メール担当者が見られる送信箱・検索に入れない)."""
+    _, staff, admin = users
+    add_account(client, admin, **INFO)
+    gm = add_account(client, admin, **GMAIL)
+    add_mail(tmp_path, n=1, from_addr="guest@airbnb.example", subject="鍵の受け取り")
+    add_mail(tmp_path, n=2, from_addr="client@abc.example", subject="定例")
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("INSERT INTO address_book (name, email, created_at, updated_at)"
+                     " VALUES ('清掃', 'seisou@clean.example', '2026-10-01', '2026-10-01')")
+        db.set_setting(conn, "mail_fetch_days", 30)
+    gmail = Server(sent=(GMAIL_SENT, "\\Sent"))
+    box = gmail.folders[GMAIL_SENT]
+    frm = "黒須 <kurosu.bics@gmail.com>"
+    box[1] = sent_raw(1, to="guest@airbnb.example", subject="Re: 鍵の受け取り",
+                      in_reply_to="<m1@example.com>", frm=frm)                  # 届いたメールへの返信
+    box[2] = sent_raw(2, to="Client@ABC.example", subject="来週の予定", frm=frm)  # 前にメールをくれた相手
+    box[3] = sent_raw(3, to="家族 <mama@family.example>", subject="週末", frm=frm,
+                      attach=("写真.pdf", b"%PDF private"))                      # 私用
+    box[4] = sent_raw(4, to="tomo@friend.example", cc="seisou@clean.example", subject="日程",
+                      frm=frm)                                                  # アドレス帳の人に CC
+    box[5] = sent_raw(5, to="info@bics.example", subject="メモ", frm=frm)       # 自分たちだけ
+    box[6] = sent_raw(6, to="shop@store.example", subject="注文", frm=frm)      # 私用
+    srv = Server()
+    use_servers(monkeypatch, {"imap.bics.example": srv, "imap.gmail.com": gmail})
+    fetch(client, admin)
+    got = {g["message_id"] for g in rows(tmp_path, "SELECT message_id FROM sent_mails")}
+    assert got == {"<w1@webmail.example>", "<w2@webmail.example>", "<w4@webmail.example>"}
+    assert row(tmp_path, "SELECT COUNT(*) AS n FROM sent_mail_attachments")["n"] == 0
+    assert not list((tmp_path / "mail_attachments").glob("sent/*/*"))
+    # 取り込まなかったものも、次の回に読み直さない
+    a = row(tmp_path, "SELECT * FROM mail_accounts WHERE id = ?", (gm["id"],))
+    assert a["sent_state_last_uid"] == 6
+    lst = sent_list(client, staff, q="週末")
+    assert lst["total"] == 0
+    # ふつうのアドレス (info@ の送信済みフォルダ) は全部取り込む (仕事のメールボックス)
+    srv.folders["Sent"][1] = sent_raw(11, to="new@someone.example", subject="ご挨拶")
+    fetch(client, admin)
+    assert row(tmp_path, "SELECT COUNT(*) AS n FROM sent_mails WHERE message_id = '<w11@webmail.example>'")["n"] == 1

@@ -201,7 +201,15 @@ def test_mail_page_has_peek_dropdown(client):
     # 対応不要で行が消えるときは、開いているプルダウンも一緒に動かして消す
     a = page[page.index("async function archiveFromRow(b, tr) {"):]
     a = a[:a.index("\n}")]
-    assert 'pk?.classList.add("leaving")' in a and "pk?.remove(); tr.remove(); rowsMovedAt = Date.now();" in a
+    assert 'pk?.classList.add("leaving")' in a and "removeRows([tr, pk], " in a
+    # 行・プルダウンを消すとき (閉じる・対応不要) と、画面より上のプルダウンが伸びたときは、
+    # どの機種でも画面の手で見ている場所を合わせる (ブラウザの自動の合わせ方は受信箱では止めて、
+    # 二重に動かない・iPhone の Safari で何通も先のメールが見えてしまわないように)
+    assert "html.inbox-on { overflow-anchor: none; }" in page and '<html lang="ja" class="inbox-on">' in page
+    assert 'document.documentElement.classList.toggle("inbox-on", name === "inbox");' in page
+    rm = page[page.index("function removeRows(els, keep) {"):page.index("function fillPeek(")]
+    assert "if (top >= 0) return;" in rm and 'keep.getBoundingClientRect().top - 8' in rm
+    assert "if (!open) { removeRows([peekRowOf(id)], tr); return; }" in page
     assert ".mail-row.leaving, .peek-row.leaving {" in page
     # 自動の取り直し・タブの切り替えで閉じない (開いている行を覚えて描き直す)。
     # 行が変わったときだけ読み直す

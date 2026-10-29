@@ -386,6 +386,79 @@ def test_backfill_in_steps_and_scan_until_ready(client, users, tmp_path, monkeyp
         conn.close()
 
 
+def test_backfill_retries_when_another_writer_holds_the_db(client, users, tmp_path, monkeypatch):
+    """ほかの書き込み (何万通もの削除など) が長く続いて書けなかったときは、待って続きから入れる
+    (次の起動まで1通ずつ見て探すことにならない)。ほかの失敗・止めるときはやめる."""
+    import sqlite3
+    from server import app as app_module, db, mail_search
+    for i in range(6):
+        _add_mail(tmp_path, n=i + 1, subject=f"鍵 {i}")
+    run_sql(tmp_path, "DELETE FROM settings WHERE key = ?", (mail_search.READY_KEY,))
+    real = mail_search.build_index
+    calls = []
+
+    def flaky(conn, **kw):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return real(conn, **kw)
+
+    monkeypatch.setattr(mail_search, "build_index", flaky)
+    monkeypatch.setattr(app_module, "SEARCH_BUILD_RETRY_SEC", 0.01)
+    app_module._search_build_stop.clear()
+    app_module._build_search_index()
+    assert len(calls) == 3
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert mail_search.index_ready(conn)
+    # ほかの失敗では、何度も試さない
+    run_sql(tmp_path, "DELETE FROM settings WHERE key = ?", (mail_search.READY_KEY,))
+    calls.clear()
+
+    def broken(conn, **kw):
+        calls.append(1)
+        raise sqlite3.OperationalError("no such table: x")
+
+    monkeypatch.setattr(mail_search, "build_index", broken)
+    app_module._build_search_index()
+    assert len(calls) == 1
+    # サーバを止めるときは、待たずにやめる
+    calls.clear()
+
+    def locked(conn, **kw):
+        calls.append(1)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(mail_search, "build_index", locked)
+    monkeypatch.setattr(app_module, "SEARCH_BUILD_RETRY_SEC", 30.0)
+    app_module._search_build_stop.set()
+    started = time.monotonic()
+    app_module._build_search_index()
+    assert len(calls) == 1 and time.monotonic() - started < 5
+    app_module._search_build_stop.clear()
+
+
+def test_purge_deletes_in_small_steps(client, users, tmp_path, monkeypatch):
+    """古いメールは区切って消す (検索の索引も消すので、何万通を1回で消すとほかの書き込みが待たされる)."""
+    from server import db, mail
+    monkeypatch.setattr(mail, "PURGE_CHUNK", 2)
+    old = "2020-01-01T00:00:00+00:00"
+    for i in range(5):
+        _add_mail(tmp_path, n=i + 1, subject=f"古い {i}", fetched_at=old)
+    keep = _add_mail(tmp_path, n=9, subject="新しい", fetched_at="2099-01-01T00:00:00+00:00")
+    for i in range(3):
+        run_sql(tmp_path, "INSERT INTO sent_mails (message_id, sent_at, fetched_at, subject)"
+                          " VALUES (?, ?, ?, '送った')", (f"<s{i}@x>", old, old))
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        commits = []
+        conn.set_trace_callback(lambda sql: commits.append(sql) if sql.strip().upper() == "COMMIT" else None)
+        assert mail.purge_old_mails(conn, 30) == 5
+        conn.set_trace_callback(None)
+        assert len(commits) >= 5    # 送信箱 3通 (2回) + 届いたメール 5通 (3回)
+        assert [r[0] for r in conn.execute("SELECT id FROM mails")] == [keep]
+        assert conn.execute("SELECT COUNT(*) FROM sent_mails").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM mail_fts").fetchone()[0] == 1
+
+
 def test_scan_mode_looks_only_at_newest_mails(client, users, tmp_path, monkeypatch):
     from server import mail_search
     _, _, admin = users

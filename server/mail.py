@@ -2988,7 +2988,10 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
 # そのメールが「未対応」のときだけ返信済みにする (Webメールから返信しても、みんなの画面で対応済みになる)。
 # ヘッダでつながらないときは、宛先が相手のアドレスで、件名 (Re: などを除く) が同じ未対応のメールが
 # ちょうど1通だけ、送った時刻より前に届いているときだけ返信済みにする (当て推量はしない)。
-# 転送 (Fw: など) や、自分たちのアドレスにしか送っていないものは返信済みにしない。
+# 返信済みにするのは、宛先・CC にそのメールの相手が入っているときだけ。転送 (Fw: など)、外注先・
+# 社内の人など相手でない人にだけ送ったもの、In-Reply-To の元をまだ取り込んでいないもの
+# (そのメールが届いたら、そちらを返信済みにする) は、つなぐだけで返信済みにしない。
+# 送信済みだけ取り込むアドレス (個人の Gmail など) は、仕事のメールだけ取り込む (business_sent_mail)。
 
 # 送信箱の「どこから送ったか」の表示と、自動で返信済みにしたときの「送った人」
 SENT_SOURCE_LABELS = {"app": "この画面", "webmail": "Webメールなど", "gmail": "Gmail"}
@@ -3041,37 +3044,72 @@ def _sent_refs(in_reply_to, references) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
-def _sent_link_target(conn, p: dict) -> tuple[int | None, str]:
-    """送ったメールがどの届いたメールへの返信か (番号, 'header' / 'subject')。分からなければ (None, '')."""
-    refs = _sent_refs(p.get("in_reply_to"), p.get("references_hdr"))
+def _find_by_refs(conn, refs: list[str]) -> int | None:
+    """Message-ID の一覧 (前ほど優先) から、届いたメール (またはこちらの返信) の番号を探す."""
     for ref in refs:
         row = conn.execute("SELECT id FROM mails WHERE message_id = ?", (ref,)).fetchone()
         if row:
-            return row[0], "header"
+            return row[0]
     for ref in refs:
         # こちらが前に送った返信への、続きの返信 (そのメールのやり取り)
         row = conn.execute("SELECT id FROM mails WHERE reply_message_id = ? ORDER BY id LIMIT 1",
                            (ref,)).fetchone()
         if row:
-            return row[0], "header"
+            return row[0]
+    return None
+
+
+def _sent_link_target(conn, p: dict) -> tuple[int | None, str, bool]:
+    """送ったメールがどの届いたメールへの返信か (番号, 'header' / 'subject', 返信済みにしてよいか).
+
+    分からなければ (None, '', False)。In-Reply-To (直接の返信の元) が届いたメールに無いときは
+    (まだ取り込んでいない続きのメールへの返信かもしれない)、References・件名で同じやり取りの
+    前のメールにつなぐだけにし、返信済みにはしない (そのメールが後で届いたら、そちらにつなぎ直して
+    返信済みにする: link_new_mails_to_sent)。
+    """
+    direct = message_ids(p.get("in_reply_to"))[:3]
+    mail_id = _find_by_refs(conn, direct) if direct else None
+    if mail_id is not None:
+        return mail_id, "header", True
+    may_mark = not direct
+    mail_id = _find_by_refs(conn, [r for r in _sent_refs("", p.get("references_hdr"))
+                                   if r not in direct])
+    if mail_id is not None:
+        return mail_id, "header", may_mark
     # ヘッダでつながらないときだけ: 宛先が相手のアドレスで、件名が同じ未対応のメールが1通だけ
     key, forward = subject_key(p.get("subject"))
     to = list(dict.fromkeys(a.lower() for _n, a in _header_addrs(p.get("to_addr"))))[:_IN_MAX]
     if forward or not key or not to:
-        return None, ""
+        return None, "", False
     rows = conn.execute(
         "SELECT id, subject FROM mails WHERE lower(contact_addr) IN (" + _marks(to) + ")"
         " AND status = 'unhandled' AND julianday(received_at) < julianday(?)",
         (*to, p["sent_at"])).fetchall()
     hits = [r[0] for r in rows if subject_key(r[1])[0] == key]
-    return (hits[0], "subject") if len(hits) == 1 else (None, "")
+    return (hits[0], "subject", may_mark) if len(hits) == 1 else (None, "", False)
 
 
-def _marks_reply(p: dict, own: set) -> bool:
-    """届いたメールを返信済みにしてよい送ったメールか (転送・自分たちだけへのメールは違う)."""
+def _mail_addrs(conn, mail_id: int) -> set[str]:
+    """届いたメールの相手のアドレス (相手・差出人・Reply-To。小文字)."""
+    row = conn.execute("SELECT * FROM mails WHERE id = ?", (mail_id,)).fetchone()
+    if not row:
+        return set()
+    m = dict(row)
+    values = [counterpart(m)[1], m.get("from_addr"), m.get("contact_addr"), m.get("reply_to")]
+    return {str(v).strip().lower() for v in values if v and str(v).strip()}
+
+
+def _marks_reply(p: dict, own: set, mail_addrs: set) -> bool:
+    """届いたメールを返信済みにしてよい送ったメールか.
+
+    宛先・CC にそのメールの相手 (相手・差出人・Reply-To) が入っているときだけ。転送 (Fw: など)、
+    外注先・社内の人など相手でない人にだけ送ったもの、自分たちだけへのメールは違う
+    (相手には何も届いていないので、未対応のまま残す)。
+    """
     if subject_key(p.get("subject"))[1]:
         return False
-    return any(a.lower() not in own for _n, a in _header_addrs(p.get("to_addr"), p.get("cc_addr")))
+    return any(a.lower() in mail_addrs and a.lower() not in own
+               for _n, a in _header_addrs(p.get("to_addr"), p.get("cc_addr")))
 
 
 def _mark_replied(conn, mail_id: int, sent_id: int, p: dict, source: str, account_label: str,
@@ -3103,13 +3141,23 @@ def _mark_replied(conn, mail_id: int, sent_id: int, p: dict, source: str, accoun
     return True
 
 
-def link_new_mails_to_sent(conn, added: list[dict], settings: dict) -> int:
-    """今入れた届いたメールに、送信箱でまだどのメールにもつながっていない返信があれば、つないで
-    返信済みにする (届いたメールの方が後から取り込まれたとき。コミットは呼び出し側).
+# 届いたメール1通につなぎ直す・つなぐ送ったメールの数の上限 (細工したメールで重くならないように)
+LINK_NEW_MAX = 20
 
+
+def link_new_mails_to_sent(conn, added: list[dict], settings: dict) -> int:
+    """今入れた届いたメールに、送信箱の返信があれば、つないで返信済みにする
+    (届いたメールの方が後から取り込まれたとき。コミットは呼び出し側).
+
+    つなぐのは、まだどのメールにもつながっていない送ったメールと、In-Reply-To がこのメールなのに
+    同じやり取りの前のメールにつなぐだけにしていたもの (返信済みにはしていないもの)。
+    返信済みにするのは、送ったメールの In-Reply-To (直接の返信の元) がこのメールで、宛先・CC に
+    このメールの相手が入っていて、このメールが届いた後に送ったものだけ。Message-ID は差出人が
+    自由に付けられるので、References に入っているだけ・こちらが送ったメールと同じ Message-ID の
+    メールでは返信済みにしない (外の人が、届いたとたんに返信済みのメールを作れないように)。
     返信済みにしたメールは added の status も 'replied' にする。返信済みにした数を返す.
     """
-    ids = [(a["id"], a["message_id"]) for a in added if a.get("id")]
+    ids = [(a["id"], a["message_id"]) for a in added if a.get("id") and a.get("message_id")]
     if not ids or not conn.execute("SELECT 1 FROM sent_mails LIMIT 1").fetchone():
         return 0
     own = own_addresses(settings, list_accounts(conn))
@@ -3117,20 +3165,69 @@ def link_new_mails_to_sent(conn, added: list[dict], settings: dict) -> int:
     by_id = {a["id"]: a for a in added if a.get("id")}
     marked = 0
     for mail_id, message_id in ids:
-        row = conn.execute(
-            "SELECT s.* FROM sent_mail_refs r JOIN sent_mails s ON s.id = r.sent_id"
-            " WHERE r.ref = ? AND s.linked_mail_id IS NULL ORDER BY s.sent_at, s.id LIMIT 1",
-            (message_id,)).fetchone()
-        if not row:
+        # こちらが送ったメールと同じ Message-ID (控え・細工したメール) は、どれにもつながない
+        if conn.execute("SELECT 1 FROM sent_mails WHERE message_id = ?", (message_id,)).fetchone() \
+                or conn.execute("SELECT 1 FROM mails WHERE reply_message_id = ? LIMIT 1",
+                                (message_id,)).fetchone():
             continue
-        p = dict(row)
-        conn.execute("UPDATE sent_mails SET linked_mail_id = ?, link_kind = 'header' WHERE id = ?",
-                     (mail_id, p["id"]))
-        if p["source"] != "app" and _marks_reply(p, own) and _mark_replied(
-                conn, mail_id, p["id"], p, p["source"], labels.get(p["account_id"], ""), "header"):
-            by_id[mail_id]["status"] = "replied"
-            marked += 1
+        rows = conn.execute(
+            "SELECT s.* FROM sent_mail_refs r JOIN sent_mails s ON s.id = r.sent_id"
+            " WHERE r.ref = ? AND (s.linked_mail_id IS NULL OR s.marked_replied = 0)"
+            " ORDER BY s.sent_at, s.id LIMIT ?", (message_id, LINK_NEW_MAX)).fetchall()
+        addrs = None
+        done = False
+        for row in rows:
+            p = dict(row)
+            direct = message_id in message_ids(p["in_reply_to"])[:3]
+            if p["linked_mail_id"] is not None and not direct:
+                continue   # ほかのメールにつながっている (このメールへの直接の返信ではない)
+            conn.execute("UPDATE sent_mails SET linked_mail_id = ?, link_kind = 'header'"
+                         " WHERE id = ?", (mail_id, p["id"]))
+            if done or not direct or p["source"] == "app":
+                continue
+            if conn.execute("SELECT julianday(?) > julianday(?)",
+                            (p["sent_at"], by_id[mail_id].get("received_at") or "")
+                            ).fetchone()[0] != 1:
+                continue   # このメールが届く前に送ったもの (返信ではない)
+            if addrs is None:
+                addrs = _mail_addrs(conn, mail_id)
+            if _marks_reply(p, own, addrs) and _mark_replied(
+                    conn, mail_id, p["id"], p, p["source"], labels.get(p["account_id"], ""),
+                    "header"):
+                by_id[mail_id]["status"] = "replied"
+                by_id[mail_id]["auto_replied"] = REPLIED_BY_LABELS.get(p["source"], "Webメール")
+                marked += 1
+                done = True
     return marked
+
+
+def business_sent_mail(conn, p: dict, rules: ContactRules) -> bool:
+    """送信済みだけ取り込むアドレス (個人の Gmail など) から送ったメールのうち、送信箱に入れる
+    仕事のメールか.
+
+    届いたメールへの返信 (ヘッダ・件名でつながる) か、宛先・CC に、前にメールをくれた相手か
+    アドレス帳の人が入っているもの (自分たち・社内の人・自社のドメインのアドレスは数えない)。
+    それ以外 (家族・友人・お店などへの個人のメール) は、メール担当者みんなが見られる送信箱にも
+    検索にも入れない (添付も保存しない)。
+    """
+    if _sent_link_target(conn, p)[0] is not None:
+        return True
+    addrs = []
+    for _n, a in _header_addrs(p.get("to_addr"), p.get("cc_addr")):
+        k = a.lower()
+        if k in rules.own or k in rules.people or \
+                _in_domains(k.rpartition("@")[2], rules.own_domains):
+            continue
+        addrs.append(k)
+    addrs = list(dict.fromkeys(addrs))[:_IN_MAX]
+    if not addrs:
+        return False
+    marks = _marks(addrs)
+    return bool(
+        conn.execute("SELECT 1 FROM mails WHERE lower(contact_addr) IN (" + marks + ") LIMIT 1",
+                     addrs).fetchone()
+        or conn.execute("SELECT 1 FROM address_book WHERE lower(email) IN (" + marks + ") LIMIT 1",
+                        addrs).fetchone())
 
 
 def _record_sent_fetch(conn, account_id: int, error: str = "") -> None:
@@ -3207,6 +3304,8 @@ def fetch_sent_mail(conn, settings: dict, account: dict, attachment_dir=None) ->
     source = sent_source(account)
     shown_folder = _mutf7_decode(folder)
     parsed: list[tuple[int, dict, bytes]] = []
+    # 送信済みだけ取り込むアドレス (個人の Gmail など) は、仕事のメールだけ入れる
+    rules = contact_rules(conn, settings) if account.get("sent_only") else None
     for uid, raw in raws:
         try:
             p = parse_message(raw)
@@ -3220,6 +3319,8 @@ def fetch_sent_mail(conn, settings: dict, account: dict, attachment_dir=None) ->
             continue
         if conn.execute("SELECT 1 FROM mails WHERE reply_message_id = ? AND reply_source = ''"
                         " LIMIT 1", (p["message_id"],)).fetchone():
+            continue
+        if rules is not None and not business_sent_mail(conn, p, rules):
             continue
         parsed.append((uid, p, raw))
 
@@ -3265,13 +3366,13 @@ def fetch_sent_mail(conn, settings: dict, account: dict, attachment_dir=None) ->
             if items:
                 written.append(sent_id)
                 save_attachments(conn, attachment_dir, sent_id, items, now, sent=True)
-            mail_id, kind = _sent_link_target(conn, p)
+            mail_id, kind, may_mark = _sent_link_target(conn, p)
             if mail_id is None:
                 continue
             conn.execute("UPDATE sent_mails SET linked_mail_id = ?, link_kind = ? WHERE id = ?",
                          (mail_id, kind, sent_id))
-            if _marks_reply(p, own) and _mark_replied(conn, mail_id, sent_id, p, source,
-                                                      account["label"], kind):
+            if may_mark and _marks_reply(p, own, _mail_addrs(conn, mail_id)) and _mark_replied(
+                    conn, mail_id, sent_id, p, source, account["label"], kind):
                 marked.append(mail_id)
         max_uid = max([u for u, _ in raws], default=0)
         new_uid = max(max_uid, last_uid)
@@ -3532,14 +3633,18 @@ def check_mail(conn, notifier=None, attachment_dir=None) -> int:
     send = notifier or notify.deliver_async
     if s.get("notify_mail_high"):
         for row in added:
-            # 送信箱にもう返信があった (取り込んだときに返信済みにした) メールは知らせない
-            if row["priority"] == 1 and row.get("status") != "replied":
-                subj = _notify_text(row["subject"]) or "(件名なし)"
-                send(
-                    s,
-                    f"📧 優先度[高]のメールを受信しました: "
-                    f"{subj} ({_notify_text(counterpart(row)[1] or row['from_addr'])})",
-                )
+            if row["priority"] != 1:
+                continue
+            subj = _notify_text(row["subject"]) or "(件名なし)"
+            # 送信箱にもう返信があった (取り込んだときに返信済みにした) メールも知らせる
+            # (Message-ID は差出人が付けられるので、念のため。返信済みにしたことを書き添える)
+            done = row.get("auto_replied") if row.get("status") == "replied" else ""
+            note = f"（{_notify_text(done)}からの返信で返信済みにしました）" if done else ""
+            send(
+                s,
+                f"📧 優先度[高]のメールを受信しました{note}: "
+                f"{subj} ({_notify_text(counterpart(row)[1] or row['from_addr'])})",
+            )
     return len(added)
 
 
@@ -4262,6 +4367,11 @@ def remove_orphan_attachment_dirs(conn, attachment_dir) -> int:
     return removed
 
 
+# 古いメールを消すときに、1回の書き込みで消す通数 (検索の索引も一緒に消すので時間がかかる。
+# 何万通もまとめて消すと、その間ほかの書き込み (返信・受信) が待たされて失敗するため、区切って確定する)
+PURGE_CHUNK = 500
+
+
 def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
     """保存日数を過ぎた受信メールを、添付ファイルごと削除する (days<=0 なら何もしない).
 
@@ -4278,25 +4388,26 @@ def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
     # 送信箱に取り込んだメールも、同じ日数で消す (この画面から送った返信は届いたメールと一緒に消える)
     sent_ids = [(r[0],) for r in conn.execute(
         "SELECT id FROM sent_mails WHERE fetched_at < ?", (cutoff,))]
-    if sent_ids:
+    for i in range(0, len(sent_ids), PURGE_CHUNK):
+        chunk = sent_ids[i:i + PURGE_CHUNK]
         if attachment_dir is not None:
-            for (sent_id,) in sent_ids:
+            for (sent_id,) in chunk:
                 remove_attachment_files(attachment_dir, sent_id, sent=True)
-        conn.executemany("DELETE FROM sent_mail_attachments WHERE sent_id = ?", sent_ids)
-        conn.executemany("DELETE FROM sent_mail_refs WHERE sent_id = ?", sent_ids)
-        conn.executemany("DELETE FROM sent_mails WHERE id = ?", sent_ids)
+        conn.executemany("DELETE FROM sent_mail_attachments WHERE sent_id = ?", chunk)
+        conn.executemany("DELETE FROM sent_mail_refs WHERE sent_id = ?", chunk)
+        conn.executemany("DELETE FROM sent_mails WHERE id = ?", chunk)
         conn.commit()
     ids = [(r["id"],) for r in conn.execute(
         "SELECT id FROM mails WHERE fetched_at < ?", (cutoff,))]
-    if not ids:
-        return 0
-    if attachment_dir is not None:
-        for (mail_id,) in ids:
-            remove_attachment_files(attachment_dir, mail_id)
-    conn.executemany("DELETE FROM mail_attachments WHERE mail_id = ?", ids)
-    conn.executemany("DELETE FROM mail_refs WHERE mail_id = ?", ids)
-    conn.executemany("DELETE FROM mails WHERE id = ?", ids)
-    conn.commit()
+    for i in range(0, len(ids), PURGE_CHUNK):
+        chunk = ids[i:i + PURGE_CHUNK]
+        if attachment_dir is not None:
+            for (mail_id,) in chunk:
+                remove_attachment_files(attachment_dir, mail_id)
+        conn.executemany("DELETE FROM mail_attachments WHERE mail_id = ?", chunk)
+        conn.executemany("DELETE FROM mail_refs WHERE mail_id = ?", chunk)
+        conn.executemany("DELETE FROM mails WHERE id = ?", chunk)
+        conn.commit()
     return len(ids)
 
 

@@ -308,7 +308,7 @@ def test_mail_page_guards_against_accidental_second_tap(client):
     page = client.get("/mail").text
     assert "const ROW_QUIET_MS = 600;" in page
     # 行を消したとき・自動で取り直して行が動いたときに時刻を覚え、その間のボタンは何もしない
-    assert "tr.remove(); rowsMovedAt = Date.now();" in page
+    assert "removeRows([tr, pk], next && next.classList.contains(\"mail-row\") ? next : null);\n    rowsMovedAt = Date.now();" in page
     assert "rowsMovedAt = Date.now();" in page.split("function renderInbox(")[1].split("tbody.innerHTML")[0]
     m = re.search(r'tr\.onclick = e => \{(.*?)\n    \}\);', page, re.S)
     assert m and "Date.now() - rowsMovedAt < ROW_QUIET_MS) return;" in m.group(1)
