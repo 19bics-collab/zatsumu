@@ -551,6 +551,7 @@ class SettingsPatch(BaseModel):
     notion_property_map: str | None = None
     notion_ai_fill: bool | None = None
     mail_require_approval: bool | None = None
+    mail_reply_all_default: bool | None = None
     mail_form_senders: str | None = None
     mail_client_personal_domains: str | None = None
 
@@ -1139,6 +1140,7 @@ def patch_settings(
         "mail_report_hour": mail.REPORT_HOUR_RANGE,
         "notion_ai_fill": (0, 1),
         "mail_require_approval": (0, 1),
+        "mail_reply_all_default": (0, 1),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -3753,6 +3755,10 @@ def mail_detail(
     s = db.get_settings(conn)
     accounts = mail.list_accounts(conn)
     acc = next((a for a in accounts if a["id"] == r["account_id"]), None)
+    people = [p[0] for p in conn.execute("SELECT email FROM users WHERE email != ''")]
+    cc_candidates = mail.reply_all_cc(s, dict(r), accounts, people)
+    reply_all_on = bool(s["mail_reply_all_default"])
+    bulk = mail.reply_all_bulk(dict(r))
     return {
         **_mail_summary(r),
         "to_addr": r["to_addr"],
@@ -3773,9 +3779,14 @@ def mail_detail(
         "draft_to": r["draft_to"],
         # この返信は、フォームの送信元に送られていた (お客様に届いていないかもしれない)
         "misdirected": mail.misdirected(r),
-        # 「全員に返信」で CC に入れる候補 (元の To・Cc の人。自分たち (受信するアドレス全部) と
-        # 差出人は除く)
-        "reply_cc_candidates": mail.reply_all_cc(s, dict(r), accounts),
+        # 「全員に返信」で CC に入れる候補 (元の To・Cc の人。自分たち (受信するアドレス全部)・
+        # 社内の人・差出人と返信の相手は除く)
+        "reply_cc_candidates": cc_candidates,
+        # 返信画面を開いたとき、最初から「全員に返信」にするか (設定がオンで、候補がいて、
+        # 一斉送信のメールではない)。確認待ち・差し戻しのメールは、画面が頼んだときの CC を出す
+        "reply_all_default": reply_all_on and bool(cc_candidates) and not bulk,
+        # 設定はオンだが、一斉送信のメールなので最初は付けない (画面にそう書く)
+        "reply_all_bulk": reply_all_on and bool(cc_candidates) and bulk,
         "reply_subject": r["reply_subject"],
         "reply_body": r["reply_body"],
         "reply_cc": mail.split_addresses(r["reply_cc"]),

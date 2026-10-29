@@ -410,6 +410,8 @@
   .rcpt-all { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
   .rcpt-all[hidden] { display: none; }
   .rcpt-all input { width: 1.2rem; height: 1.2rem; margin: 0; }
+  /* 一斉送信のメールなので「全員に返信」を最初は付けていない、という知らせ */
+  #m-cc-note { margin-left: 0; }
   /* 宛先・CC・BCC の候補 (アドレス帳と、前にやり取りした人)。打っている欄のすぐ下に出す
      (上に重ねないので、iPhone のキーボードが出ていても欄と候補が両方見える) */
   .sug { list-style: none; margin: 0 0 0 3.4rem; padding: .2rem; background: #fff;
@@ -1184,6 +1186,9 @@
         <button class="ghost" id="set-test-email">テスト送信</button>
       </div>
       <span id="test-email-msg" style="font-size:.85rem"></span>
+      <label class="set-row" style="margin-top:.8rem"><span>複数の人に届いたメールは、最初から全員に返信にする</span>
+        <input type="checkbox" id="set-reply-all"></label>
+      <p class="set-help"><small>オンにすると、返信画面の「CCの人にも送る（全員に返信）」に最初からチェックが入り、元のメールの宛先・CC に入っていた人が CC に入ります（自分たち・社内の人・フォームの送信元・返信する相手は入れません）。いらない人は CC の欄から消すか、チェックを外してください。送る前の確認に、届く人を全部出します。メーリングリストなどの一斉送信のメール（宛先・CC が11人以上のものも）は、オンでも最初はチェックを入れません。メール担当者の画面も同じです。</small></p>
     </div>
     <div class="set-card" id="remind-card">
       <h3>返事をしていないメールのお知らせ</h3>
@@ -1476,6 +1481,7 @@
       </div>
       <label class="rcpt-all" id="m-cc-all-row" hidden>
         <input type="checkbox" id="m-cc-all">CCの人にも送る（全員に返信）<span id="m-cc-count" style="font-size:.8rem;color:#6b7280"></span></label>
+      <div class="to-note" id="m-cc-note" hidden>一斉送信のメールのため、全員に返信はオフにしています</div>
       <label class="rcpt-row"><span>CC</span>
         <input type="text" id="m-cc" inputmode="email" autocomplete="off" autocapitalize="off"
           role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="m-sug"
@@ -2748,11 +2754,14 @@ async function openMail(id) {
             defaultTo: m.reply_default_to ?? m.from_addr ?? "" };
   // 宛先は相手 (HPのフォームから届いたメールは、本文に書かれたお客様。フォームの送信元には
   // 送らない)。欄で直せる (サーバも CC と同じように確かめる)。送信済みなら実際に送った宛先。
-  // CC は最初は空にしておき、「CCの人にも送る」を選んだときだけ
-  // 候補を入れる (元メールの To・Cc は送り主が自由に書けるので、知らない人を黙って CC に
-  // 入れて、鍵の番号などを送ってしまわないように)。
+  // CC は、設定の「最初から全員に返信にする」がオンなら (サーバが reply_all_default で
+  // 知らせる。メール担当者も同じ)、最初から候補 (元の宛先・CC の人。自分たち・社内の人・
+  // フォームの送信元・返信の相手は除いたもの) を入れて「CCの人にも送る」にチェックを付ける。
+  // オフのとき・一斉送信のメール (メーリングリスト・大勢宛て) は空にしておき、チェックを
+  // 付けたときだけ入れる。誰に届くかは、送る前の確認で全部見せる。
   // 送信済みなら、実際に送った CC・BCC を出す。確認待ち・差し戻したメールなら、
-  // メール担当者が確認をお願いしたときの CC・BCC を出す。値は textContent / value で入れる
+  // メール担当者が確認をお願いしたときの CC・BCC をそのまま出す (空でも入れ直さない。
+  // 管理者には、担当者が見て決めたとおりに見える)。値は textContent / value で入れる
   $("m-to").value = replied ? (m.reply_sent_to || m.from_addr || "") : modal.defaultTo;
   renderToNote(m);
   renderMisdirect(m);
@@ -2764,10 +2773,12 @@ async function openMail(id) {
   $("m-from-row").hidden = !m.reply_from && !showAccounts();
   const proposed = !replied && (m.status === "pending_approval" || !!m.return_note);
   const addrList = a => (a || []).join(", ");
-  $("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc) : "";
+  $("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc)
+    : m.reply_all_default ? modal.ccCandidates : "";
   $("m-bcc").value = replied ? addrList(m.reply_bcc) : proposed ? addrList(m.draft_bcc) : "";
   $("m-cc-all").checked = !!$("m-cc").value;
   $("m-cc-all-row").hidden = replied || !modal.ccCandidates;
+  renderCcNote();
   $("m-cc-count").textContent = modal.ccCandidates
     ? `元のメールの宛先・CC に ${(m.reply_cc_candidates || []).length}人` : "";
   $("m-subject").textContent = m.subject || "（件名なし）";
@@ -3040,9 +3051,19 @@ $("m-cc-all").onchange = () => {
   const cc = $("m-cc");
   if ($("m-cc-all").checked) cc.value = modal.ccSaved || modal.ccCandidates;
   else { modal.ccSaved = cc.value; cc.value = ""; }
+  renderCcNote();
 };
 // CC の欄を手で空にしたら / 書き足したら、チェックもそれに合わせる
-$("m-cc").addEventListener("input", () => { $("m-cc-all").checked = !!$("m-cc").value.trim(); });
+$("m-cc").addEventListener("input", () => {
+  $("m-cc-all").checked = !!$("m-cc").value.trim();
+  renderCcNote();
+});
+// 一斉送信のメール (メーリングリスト・大勢宛て) なので、全員に返信を最初は付けていないことを
+// チェックの下に書く (チェックを付けた・CC を入れたら消す)
+function renderCcNote() {
+  const m = modal.mail || {};
+  $("m-cc-note").hidden = !m.reply_all_bulk || $("m-cc-all-row").hidden || $("m-cc-all").checked;
+}
 
 // CC・BCC の欄をアドレスの一覧にする。「,」「、」「;」・改行で区切る
 // (日本語入力の全角の英数字・記号は半角に直す)。メールソフトからコピーした
@@ -4159,6 +4180,7 @@ function fillSettings(s) {
   fillReportSettings(s);
   fillNotionSettings(s);
   $("set-require-approval").checked = !!s.mail_require_approval;
+  $("set-reply-all").checked = !!s.mail_reply_all_default;
   $("set-msg").textContent = "";
   $("test-ai-msg").textContent = "";
   $("test-email-msg").textContent = "";
@@ -4573,6 +4595,7 @@ $("set-save").onclick = async () => {
     notion_property_map: $("set-notion-map").value,
     notion_ai_fill: $("set-notion-ai").checked,
     mail_require_approval: $("set-require-approval").checked,
+    mail_reply_all_default: $("set-reply-all").checked,
   };
   // 空の欄は 0 (お知らせしない) と区別がつかないので、入れてもらう
   for (const id of ["set-remind-high", "set-remind-normal"]) {

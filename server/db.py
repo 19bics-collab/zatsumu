@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS mails (
     replied_by TEXT NOT NULL DEFAULT '',      -- 送信した管理者名(スナップショット)
     references_hdr TEXT NOT NULL DEFAULT '',  -- スレッド返信用 References ヘッダ
     cc_addr TEXT NOT NULL DEFAULT '',         -- 受信メールの Cc ヘッダ (全員に返信の候補)
+    -- メーリングリスト・一斉配信のメール (List-Id / List-Unsubscribe があった) なら 1
+    list_mail INTEGER NOT NULL DEFAULT 0,
     reply_cc TEXT NOT NULL DEFAULT '',        -- 実際に CC で送ったアドレス (", " 区切り)
     reply_bcc TEXT NOT NULL DEFAULT '',       -- 実際に BCC で送ったアドレス (", " 区切り)
     category TEXT NOT NULL DEFAULT '',        -- 問い合わせの種類 (空=未分類。この機能より前のメール)
@@ -432,6 +434,9 @@ INT_SETTINGS = {
     # メール担当者 (スタッフ) の返信は、管理者が確認してから送る (「確認をお願いする」を使う)。
     # オフでもスタッフは送信できない (下書きを保存して、管理者に伝える)
     "mail_require_approval": 1,
+    # 複数の人に届いたメールへの返信は、最初から「全員に返信」(元の宛先・CC の人を CC に入れる)
+    # にする。一斉送信のメール (メーリングリスト・大勢宛て) は、オンでも付けない
+    "mail_reply_all_default": 1,
 }
 
 # 誰でも作れるメール (フリーメール・携帯電話の会社・プロバイダ・アドレスを隠す中継) のドメイン。
@@ -680,6 +685,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("cc_addr", "reply_cc", "reply_bcc"):
         if col not in mcols:
             conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    # 一斉配信のメールか。以前に取り込んだメールは分からないので 0 (宛先の人数だけで見分ける)
+    if "list_mail" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN list_mail INTEGER NOT NULL DEFAULT 0")
     # 問い合わせの種類と担当。以前に取り込んだメールは種類が空 (画面では「未分類」)・担当なし
     if "category" not in mcols:
         conn.execute("ALTER TABLE mails ADD COLUMN category TEXT NOT NULL DEFAULT ''")

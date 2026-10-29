@@ -154,6 +154,7 @@ def test_existing_db_gets_the_new_columns(tmp_path):
         row = conn.execute("SELECT * FROM mails").fetchone()
         assert row["to_addr"] == "b@example.com"
         assert (row["cc_addr"], row["reply_cc"], row["reply_bcc"]) == ("", "", "")
+        assert row["list_mail"] == 0   # 一斉配信かは分からない (宛先の人数だけで見分ける)
         conn.close()
 
 
@@ -450,24 +451,32 @@ def test_mail_page_has_reply_all_ui(client):
     assert '$("m-cc").readOnly = $("m-bcc").readOnly = $("m-to").readOnly = true;' in page
 
 
-def test_reply_all_cc_is_off_until_chosen(client):
-    """CC の候補は最初は入れない (「CCの人にも送る」を選んだときだけ入れる).
+def test_reply_all_cc_starts_as_the_server_says(client):
+    """CC の候補を最初から入れるのは、サーバが reply_all_default で知らせたときだけ.
 
-    元メールの To・Cc は送り主が自由に書けるので、知らない人が CC に入ったまま
-    いつもどおり送ってしまわないようにする。
+    (設定「最初から全員に返信にする」がオンで、一斉送信のメールではないとき)。
+    送信済みなら送った CC、確認待ち・差し戻しならメール担当者が選んだ CC をそのまま出し
+    (空でも候補を入れ直さない)、チェックは CC の欄に合わせる。
     """
     page = client.get("/mail").text
     i = page.index("async function openMail(id)")
     block = page[i:page.index("\n}\n", i)]
-    # 入れるのは、送った CC か、メール担当者が確認をお願いしたときに自分で選んだ CC だけ
-    assert ('$("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc) : "";'
-            in block)
+    assert ('$("m-cc").value = replied ? addrList(m.reply_cc) : proposed ? addrList(m.draft_cc)\n'
+            '    : m.reply_all_default ? modal.ccCandidates : "";') in block
     assert '$("m-cc-all").checked = !!$("m-cc").value;' in block
-    assert ": modal.ccCandidates;" not in block
-    # チェックを付けたときに候補を入れる
+    assert "renderCcNote();" in block
+    # BCC は自動では入れない
+    assert ('$("m-bcc").value = replied ? addrList(m.reply_bcc) : proposed ? addrList(m.draft_bcc) : "";'
+            in block)
+    # 外すと空に、付け直すと (外す前の欄か) 候補に戻る
     assert 'if ($("m-cc-all").checked) cc.value = modal.ccSaved || modal.ccCandidates;' in page
+    assert 'else { modal.ccSaved = cc.value; cc.value = ""; }' in page
+    # 一斉送信のメールの知らせ
+    assert "一斉送信のメールのため、全員に返信はオフにしています" in page
+    assert "!m.reply_all_bulk" in page
     # CC・BCC があるときは、確認の画面で知らせる
     assert "CC・BCC の人にも同じ文が届きます" in page
+    assert '(cc.length ? "\\nCC: " + cc.join(", ") : "")' in page
 
 
 def test_mail_page_send_result_layout(client):
@@ -665,3 +674,220 @@ def test_send_with_some_cc_refused_reports_them(client, users, tmp_path, monkeyp
     assert "refused=Bad@x.com" in csv_text and "recipients=3" in csv_text
     # 画面で届かなかったアドレスを出す
     assert "次のアドレスには届きませんでした" in client.get("/mail").text
+
+
+# ---------- 最初から全員に返信 (設定 mail_reply_all_default) ----------
+
+def _staff(tmp_path, name="sato-staff"):
+    """メール担当者 (スタッフ) を1人作る."""
+    from server import db
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        u = db.create_user(conn, name)
+        conn.execute("UPDATE users SET mail_role = 'staff' WHERE id = ?", (u["id"],))
+    return u
+
+
+def test_reply_all_default_setting_is_on_and_admin_only(client, users, tmp_path):
+    worker, admin = users
+    staff = _staff(tmp_path)
+    s = client.get("/api/settings", headers=auth(admin)).json()
+    assert s["mail_reply_all_default"] == 1          # 最初はオン
+    for u in (worker, staff):                         # 管理者だけが変えられる
+        r = client.patch("/api/settings", headers=auth(u),
+                         json={"mail_reply_all_default": False})
+        assert r.status_code == 403
+        assert client.get("/api/settings", headers=auth(u)).status_code == 403
+    # はい・いいえ以外は受け付けない
+    r = client.patch("/api/settings", headers=auth(admin),
+                     json={"mail_reply_all_default": "たぶん"})
+    assert r.status_code == 422
+    r = client.patch("/api/settings", headers=auth(admin),
+                     json={"mail_reply_all_default": False})
+    assert r.status_code == 200 and r.json()["mail_reply_all_default"] == 0
+    assert client.get("/api/settings", headers=auth(admin)).json()[
+        "mail_reply_all_default"] == 0
+    r = client.patch("/api/settings", headers=auth(admin),
+                     json={"mail_reply_all_default": True})
+    assert r.json()["mail_reply_all_default"] == 1
+
+
+def test_detail_reply_all_default_on_and_off(client, users, tmp_path):
+    _, admin = users
+    staff = _staff(tmp_path)
+    _setup(client, admin, mail_from="info@bics.example", imap_user="info@bics.example")
+    mid = _add_mail_with_cc(tmp_path, "info@bics.example, sato@x.com", "suzuki@y.jp")
+    for u in (admin, staff):   # メール担当者にも同じに見える
+        d = client.get(f"/api/mail/{mid}", headers=auth(u)).json()
+        assert d["reply_cc_candidates"] == ["sato@x.com", "suzuki@y.jp"]
+        assert d["reply_all_default"] is True and d["reply_all_bulk"] is False
+    # 相手 (自分たちだけ宛て) のほかに誰もいないメールは、オンでも全員に返信にしない
+    solo = _add_mail_with_cc(tmp_path, "info@bics.example", "", n=2,
+                             message_id="<solo@example.com>")
+    d = client.get(f"/api/mail/{solo}", headers=auth(admin)).json()
+    assert d["reply_cc_candidates"] == [] and d["reply_all_default"] is False
+    # オフにすると、候補は出す (チェックを付ければ入る) が最初は付けない
+    _setup(client, admin, mail_reply_all_default=False)
+    for u in (admin, staff):
+        d = client.get(f"/api/mail/{mid}", headers=auth(u)).json()
+        assert d["reply_cc_candidates"] == ["sato@x.com", "suzuki@y.jp"]
+        assert d["reply_all_default"] is False and d["reply_all_bulk"] is False
+
+
+def test_reply_all_cc_leaves_out_us_staff_forms_and_the_person_we_reply_to(
+        client, users, tmp_path):
+    from server import db
+    worker, admin = users
+    _setup(client, admin, mail_from="株式会社インビックス <info@bics.example>",
+           smtp_user="smtp@bics.example", imap_user="info@bics.example")
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        # 2つ目の受信アドレス (kurosu@) と、社内の人のメールアドレス
+        conn.execute("INSERT INTO mail_accounts (label, imap_user, from_addr, created_at)"
+                     " VALUES (?, ?, ?, ?)", ("黒須", "kurosu@bics.example",
+                                              "kurosu@bics.example", "2026-01-01T00:00:00+00:00"))
+        conn.execute("UPDATE users SET email = 'Tanaka@Bics.example' WHERE id = ?",
+                     (worker["id"],))
+    mid = _add_mail_with_cc(
+        tmp_path,
+        "info@bics.example, KUROSU@bics.example, sato@x.com, noreply@x.com",
+        "smtp@bics.example, tanaka@bics.example, wordpress@shop.example, "
+        "taro@example.com, 経理 <keiri@x.com>")
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    # 自分たち (受信アドレス全部・差出人・SMTP)・社内の人・フォームの送信元・返信の相手は入らない
+    assert d["reply_cc_candidates"] == ["sato@x.com", "keiri@x.com"]
+    assert d["reply_all_default"] is True
+
+
+def test_reply_all_cc_leaves_out_the_reply_to_contact():
+    """Reply-To (お客様) に返すときは、そのお客様も CC に入れない (2通届かないように)."""
+    from server import mail
+
+    m = {"from_addr": "wp@shop.example", "contact_source": "reply_to",
+         "contact_addr": "Guest@Example.com", "contact_name": "",
+         "to_addr": "info@bics.example, guest@example.com", "cc_addr": "a@x.com"}
+    assert mail.reply_all_cc(OWN, m) == ["a@x.com"]
+    # 確認をお願いしたときに直した宛先も入れない
+    m2 = {"from_addr": "a@example.com", "status": "pending_approval",
+          "draft_to": "b@example.com", "to_addr": "b@example.com, c@example.com"}
+    assert mail.reply_all_cc(OWN, m2) == ["c@example.com"]
+    # 社内の人 (people) は入れない (大文字・小文字は区別しない)
+    m3 = {"from_addr": "a@example.com", "to_addr": "Boss@bics.example, c@example.com"}
+    assert mail.reply_all_cc(OWN, m3, people=["boss@BICS.example"]) == ["c@example.com"]
+
+
+def test_parse_message_marks_list_mail():
+    from server import mail
+
+    base = (b"From: a@example.com\r\nTo: list@example.com, b@example.com\r\n"
+            b"Subject: x\r\n")
+    assert mail.parse_message(base + b"\r\nbody\r\n")["list_mail"] == 0
+    for h in (b"List-Id: <news.example.com>\r\n",
+              b"List-Unsubscribe: <mailto:off@example.com>\r\n",
+              b"list-id: <lower.example.com>\r\n"):
+        assert mail.parse_message(base + h + b"\r\nbody\r\n")["list_mail"] == 1
+
+
+def test_reply_all_bulk_by_headers_or_count():
+    from server import mail
+
+    to = ", ".join(f"u{i}@example.com" for i in range(6))
+    cc = ", ".join(f"c{i}@example.com" for i in range(4))
+    assert mail.REPLY_ALL_BULK_OVER == 10
+    # 10人まではふつうのメール (同じ人の重複・大文字の違いは1人)
+    assert not mail.reply_all_bulk({"to_addr": to, "cc_addr": cc + ", U0@example.com"})
+    assert mail.reply_all_bulk({"to_addr": to, "cc_addr": cc + ", c4@example.com"})
+    # List-Id などがあったメールは、人数が少なくても一斉送信
+    assert mail.reply_all_bulk({"to_addr": "ml@example.com", "list_mail": 1})
+    assert not mail.reply_all_bulk({"to_addr": "", "cc_addr": ""})
+
+
+def test_detail_bulk_mail_is_not_reply_all_by_default(client, users, tmp_path):
+    from server import db
+    _, admin = users
+    staff = _staff(tmp_path)
+    _setup(client, admin, mail_from="info@bics.example", imap_user="info@bics.example")
+    many = ", ".join(f"u{i}@example.com" for i in range(11))
+    mid = _add_mail_with_cc(tmp_path, "info@bics.example", many)
+    for u in (admin, staff):
+        d = client.get(f"/api/mail/{mid}", headers=auth(u)).json()
+        assert len(d["reply_cc_candidates"]) == 11
+        assert d["reply_all_default"] is False and d["reply_all_bulk"] is True
+    # メーリングリスト (List-Id があった) は、宛先が少なくても同じ
+    ml = _add_mail_with_cc(tmp_path, "ml@lists.example, info@bics.example", "", n=2,
+                           message_id="<ml@example.com>")
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        conn.execute("UPDATE mails SET list_mail = 1 WHERE id = ?", (ml,))
+    d = client.get(f"/api/mail/{ml}", headers=auth(admin)).json()
+    assert d["reply_cc_candidates"] == ["ml@lists.example"]
+    assert d["reply_all_default"] is False and d["reply_all_bulk"] is True
+    # 設定がオフなら「一斉送信のため」の知らせも出さない (もともと付けない)
+    _setup(client, admin, mail_reply_all_default=False)
+    d = client.get(f"/api/mail/{ml}", headers=auth(admin)).json()
+    assert d["reply_all_default"] is False and d["reply_all_bulk"] is False
+
+
+def test_fetch_stores_list_mail(tmp_path, monkeypatch):
+    from server import db, mail
+
+    def raw_mail(n, extra):
+        msg = EmailMessage()
+        msg["From"] = "news@example.com"
+        msg["To"] = "info@bics.example, b@example.com"
+        msg["Subject"] = "お知らせ"
+        msg["Message-ID"] = f"<list{n}@example.com>"
+        for k, v in extra.items():
+            msg[k] = v
+        msg.set_content("本文")
+        return msg.as_bytes()
+
+    raws = {b"5": raw_mail(1, {"List-Id": "<news.example.com>"}), b"6": raw_mail(2, {})}
+
+    class FakeIMAP:
+        def select(self, folder, readonly=False):
+            return ("OK", [b"2"])
+
+        def response(self, key):
+            return ("UIDVALIDITY", [b"1"])
+
+        def uid(self, cmd, *args):
+            if cmd == "search":
+                return ("OK", [b"5 6"])
+            uid = args[0].encode() if isinstance(args[0], str) else args[0]
+            return ("OK", [(b"header", raws[uid])])
+
+        def logout(self):
+            pass
+
+    monkeypatch.setattr(mail, "_imap_connect", lambda s: FakeIMAP())
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        s = {**db.get_settings(conn), "imap_host": "imap.example.com",
+             "mail_auto_draft": 0}
+        assert len(mail.fetch_new_mail(conn, s)) == 2
+        rows = dict(conn.execute("SELECT message_id, list_mail FROM mails").fetchall())
+    assert rows == {"<list1@example.com>": 1, "<list2@example.com>": 0}
+
+
+def test_staff_draft_cc_is_kept_for_the_admin(client, users, tmp_path, monkeypatch):
+    """メール担当者が CC を外して確認をお願いしたら、管理者にもそのまま (空のまま) 見える.
+
+    全員に返信が最初からオンでも、頼んだときの CC を入れ直さない (画面は draft_cc を出す)。
+    """
+    from server import app as app_module
+    _, admin = users
+    staff = _staff(tmp_path)
+    _setup(client, admin, mail_from="info@bics.example", imap_user="info@bics.example")
+    monkeypatch.setattr(app_module.notify, "deliver_async", lambda *a, **kw: None)
+    mid = _add_mail_with_cc(tmp_path, "info@bics.example, sato@x.com", "suzuki@y.jp")
+    r = client.post(f"/api/mail/{mid}/request-approval", headers=auth(staff),
+                    json={"body": "返信です", "cc": [], "bcc": []})
+    assert r.status_code == 200, r.text
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["status"] == "pending_approval"
+    assert d["draft_cc"] == [] and d["draft_bcc"] == []
+    # 1人だけ残して頼み直した場合も、そのとおり
+    mid2 = _add_mail_with_cc(tmp_path, "info@bics.example, sato@x.com", "suzuki@y.jp",
+                             n=2, message_id="<m2b@example.com>")
+    r = client.post(f"/api/mail/{mid2}/request-approval", headers=auth(staff),
+                    json={"body": "返信です", "cc": ["suzuki@y.jp"], "bcc": ["boss@x.jp"]})
+    assert r.status_code == 200, r.text
+    d = client.get(f"/api/mail/{mid2}", headers=auth(admin)).json()
+    assert d["draft_cc"] == ["suzuki@y.jp"] and d["draft_bcc"] == ["boss@x.jp"]

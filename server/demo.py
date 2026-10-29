@@ -282,6 +282,13 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              f"日時：{md}\n時間：１０：００～１３：００\n物件名：ビックス渋谷 201号室\n"
              "住所：東京都渋谷区神南1-2-3\n\nよろしくお願いいたします。",
              2, "通常", category="清掃のご依頼", to="kurosu@example.com")
+    # 一斉送信のメールの確認用: 大勢 (12人) に送られたお知らせ。全員に返信は最初は付けない
+    add_mail(150, "渋谷民泊協会 事務局", "jimukyoku@minpaku-kyokai.example.jp",
+             "年末年始の清掃業者の手配について（会員の皆さまへ）",
+             "会員の皆さま\n\n年末年始の清掃業者の手配について、ご希望を12月10日までにお知らせください。",
+             3, "お知らせ",
+             cc=", ".join(f"kaiin{i:02d}@minpaku-kyokai.example.jp" for i in range(1, 13)),
+             category="営業・宣伝")
     add_mail(240, "業界ニュース配信", "no-reply@newsletter.example.com",
              "【メルマガ】今週の業界トピックス",
              "今週の業界ニュースをお届けします。配信停止はこちら。",

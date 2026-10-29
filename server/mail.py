@@ -188,6 +188,9 @@ def parse_message(raw: bytes) -> dict:
         "to_addr": str(msg.get("To", "")),
         # 「全員に返信」の CC 候補に使う。Cc ヘッダが複数あってもまとめて1つにする
         "cc_addr": _header_text(", ".join(str(h) for h in msg.get_all("Cc", []))),
+        # メーリングリスト・一斉配信のメールか (List-Id / List-Unsubscribe がある)。
+        # 「全員に返信」を最初から付けない (リストの全員に返信が届いてしまわないように)
+        "list_mail": int(any(msg.get(h) is not None for h in LIST_HEADERS)),
         "subject": str(msg.get("Subject", "")).strip(),
         "body": _extract_body(msg)[:BODY_MAX_CHARS],
         "received_at": tz.utc_iso(received),
@@ -1234,18 +1237,20 @@ def own_addresses(settings: dict, accounts=()) -> set[str]:
     return out
 
 
-def reply_all_cc(settings: dict, mail: dict, accounts=()) -> list[str]:
+def reply_all_cc(settings: dict, mail: dict, accounts=(), people=()) -> list[str]:
     """「全員に返信」で CC に入れる候補のアドレス.
 
-    元メールの To と Cc に入っていた人。返信の宛先 (相手) と元メールの差出人 (フォームの
-    送信元のこともある)、自分たちのアドレス (受信するアドレス全部を含む)、フォーム・自動送信の
-    送信元 (wordpress@・noreply@ など。送っても届かない・お客様ではない) は除き、
+    元メールの To と Cc に入っていた人。返信の宛先 (相手。確認をお願いしたときに直した
+    宛先も) と元メールの差出人 (フォームの送信元のこともある)、自分たちのアドレス (受信する
+    アドレス全部を含む)、社内の人 (people: 登録されている人のメールアドレス)、フォーム・
+    自動送信の送信元 (wordpress@・noreply@ など。送っても届かない・お客様ではない) は除き、
     大文字・小文字の違いだけの重複も1つにする。アドレスとして読めないもの
     (「undisclosed-recipients:;」等) は入れない。
     """
-    rules = ContactRules(settings, accounts)
-    skip = rules.own | {str(mail.get("from_addr") or "").strip().lower(),
-                        counterpart(mail)[1].lower()}
+    rules = ContactRules(settings, accounts, people)
+    skip = rules.own | rules.people | {
+        str(mail.get("from_addr") or "").strip().lower(),
+        counterpart(mail)[1].lower(), reply_default_to(mail).lower()}
     out = []
     # ヘッダごとに読む (片方が壊れていても、もう片方の候補は出せるように)
     for header in (mail.get("to_addr"), mail.get("cc_addr")):
@@ -1256,6 +1261,27 @@ def reply_all_cc(settings: dict, mail: dict, accounts=()) -> list[str]:
                 skip.add(addr.lower())
                 out.append(addr)
     return out
+
+
+# 元メールの宛先・CC の人数がこれより多ければ、一斉送信のメールとみなす
+# (「全員に返信」を最初から付けない。11人以上に一度に返信が届くのを防ぐ)
+REPLY_ALL_BULK_OVER = 10
+# メーリングリスト・メルマガのメールに付くヘッダ (どれかがあれば一斉送信のメール)
+LIST_HEADERS = ("List-Id", "List-Unsubscribe")
+
+
+def reply_all_bulk(mail: dict) -> bool:
+    """一斉送信のメール (メーリングリスト・大勢に送ったメール) か.
+
+    受信したときに List-Id / List-Unsubscribe のヘッダがあったか (list_mail。この機能より
+    前に取り込んだメールは分からないので 0)、元の To・Cc のアドレスが REPLY_ALL_BULK_OVER より多いか。
+    """
+    if mail.get("list_mail"):
+        return True
+    addrs = {a.strip().lower()
+             for header in (mail.get("to_addr"), mail.get("cc_addr"))
+             for _n, a in getaddresses([str(header or "")]) if valid_address(a.strip())}
+    return len(addrs) > REPLY_ALL_BULK_OVER
 
 
 def _clean_address_list(values, label: str) -> list[str]:
@@ -2953,16 +2979,16 @@ def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
             " priority, priority_reason, priority_source, category,"
             " assignee_user_id, draft_reply, draft_source, draft_generated_at,"
             " references_hdr, account_id, reply_to, contact_addr, contact_name,"
-            " contact_source, contact_via_form, contact_company)"
+            " contact_source, contact_via_form, contact_company, list_mail)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-            " ?, ?, ?, ?, ?, ?)",
+            " ?, ?, ?, ?, ?, ?, ?)",
             (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
              p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
              reason, source, category, assignee, draft, draft_source, drafted_at,
              p["references_hdr"], account_id, p.get("reply_to_addr", ""),
              p.get("contact_addr", p["from_addr"]), p.get("contact_name", p["from_name"]),
              p.get("contact_source", "from"), p.get("contact_via_form", 0),
-             p.get("contact_company", "")),
+             p.get("contact_company", ""), p.get("list_mail", 0)),
         )
         if not cur.rowcount:
             continue  # 同じメールが既にある (添付も保存しない)
