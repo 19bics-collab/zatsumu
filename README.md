@@ -158,6 +158,14 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   返信画面では**全員に返信**もできます（「CCの人にも送る」にチェックを付けると
   元メールの To・CC の人が CC 欄に入る。最初は差出人にだけ返す。自分たちのアドレスは
   入らない。BCC も追加可。宛先・CC・BCC は合わせて20件まで）。
+  宛先・CC・BCC の欄に名前やアドレスの一部を打つと、**候補**が欄のすぐ下に出ます
+  （設定画面の「**よく使うアドレス**」（アドレス帳）に入れた人が先、次に前にやり取りした人
+  ― 届いたメールの相手と、こちらが返信を送った宛先・CC・BCC ― を、やり取りの多い人・
+  最近の人から8人まで。名前・アドレス・メモ・取引先の名前で探す。自分たちのアドレスと
+  フォーム・自動送信の送信元は出さない。タップか Enter で「名前 <アドレス>」が入り、CC・BCC は
+  続けて次の人を打てる。PC は ↑↓ で選び Esc で閉じる）。アドレス帳は管理者が設定画面で
+  追加・変更・削除でき、返信画面の「この相手をアドレス帳に追加」でも入れられる
+  （メール担当者は候補を使うだけ）。
   届いたメールの**添付ファイル**も返信画面で見られます（一覧で 📎 が付く。
   写真は縮小表示、ほかは「ダウンロード」。1つ15MB・1通で合わせて40MBまで保存し、
   それより大きいものは「大きすぎるため保存していません」と名前だけ出る。
@@ -339,6 +347,10 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET/POST | `/api/mail/templates` | admin | 定型文の一覧・追加 |
 | PATCH/DELETE | `/api/mail/templates/{id}` | admin | 定型文の変更・並べ替え（`move: up/down`）・削除 |
 | GET | `/api/mail/{id}/templates` | admin・メール担当者 | このメール用に差し込みを置き換えた定型文 |
+| GET | `/api/mail/address-book` | admin・メール担当者 | よく使うアドレス（アドレス帳）の一覧（`items`: 名前・アドレス・メモ・取引先の名前） |
+| POST | `/api/mail/address-book` | admin | アドレス帳に追加（`email`・`name`・`note`。アドレスは CC と同じように確かめ、「名前 <アドレス>」も可。同じアドレス（大文字・小文字の違いも）があれば 409。2000件まで） |
+| PATCH/DELETE | `/api/mail/address-book/{id}` | admin | アドレス帳の変更（渡したものだけ）・削除 |
+| GET | `/api/mail/address-suggest?q=` | admin・メール担当者 | 宛先・CC・BCC の候補（`items`: アドレス帳が先 `source: book`、次に前にやり取りした人 `history`。`limit` 1〜20、既定8） |
 | POST | `/api/settings/test-imap` | admin | IMAP 設定の疎通確認（受信するアドレスがあれば先頭のアドレスで） |
 | POST | `/api/settings/test-email` | admin | 指定アドレスへメールのテスト送信 |
 | POST | `/api/settings/test-notion` | admin | Notion のデータベースを読めるか確かめ、列の一覧と何を入れるかを返す（Notion には書き込まない） |

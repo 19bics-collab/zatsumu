@@ -121,6 +121,9 @@ MATRIX = [
     # 取引先は見るだけ (変えるのは管理者だけ)
     ("GET", "/api/mail/clients", None, True),
     ("GET", "/api/mail/clients/{ckey}", None, True),
+    # アドレス帳は見る・候補に使うだけ (登録・変更・削除は管理者だけ)
+    ("GET", "/api/mail/address-book", None, True),
+    ("GET", "/api/mail/address-suggest", None, True),
     # ここから管理者だけ
     ("POST", "/api/mail/{mid}/send", {"body": "本文"}, False),
     ("POST", "/api/mail/{mid}/send-back", {"note": "直してください"}, False),
@@ -156,6 +159,9 @@ MATRIX = [
     ("POST", "/api/mail/clients/{ckey}/rules", {"pattern": "x@other.example.jp"}, False),
     ("DELETE", "/api/mail/clients/{ckey}/rules/{rule}", None, False),
     ("DELETE", "/api/mail/clients/{ckey}", None, False),
+    ("POST", "/api/mail/address-book", {"email": "new@other.example.jp"}, False),
+    ("PATCH", "/api/mail/address-book/{ab}", {"note": "メモ"}, False),
+    ("DELETE", "/api/mail/address-book/{ab}", None, False),
 ]
 
 
@@ -178,8 +184,10 @@ def _matrix_ids(tmp_path, staff):
                           " VALUES ('取引先', 'now', 'now')").lastrowid
         rule = conn.execute("INSERT INTO client_rules (client_id, pattern, created_at)"
                             " VALUES (?, '@abc.example.jp', 'now')", (cl,)).lastrowid
+        ab = conn.execute("INSERT INTO address_book (name, email, created_at, updated_at)"
+                          " VALUES ('山田', 'yamada@abc.example.jp', 'now', 'now')").lastrowid
     return {"mid": mid, "att": att, "tid": tid, "acc": acc, "staff": staff["id"], "dev": dev,
-            "ckey": f"c:{cl}", "rule": rule}
+            "ckey": f"c:{cl}", "rule": rule, "ab": ab}
 
 
 def test_every_mail_and_settings_api_is_in_the_matrix(client):

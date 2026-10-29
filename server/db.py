@@ -250,6 +250,18 @@ CREATE TABLE IF NOT EXISTS mail_templates (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- よく使うアドレス (アドレス帳。server/address_book.py)。返信画面の宛先・CC・BCC に入れるとき、
+-- 候補の一番先に出す。同じアドレス (英字の大文字・小文字だけ違うものも) は1つだけ。
+-- 変えるのは管理者だけ (メール担当者は候補に出るのを使うだけ)
+CREATE TABLE IF NOT EXISTS address_book (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL DEFAULT '',          -- 名前 (例: 山田 太郎・ABC商事 経理)。空でもよい
+    email TEXT NOT NULL,                    -- アドレスだけ (「名前 <…>」の形にはしない)
+    note TEXT NOT NULL DEFAULT '',          -- メモ (例: 清掃の担当・平日のみ)。候補を探すときにも使う
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_address_book_email ON address_book(lower(email));
 -- 新しい端末からの管理者ログインのメール確認 (server/devices.py)。
 -- 秘密 (端末トークン・確認コード) は sha256 のハッシュだけを保存する
 CREATE TABLE IF NOT EXISTS device_tokens (
@@ -671,6 +683,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_category ON mails(category)")
     # 送った返信への返事を探す用 (この列も後から足したので、ここで作る)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_reply_msgid ON mails(reply_message_id)")
+    # 宛先・CC・BCC の候補 (前に返信を送った人) を探す用。返信を送ったメールだけの索引で、
+    # 送った宛先・CC・BCC も入れておく (本文の大きい表を読まずに探せる。何万通あっても速い)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_sent_to"
+                 " ON mails(replied_at, reply_sent_to, reply_cc, reply_bcc)"
+                 " WHERE replied_at IS NOT NULL")
     # team_id 列が用意できた後にインデックスを作成する(SCHEMA時点では未追加のため)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id)")
     _seed_mail_templates(conn)

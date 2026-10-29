@@ -408,5 +408,13 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              "--------------------------------------------------------------------------------------------",
              2, "通常", category="予約・宿泊のお問い合わせ")
 
+    # よく使うアドレス (アドレス帳)。返信画面の宛先・CC・BCC に打つと候補の一番上に出る
+    for name, addr, note in (
+            ("山本 清掃チーム", "yamamoto@clean-partner.example.jp", "清掃の外注先（平日のみ）"),
+            ("鈴木 花子", "suzuki@sakura-fudosan.example.co.jp", "請求書の送り先（PDF）"),
+            ("小林 税理士事務所", "kobayashi@tax-office.example.jp", "月末の書類")):
+        conn.execute("INSERT INTO address_book (name, email, note, created_at, updated_at)"
+                     " VALUES (?, ?, ?, ?, ?)", (name, addr, note, now_iso, now_iso))
+
     conn.commit()
     return True

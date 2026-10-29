@@ -16,8 +16,8 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel
 
-from . import (clients, db, devices, imaging, mail, mail_events, notify, notion, reports,
-               retention, tz)
+from . import (address_book, clients, db, devices, imaging, mail, mail_events, notify, notion,
+               reports, retention, tz)
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
@@ -2940,6 +2940,93 @@ def delete_mail_template(
     return {"deleted": tid}
 
 
+# ----- よく使うアドレス (アドレス帳) と、宛先・CC・BCC の候補 (server/address_book.py) -----
+# /api/mail/address-book... は /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)。
+# 見る (候補に使う) のは管理者とメール担当者、登録・変更・削除は管理者だけ
+
+class AddressBookBody(BaseModel):
+    name: str = ""
+    email: str
+    note: str = ""
+
+
+class AddressBookPatch(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    note: str | None = None
+
+
+def _address_book_error(e: address_book.AddressBookError) -> HTTPException:
+    return HTTPException(e.status, str(e))
+
+
+@app.get("/api/mail/address-book")
+def list_address_book(_user=Depends(require_mail_user), conn=Depends(get_conn)):
+    """アドレス帳の全部 (名前の順)。取引先にまとめたアドレスは、その取引先の名前も付ける."""
+    return {"items": address_book.list_entries(conn), "max": address_book.BOOK_MAX_COUNT}
+
+
+@app.post("/api/mail/address-book")
+def create_address_book_entry(
+    body: AddressBookBody, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """アドレス帳に追加する (管理者だけ。同じアドレスがあれば 409)."""
+    try:
+        out = address_book.create_entry(conn, body.name, body.email, body.note)
+    except address_book.AddressBookError as e:
+        raise _address_book_error(e)
+    _audit(conn, admin, "address_book_create",
+           detail=f"entry={out['id']} {out['email']} {_audit_text(out['name'], 30)}")
+    return out
+
+
+@app.patch("/api/mail/address-book/{entry_id}")
+def patch_address_book_entry(
+    entry_id: int, body: AddressBookPatch, admin=Depends(require_admin),
+    conn=Depends(get_conn),
+):
+    """アドレス帳の名前・アドレス・メモを変える (管理者だけ。渡したものだけ)."""
+    try:
+        out = address_book.update_entry(conn, entry_id, body.name, body.email, body.note)
+    except address_book.AddressBookError as e:
+        raise _address_book_error(e)
+    _audit(conn, admin, "address_book_update",
+           detail=f"entry={entry_id} {out['email']} {_audit_text(out['name'], 30)}")
+    return out
+
+
+@app.delete("/api/mail/address-book/{entry_id}")
+def delete_address_book_entry(
+    entry_id: int, admin=Depends(require_admin), conn=Depends(get_conn)
+):
+    """アドレス帳から消す (管理者だけ。メールは変わらない)."""
+    try:
+        row = address_book.delete_entry(conn, entry_id)
+    except address_book.AddressBookError as e:
+        raise _address_book_error(e)
+    _audit(conn, admin, "address_book_delete",
+           detail=f"entry={entry_id} {row['email']} {_audit_text(row['name'], 30)}")
+    return {"deleted": entry_id}
+
+
+@app.get("/api/mail/address-suggest")
+def address_suggest(
+    q: str = "", limit: int = address_book.SUGGEST_LIMIT,
+    _user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """宛先・CC・BCC の欄に打っている言葉に合う候補 (アドレス帳が先、次に前にやり取りした人).
+
+    名前・アドレス・メモ・取引先の名前で探す。自分たちのアドレスとフォーム・自動送信の送信元は
+    出さない。q が空なら空の一覧。
+    """
+    if len(q) > address_book.QUERY_MAX_CHARS:
+        raise HTTPException(
+            400, f"探す言葉は{address_book.QUERY_MAX_CHARS}文字以内にしてください")
+    if not 1 <= limit <= address_book.SUGGEST_LIMIT_MAX:
+        raise HTTPException(400, f"limit は 1〜{address_book.SUGGEST_LIMIT_MAX} で指定してください")
+    return {"items": address_book.suggest(conn, q, limit)}
+
+
 # ----- 担当に選べる人 -----
 # /api/mail/{mail_id} より先に宣言する (定型文と同じ理由)
 
@@ -3538,6 +3625,8 @@ def mail_detail(
         "returned_at": r["returned_at"],
         "return_note": r["return_note"],
         "client": client,
+        # 相手のアドレスがアドレス帳にあるか (返信画面の「アドレス帳に追加」を出すか決める用)
+        "contact_in_address_book": address_book.has_address(conn, mail.counterpart(r)[1]),
         **history,
     }
 

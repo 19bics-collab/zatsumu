@@ -260,6 +260,15 @@
   #tpl-name { width: 100%; box-sizing: border-box; padding: .45rem; border: 1px solid #ccc;
               border-radius: 6px; font-size: 1rem; }
   #tpl-body { min-height: 10rem; }
+  /* よく使うアドレス (設定) */
+  .ab-form { display: grid; gap: .45rem; margin-top: .4rem; }
+  .ab-form label { display: flex; flex-direction: column; gap: .2rem; font-size: .9rem; }
+  .ab-form input, #ab-filter { width: 100%; box-sizing: border-box; padding: .45rem;
+                               border: 1px solid #ccc; border-radius: 6px; font-size: max(16px, 1rem); }
+  #ab-filter { margin: .2rem 0 .3rem; }
+  #ab-list { max-height: 26rem; overflow-y: auto; }
+  #ab-list .tpl-row b { margin-right: .4rem; }
+  #ab-count { font-size: .85rem; color: #6b7280; }
   .tpl-ph { display: flex; gap: .3rem; align-items: center; flex-wrap: wrap;
             margin: .3rem 0; font-size: .85rem; color: #4b5563; }
   .tpl-ph button { padding: .3rem .6rem; font-size: .82rem; }
@@ -375,6 +384,32 @@
   .rcpt-all { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
   .rcpt-all[hidden] { display: none; }
   .rcpt-all input { width: 1.2rem; height: 1.2rem; margin: 0; }
+  /* 宛先・CC・BCC の候補 (アドレス帳と、前にやり取りした人)。打っている欄のすぐ下に出す
+     (上に重ねないので、iPhone のキーボードが出ていても欄と候補が両方見える) */
+  .sug { list-style: none; margin: 0 0 0 3.4rem; padding: .2rem; background: #fff;
+         border: 1px solid #c7d2fe; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.12);
+         overflow-y: auto; overscroll-behavior: contain; max-height: 20rem; }
+  .sug[hidden] { display: none; }
+  .sug li { padding: .45rem .6rem; border-radius: 6px; cursor: pointer; line-height: 1.4;
+            overflow-wrap: anywhere; min-height: 44px; box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent; }
+  .sug li[aria-selected="true"] { background: #e0e7ff; }
+  @media (hover: hover) { .sug li:hover { background: #eef2ff; } }
+  .sug-name { font-weight: 600; color: #111827; margin-right: .4rem; }
+  .sug-addr { color: #374151; }
+  .sug-sub { display: block; font-size: .78rem; color: #6b7280; }
+  .sug-book { display: inline-block; font-size: .72rem; color: #3730a3; background: #eef2ff;
+              border-radius: 4px; padding: 0 .3rem; margin-right: .3rem; }
+  /* 返信画面の「アドレス帳に追加」(管理者だけ。相手がアドレス帳に無いとき) */
+  .ab-quick { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+              margin-left: 3.4rem; font-size: .82rem; color: #6b7280; }
+  .ab-quick[hidden] { display: none; }
+  .ab-quick button { padding: .3rem .6rem; font-size: .82rem; }
+  /* iPhone などで欄を押したときに画面が拡大されないよう、文字は 16px 以上にする */
+  @media (pointer: coarse), (max-width: 720px) {
+    .rcpt-row input { font-size: 16px; }
+    .sug, .ab-quick { margin-left: 0; }
+  }
   /* 添付ファイル (返信モーダル) */
   .atts { margin-top: .6rem; display: flex; flex-direction: column; gap: .4rem;
           font-size: .88rem; color: #374151; }
@@ -1153,6 +1188,35 @@
       （「差し込み」のボタンで入れられます）。【 】の部分は、物件などに合わせて書き換えてください。
       定型文は、このカードのボタンを押したときに保存されます（下の「保存」は要りません）。</small></p>
     </div>
+    <div class="set-card" id="ab-card">
+      <h3>よく使うアドレス（アドレス帳）</h3>
+      <p class="set-help"><small>ここに入れた人は、返信画面の宛先・CC・BCC の欄に名前やアドレスの
+      一部を打つと、候補の一番上に出ます（タップすると「名前 &lt;アドレス&gt;」の形で入ります）。
+      前にやり取りした人も、入れなくても候補に出ます。メモ（例：清掃の担当・平日のみ）でも探せます。</small></p>
+      <input type="search" id="ab-filter" placeholder="名前・アドレス・メモで絞り込む" autocomplete="off"
+        aria-label="アドレス帳を絞り込む" hidden>
+      <div id="ab-list"></div>
+      <div id="ab-count"></div>
+      <p id="ab-form-title" style="margin:.9rem 0 .1rem;font-size:.9rem;font-weight:600">新しいアドレス</p>
+      <div class="ab-form">
+        <label>メールアドレス
+          <input type="text" id="ab-email" inputmode="email" autocomplete="off" autocapitalize="off"
+            spellcheck="false" maxlength="320" placeholder="name@example.com"></label>
+        <label>名前（空でもかまいません）
+          <input type="text" id="ab-name" maxlength="60" autocomplete="off" placeholder="例：山田 太郎・ABC商事 経理"></label>
+        <label>メモ（候補に小さく出ます。探すときにも使えます）
+          <input type="text" id="ab-note" maxlength="200" autocomplete="off" placeholder="例：清掃の担当・平日のみ"></label>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.5rem">
+        <button id="ab-save">アドレス帳に追加</button>
+        <button id="ab-cancel" class="ghost" hidden>やめる</button>
+        <span id="ab-msg" style="font-size:.85rem" role="status"></span>
+      </div>
+      <p><small>アドレスは1件に1つです（何人もいるときは、1人ずつ追加してください）。
+      メールソフトからコピーした「山田 太郎 &lt;taro@example.com&gt;」の形も、そのまま入れられます。
+      追加・変更・削除は、ボタンを押したときに保存されます（下の「保存」は要りません）。
+      メール担当者は、候補に出るのを使えます（変えられるのは管理者だけです）。</small></p>
+    </div>
     <div class="set-card" id="staff-card">
       <h3>メール担当者（スタッフ）</h3>
       <p class="set-help"><small>「メール担当者」にした人は、自分のトークン（合言葉）でこの画面に入り、
@@ -1250,16 +1314,24 @@
       <div class="rcpt-row" id="m-from-row"><span>差出人</span><span id="m-from"></span></div>
       <label class="rcpt-row"><span>宛先</span>
         <input type="text" id="m-to" inputmode="email" autocomplete="off" autocapitalize="off"
+          role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="m-sug"
           spellcheck="false" placeholder="お客様のメールアドレス（name@example.com）"></label>
       <div class="to-note" id="m-to-note" hidden></div>
+      <div class="ab-quick" id="m-ab-row" hidden>
+        <button type="button" class="ghost" id="m-ab-add">＋ この相手をアドレス帳に追加</button>
+        <span id="m-ab-msg" role="status"></span>
+      </div>
       <label class="rcpt-all" id="m-cc-all-row" hidden>
         <input type="checkbox" id="m-cc-all">CCの人にも送る（全員に返信）<span id="m-cc-count" style="font-size:.8rem;color:#6b7280"></span></label>
       <label class="rcpt-row"><span>CC</span>
         <input type="text" id="m-cc" inputmode="email" autocomplete="off" autocapitalize="off"
+          role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="m-sug"
           spellcheck="false" placeholder="なし（追加するときは「,」で区切って入力）"></label>
       <label class="rcpt-row"><span>BCC</span>
         <input type="text" id="m-bcc" inputmode="email" autocomplete="off" autocapitalize="off"
+          role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="m-sug"
           spellcheck="false" placeholder="任意（ほかの人には見えません）"></label>
+      <ul class="sug" id="m-sug" role="listbox" aria-label="アドレスの候補" hidden></ul>
     </div>
     <div class="appr" id="m-appr" hidden>
       <div class="appr-head" id="m-appr-head"></div>
@@ -2355,6 +2427,8 @@ async function openMail(id) {
   $("m-to").value = replied ? (m.reply_sent_to || m.from_addr || "") : modal.defaultTo;
   renderToNote(m);
   renderMisdirect(m);
+  sugHide();
+  renderAbQuick(m);
   // 差出人は、このメールが届いたアドレス (削除したアドレスなら共通の差出人メール)
   $("m-from").textContent = (m.reply_from || "（未設定）") +
     (!m.account_id && showAccounts() ? "（届いたアドレスは削除したため、共通の差出人で送ります）" : "");
@@ -2451,6 +2525,41 @@ $("m-misdir-ok").onclick = async () => {
     // 設定画面から開いていたら、設定画面の一覧からも外す
     if (viewName === "settings") renderFormMisdirected(await apiJson("/api/settings"));
   } catch {}
+};
+
+// 「この相手をアドレス帳に追加」(管理者だけ。相手のアドレスが分かっていて、アドレス帳に無いとき)
+function renderAbQuick(m) {
+  const addr = contactAddr(m);
+  $("m-ab-row").hidden = !isAdmin() || !addr || !addr.includes("@") || !!m.contact_in_address_book;
+  $("m-ab-add").hidden = false;
+  $("m-ab-add").disabled = false;
+  $("m-ab-msg").textContent = "";
+}
+$("m-ab-add").onclick = async () => {
+  const m = modal.mail, id = modal.id;
+  if (!m) return;
+  const addr = contactAddr(m);
+  const name = prompt(`アドレス帳に「${addr}」を追加します。\n名前を確かめてください（空でもかまいません）`,
+                      contactName(m));
+  if (name === null) return;
+  $("m-ab-add").disabled = true;
+  let r;
+  try {
+    r = await api("/api/mail/address-book", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: addr, name: name.trim() }),
+    });
+  } catch { $("m-ab-add").disabled = false; return; }
+  if (modal.id !== id) return;
+  const e = await r.json().catch(() => ({}));
+  if (r.ok || r.status === 409) {   // 409 = ほかの人が先に入れていた
+    m.contact_in_address_book = true;
+    $("m-ab-add").hidden = true;
+    $("m-ab-msg").textContent = r.ok ? "✓ アドレス帳に追加しました" : "✓ もうアドレス帳にあります";
+  } else {
+    $("m-ab-add").disabled = false;
+    alert(e.detail || "エラーが発生しました");
+  }
 };
 
 // 返信画面のボタンと欄を、メールの状態と自分の役割 (管理者・メール担当者) に合わせる。
@@ -2624,6 +2733,208 @@ const splitAddrs = v => {
     .filter(Boolean);
 };
 
+/* ---------- 宛先・CC・BCC の候補 (アドレス帳と、前にやり取りした人) ----------
+   打っている1件 (「,」で区切った間) に合う候補をサーバに聞いて、欄のすぐ下に出す。
+   タップか Enter で「名前 <アドレス>」(名前が無ければアドレスだけ) を入れる。CC・BCC は
+   続けて次の人を入れられるよう「, 」も付ける (宛先は1人だけなので、欄ごと入れ替える)。
+   PC は ↑↓ で選んで Enter で入れる・Esc で閉じる。日本語の入力の途中 (変換中) の Enter は使わない。
+   名前・アドレスは外から来た文字なので textContent で入れる */
+const SUG_FIELDS = ["m-to", "m-cc", "m-bcc"];
+const sug = { input: null, items: [], active: -1, seq: 0, timer: null, seg: null };
+
+// 欄の中の、カーソルがある1件 {start, end, text, afterSpace}。区切りは splitAddrs と同じ
+// (「"…"」「<…>」の中の区切りは区切りにしない)。「a@b.jp ta」のように、アドレスの後に
+// 空白で続けて打っているときは、最後の言葉だけ (afterSpace。入れるときに「, 」で区切る)
+function sugSegment(input) {
+  const v = input.value, caret = input.selectionStart ?? v.length;
+  let seg = { start: 0, end: v.length, text: v, afterSpace: false };
+  if (input.id !== "m-to") {
+    let start = 0, quoted = false, angle = false;
+    for (let i = 0; i <= v.length; i++) {
+      const ch = v[i] || "";
+      if (ch === '"' && !angle) quoted = !quoted;
+      else if (ch === "<" && !quoted) angle = true;
+      else if (ch === ">" && !quoted) angle = false;
+      if (i === v.length || (!quoted && !angle && /[,、;\n，；]/.test(ch))) {
+        if (i >= caret || i === v.length) { seg = { start, end: i, text: v.slice(start, i) }; break; }
+        start = i + 1;
+      }
+    }
+  }
+  if (!/[<>"]/.test(seg.text)) {
+    const m = seg.text.match(/(\S+)\s*$/);
+    if (m && seg.text.slice(0, m.index).includes("@")) {
+      seg = { start: seg.start + m.index, end: seg.end, text: m[1], afterSpace: true };
+    }
+  }
+  return seg;
+}
+
+// 入れる形。名前に区切りの文字があれば "…" で囲む (splitAddrs・サーバの確かめ方と合わせる)
+function sugFormat(it) {
+  let name = String(it.name || "").replace(/[<>"\r\n]/g, "").replace(/\s+/g, " ").trim();
+  if (!name) return it.email;
+  if (/[,、;，；@]/.test(name)) name = `"${name}"`;
+  return `${name} <${it.email}>`;
+}
+
+function sugHide() {
+  clearTimeout(sug.timer);
+  sug.seq++;
+  sug.items = []; sug.active = -1;
+  const list = $("m-sug");
+  list.hidden = true;
+  list.textContent = "";
+  SUG_FIELDS.forEach(id => {
+    $(id).setAttribute("aria-expanded", "false");
+    $(id).removeAttribute("aria-activedescendant");
+  });
+}
+
+async function sugFetch(input) {
+  const seg = sugSegment(input);
+  const q = seg.text.trim();
+  if (!q || q.length > 100 || /[<>]/.test(q) || input.readOnly) { sugHide(); return; }
+  const n = ++sug.seq;
+  let data;
+  try {
+    const r = await api(`/api/mail/address-suggest?q=${encodeURIComponent(q)}`);
+    data = r.ok ? await r.json() : { items: [] };   // うまくいかなくても、打つのは止めない
+  } catch { return; }
+  if (n !== sug.seq || document.activeElement !== input) return;
+  sug.input = input; sug.seg = seg; sug.items = data.items || []; sug.active = -1;
+  sugRender();
+}
+
+function sugRender() {
+  const list = $("m-sug"), input = sug.input;
+  if (!input || !sug.items.length) { sugHide(); return; }
+  list.textContent = "";
+  sug.items.forEach((it, i) => {
+    const li = document.createElement("li");
+    li.id = `m-sug-${i}`;
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", String(i === sug.active));
+    li.dataset.i = i;
+    if (it.name) {
+      const nm = document.createElement("span");
+      nm.className = "sug-name"; nm.textContent = it.name;
+      li.appendChild(nm);
+    }
+    const ad = document.createElement("span");
+    ad.className = "sug-addr"; ad.textContent = it.email;
+    li.appendChild(ad);
+    const sub = document.createElement("span");
+    sub.className = "sug-sub";
+    if (it.source === "book") {
+      const tag = document.createElement("span");
+      tag.className = "sug-book"; tag.textContent = "アドレス帳";
+      sub.appendChild(tag);
+    }
+    const parts = [];
+    if (it.note) parts.push(it.note);
+    if (it.client) parts.push("取引先: " + it.client);
+    if (it.source !== "book" && it.count) parts.push(`前にやり取り ${it.count}回`);
+    sub.appendChild(document.createTextNode(parts.join("・")));
+    if (sub.childNodes.length > 1 || parts.length) li.appendChild(sub);
+    list.appendChild(li);
+  });
+  // 打っている欄のすぐ下に動かす
+  const row = input.closest(".rcpt-row");
+  if (row.nextElementSibling !== list) row.after(list);
+  list.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  if (sug.active >= 0) input.setAttribute("aria-activedescendant", `m-sug-${sug.active}`);
+  else input.removeAttribute("aria-activedescendant");
+  sugReveal();
+}
+
+// 候補がキーボードに隠れないよう、見えている高さ (iPhone はキーボードの上) に合わせて
+// 候補の高さを決め、はみ出す分だけ返信画面をスクロールする (打っている欄は画面から出さない)
+function sugReveal() {
+  const list = $("m-sug"), input = sug.input;
+  if (list.hidden || !input) return;
+  const vv = window.visualViewport;
+  const top = vv ? vv.offsetTop : 0, bottom = vv ? vv.offsetTop + vv.height : innerHeight;
+  const ir = input.getBoundingClientRect();
+  list.style.maxHeight = Math.max(120, Math.min(320, bottom - top - ir.height - 24)) + "px";
+  const lr = list.getBoundingClientRect();
+  const over = lr.bottom - bottom + 8, room = ir.top - top - 8;
+  if (over > 0 && room > 0) $("mail-modal").querySelector(".box").scrollTop += Math.min(over, room);
+}
+if (window.visualViewport) visualViewport.addEventListener("resize", sugReveal);
+
+function sugMove(step) {
+  const n = sug.items.length;
+  if (!n) return;
+  sug.active = sug.active < 0 ? (step > 0 ? 0 : n - 1) : (sug.active + step + n) % n;
+  $("m-sug").querySelectorAll("li").forEach((li, i) =>
+    li.setAttribute("aria-selected", String(i === sug.active)));
+  sug.input.setAttribute("aria-activedescendant", `m-sug-${sug.active}`);
+  $(`m-sug-${sug.active}`).scrollIntoView({ block: "nearest" });
+}
+
+function sugPick(i) {
+  const it = sug.items[i], input = sug.input, seg = sug.seg;
+  if (!it || !input || !seg || input.readOnly) return;
+  const value = sugFormat(it);
+  let text, caret;
+  if (input.id === "m-to") {
+    text = value; caret = value.length;
+  } else {
+    let left = input.value.slice(0, seg.start);
+    const right = input.value.slice(seg.end);
+    if (seg.afterSpace) left = left.replace(/\s+$/, "") + ", ";
+    else if (left && !/\s$/.test(left)) left += " ";
+    // 後ろに続きがあれば、そのまま。最後なら、次の人を入れられるよう「, 」を付ける
+    text = left + value + (right.trim() ? right : ", ");
+    caret = left.length + value.length + (right.trim() ? 0 : 2);
+  }
+  input.value = text;
+  sugHide();
+  input.focus();
+  input.setSelectionRange(caret, caret);
+  // CC の「全員に返信」のチェックなど、手で打ったときと同じにする
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+SUG_FIELDS.forEach(id => {
+  const input = $(id);
+  input.addEventListener("input", () => {
+    clearTimeout(sug.timer);
+    if (!sugSegment(input).text.trim()) { sugHide(); return; }
+    sug.timer = setTimeout(() => sugFetch(input), 150);
+  });
+  input.addEventListener("keydown", e => {
+    if (e.isComposing || e.keyCode === 229) return;   // 日本語の変換中
+    if ($("m-sug").hidden || sug.input !== input) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      sugMove(e.key === "ArrowDown" ? 1 : -1);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      sugPick(sug.active >= 0 ? sug.active : 0);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      sugHide();
+    } else if (e.key === "Tab") {
+      sugHide();
+    }
+  });
+  // 候補を押したとき (欄から離れた扱いになる) に消えないよう、少し待ってから閉じる
+  input.addEventListener("blur", () => setTimeout(() => {
+    if (document.activeElement !== sug.input) sugHide();
+  }, 250));
+});
+// 候補を押しても、欄から離れない (iPhone のキーボードを閉じない)
+["mousedown", "pointerdown"].forEach(t =>
+  $("m-sug").addEventListener(t, e => { if (e.target.closest("li")) e.preventDefault(); }));
+$("m-sug").addEventListener("click", e => {
+  const li = e.target.closest("li[data-i]");
+  if (li) sugPick(+li.dataset.i);
+});
+
 // 宛先の欄 (1つだけ。日本語入力の全角の英数字は半角に直す。正しい形かはサーバが確かめる)。
 // 空なら知らせて止める
 function toValue() {
@@ -2636,8 +2947,10 @@ function toValue() {
 }
 // 宛先を直したときに、送る前の確認に添える文。メール担当者が確認をお願いしたときに直した宛先
 // (既定の宛先になっている) も、相手と違えば知らせる (承認する管理者が気付けるように)
+// 「名前 <アドレス>」(候補から入れたもの) のアドレスだけ
+const addrOnly = v => { const m = String(v || "").match(/<([^<>]*)>\s*$/); return (m ? m[1] : String(v || "")).trim(); };
 const toChangedText = to => {
-  const t = to.toLowerCase(), d = (modal.defaultTo || "").toLowerCase();
+  const t = addrOnly(to).toLowerCase(), d = (modal.defaultTo || "").toLowerCase();
   const c = String(modal.mail ? contactAddr(modal.mail) : "");
   if (d && t !== d) return `（直した宛先。元の相手: ${modal.defaultTo}）`;
   if (c && t !== c.toLowerCase()) return `（担当者が直した宛先。元の相手: ${c}）`;
@@ -2703,6 +3016,7 @@ $("m-send").onclick = async () => {
     $("m-bcc").value = sentBcc.join(", ");
     $("m-to").value = r.sent || to;
     $("m-cc").readOnly = $("m-bcc").readOnly = $("m-to").readOnly = true;
+    sugHide();
     $("m-to-note").hidden = true;
     $("m-cc-all").disabled = true;
     inboxChanged();
@@ -2814,6 +3128,7 @@ async function saveDraft() {
 }
 
 async function closeModal(opts = {}) {
+  sugHide();
   await saveDraft();
   modal = { ...EMPTY_MODAL };
   modalHistory = [];
@@ -3459,6 +3774,7 @@ async function openSettings() {
   fillSettings(appSettings);
   loadDevices();
   loadTemplates();
+  loadAddressBook();
   loadAccounts();
   loadStaff();
   loadAssignees();   // 登録されている名前 (種類ごとの担当の案内) を取り直す
@@ -4342,6 +4658,110 @@ $("tpl-cancel").onclick = () => { resetTplForm(); $("tpl-msg").textContent = "";
 // 「差し込み」ボタン: 本文のカーソルの位置に {相手の名前} などを入れる
 document.querySelectorAll(".tpl-ph button").forEach(b =>
   b.onclick = () => insertAtCursor($("tpl-body"), b.dataset.ph));
+
+/* ---------- よく使うアドレス (アドレス帳。設定) ----------
+   追加・変更・削除は、ボタンを押した時点でサーバに保存する (下の「保存」とは別)。
+   名前・アドレス・メモは textContent / esc() で入れる */
+let abList = [];
+let abEditing = null;   // 編集中の id (null = 新しく追加)
+const AB_FILTER_FROM = 8;   // この数より多ければ、絞り込みの欄を出す
+
+async function loadAddressBook() {
+  try { abList = (await apiJson("/api/mail/address-book")).items || []; } catch { return; }
+  renderAddressBook();
+}
+
+function renderAddressBook() {
+  const f = $("ab-filter");
+  f.hidden = abList.length <= AB_FILTER_FROM;
+  const q = f.hidden ? "" : f.value.normalize("NFKC").toLowerCase().replace(/\s+/g, "");
+  const shown = q ? abList.filter(a =>
+    [a.name, a.email, a.note, a.client && a.client.name].some(v =>
+      String(v || "").normalize("NFKC").toLowerCase().replace(/\s+/g, "").includes(q))) : abList;
+  $("ab-list").innerHTML = shown.length ? shown.map(a => `
+    <div class="tpl-row"><div>
+      ${a.name ? `<b>${esc(a.name)}</b>` : ""}<span>${esc(a.email)}</span>
+      ${a.note || a.client ? `<br><small>${esc([a.note, a.client ? "取引先: " + a.client.name : ""].filter(Boolean).join("・"))}</small>` : ""}
+    </div><div class="tpl-btns">
+      <button class="ghost" data-ab="${Number(a.id)}" data-act="edit">編集</button>
+      <button class="ghost" data-ab="${Number(a.id)}" data-act="del">削除</button>
+    </div></div>`).join("")
+    : `<small>${abList.length ? "合うものはありません" : "まだありません。下の欄から追加してください"}</small>`;
+  $("ab-count").textContent = abList.length
+    ? (q ? `${shown.length}件（全部で${abList.length}件）` : `${abList.length}件`) : "";
+}
+$("ab-filter").addEventListener("input", renderAddressBook);
+
+function abMsg(text, isError) {
+  $("ab-msg").style.color = isError ? "#c62828" : "#0a7d32";
+  $("ab-msg").textContent = text;
+  if (!isError) setTimeout(() => { if ($("ab-msg").textContent === text) $("ab-msg").textContent = ""; }, 2500);
+}
+
+function resetAbForm() {
+  abEditing = null;
+  $("ab-email").value = $("ab-name").value = $("ab-note").value = "";
+  $("ab-form-title").textContent = "新しいアドレス";
+  $("ab-save").textContent = "アドレス帳に追加";
+  $("ab-cancel").hidden = true;
+}
+
+$("ab-list").onclick = async e => {
+  const b = e.target.closest("button[data-ab]");
+  if (!b) return;
+  const a = abList.find(x => x.id === +b.dataset.ab);
+  if (!a) return;
+  if (b.dataset.act === "edit") {
+    abEditing = a.id;
+    $("ab-email").value = a.email;
+    $("ab-name").value = a.name;
+    $("ab-note").value = a.note;
+    $("ab-form-title").textContent = `「${a.name || a.email}」を編集中`;
+    $("ab-save").textContent = "変更を保存";
+    $("ab-cancel").hidden = false;
+    $("ab-msg").textContent = "";
+    $("ab-email").scrollIntoView({ block: "center" });
+    $("ab-email").focus();
+    return;
+  }
+  if (!confirm(`アドレス帳から「${a.name ? a.name + " " : ""}${a.email}」を削除しますか？\n（届いたメールや送った返信は消えません）`)) return;
+  try { await apiJson(`/api/mail/address-book/${a.id}`, { method: "DELETE" }); } catch { return; }
+  if (abEditing === a.id) resetAbForm();
+  abMsg("削除しました ✓");
+  loadAddressBook();
+};
+
+$("ab-save").onclick = async () => {
+  const email = $("ab-email").value.trim();
+  if (!email) { abMsg("メールアドレスを入れてください", true); $("ab-email").focus(); return; }
+  const editing = abEditing, b = $("ab-save");
+  b.disabled = true;
+  try {
+    const r = await api(editing ? `/api/mail/address-book/${editing}` : "/api/mail/address-book", {
+      method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, name: $("ab-name").value, note: $("ab-note").value }),
+    });
+    const e = await r.json().catch(() => ({}));
+    if (r.ok) {
+      resetAbForm();
+      abMsg(editing ? "変更を保存しました ✓" : "追加しました ✓");
+      loadAddressBook();
+    } else {
+      // 正しくないアドレス・同じアドレスがある などは、欄の横に出す (打ち直せるように)
+      abMsg(e.detail || "エラーが発生しました", true);
+    }
+  } catch { /* ログインし直しなど */ }
+  b.disabled = false;
+};
+$("ab-cancel").onclick = () => { resetAbForm(); $("ab-msg").textContent = ""; };
+// メールソフトからコピーした「名前 <アドレス>」を入れて、名前の欄が空なら、名前もそこから入れる
+$("ab-email").addEventListener("change", () => {
+  const m = $("ab-email").value.normalize("NFKC").match(/^\s*"?([^"<>]*?)"?\s*<([^<>]+)>\s*$/);
+  if (m) {
+    $("ab-email").value = m[2].trim();
+    if (!$("ab-name").value.trim() && m[1].trim()) $("ab-name").value = m[1].trim();
+  }
+});
 
 /* ---------- 取引先 (取引先ごとに、届いたメールと送った返信をまとめて見る) ----------
    一覧と1つの取引先の画面。名前・アドレス・件名・本文などは外から来た文字なので、
