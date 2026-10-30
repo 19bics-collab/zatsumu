@@ -2694,6 +2694,9 @@ MAIL_SORTS = {
 }
 # 対応が要るメール (受信箱のタブに出す数): 未対応と確認待ち
 _OPEN_STATUSES = ("unhandled", "pending_approval")
+# 一覧に出す数を超えるときに、対応が要るメールを先に選ぶ並べ方 (後ろにいつもの並び順を続ける)
+_OPEN_FIRST = (" ORDER BY m.status IN ("
+               + ", ".join(f"'{s}'" for s in _OPEN_STATUSES) + ") DESC,")
 
 
 def _mail_scope_filters(user, assignee: str | None, account: str | None,
@@ -2756,7 +2759,9 @@ def list_mail(
     category は種類の名前 (none で未分類)、assignee は担当の人の番号
     (none で担当なし、me で自分の担当)、account は届いたアドレスの番号
     (none で削除したアドレス) で絞り込む。出すのは並べた順に500通まで
-    (新しい順なら新しい方の500通)。
+    (新しい順なら新しい方の500通)。状態を送らず探してもいない (受信箱を開いたときの
+    「状態：すべて」) ときは、対応が要るメール (未対応・確認待ち) を古くても先に入れ、
+    残りに返信済み・対応不要の新しい方を入れる。
     q は検索欄の言葉 (件名・本文・差出人と宛先・添付ファイルの名前・取引先の名前。空白で区切ると
     全部を含むメール。server/mail_search.py)。ほかの絞り込みと一緒に効く (状態を送らなければ、
     返信済み・対応不要も探す)。探したときは、各メールに本文の抜き出し (snippet) と名前の合った
@@ -2800,10 +2805,17 @@ def list_mail(
                                   + " AND ".join([*where, "m.priority = 3"]), params).fetchone()[0]
             response.headers["X-Hidden-Low"] = str(hidden)
         where.append("m.priority <> 3")
-    sql = _MAIL_LIST_SELECT
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += order + f" LIMIT {MAIL_LIST_LIMIT}"
+    cond = " WHERE " + " AND ".join(where) if where else ""
+    if status or search:
+        sql = _MAIL_LIST_SELECT + cond + order + f" LIMIT {MAIL_LIST_LIMIT}"
+    else:
+        # 状態を選んでいない (受信箱を開いたときの「状態：すべて」) ときは、500通に先に
+        # 対応が要るメール (未対応・確認待ち) を入れ、残りに返信済み・対応不要の新しい方を入れる
+        # (並べるのはいつもの順)。新しい順の500通だけだと、返信済みのメールが多いときに
+        # その前に届いた未対応のメールが一覧に出ず、未対応の数とも合わなくなるため
+        sql = (_MAIL_LIST_SELECT + " WHERE m.id IN (SELECT m.id FROM mails m" + cond
+               + _OPEN_FIRST + order.removeprefix(" ORDER BY") + f" LIMIT {MAIL_LIST_LIMIT})"
+               + order)
     rows = conn.execute(sql, params).fetchall()
     counts = _thread_counts(conn, rows)
     files: dict[int, list[str]] = {}

@@ -2187,8 +2187,8 @@ function renderInbox(list, keepPlace) {
   // 探しているときは、探した言葉に印を付けて、本文の言葉のあたりを件名の下に出す
   const T = inboxFound ? hlTerms(inboxFound.q) : null;
   shownMails = new Map(list.map(m => [Number(m.id), m]));
-  // 自動で取り直して行が増えた・減ったときは、少しの間「対応不要」を押せないようにする
-  // (押そうとした指の下に、別のメールのボタンが来ることがあるため)
+  // 自動で取り直して行が増えた・減ったときは、少しの間「対応不要」などの行のボタン・行を押せないようにする
+  // (押そうとした指の下に、別のメールのボタン・行が来ることがあるため)
   if (keepPlace) {
     const before = [...tbody.querySelectorAll(".mail-row")].map(tr => tr.dataset.id).join();
     if (before && before !== list.map(m => String(Number(m.id))).join()) rowsMovedAt = Date.now();
@@ -2219,24 +2219,17 @@ function renderInbox(list, keepPlace) {
         : `<tr><td colspan="8"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
     tr.onclick = e => {
+      // 「本文 ▼」「対応不要」ボタンを押したときは、返信画面を開かない
+      const p = e.target.closest("button.row-peek"), b = e.target.closest("button.row-archive");
+      if (p || b) e.stopPropagation();
+      // 行が消えて下の行が上がってきた・対応不要にして行の「対応不要」が消えた直後は、
+      // 同じ所をもう一度押しても何もしない (2回押したつもりで、次のメールまで対応不要にしたり、
+      // その場所に来た「本文 ▼」や行を押して、プルダウン・返信画面を開いたりしないように)
+      if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
       // 「本文 ▼」は、その行の下に本文とやり取りを出す (返信画面は開かない)
-      const p = e.target.closest("button.row-peek");
-      if (p) {
-        e.stopPropagation();
-        togglePeek(Number(p.dataset.peek));
-        return;
-      }
-      // 「対応不要」ボタンを押したときは、返信画面を開かない
-      const b = e.target.closest("button.row-archive");
-      if (b) {
-        e.stopPropagation();
-        // 行が消えて下の行が上がってきた直後は、同じ所をもう一度押しても何もしない
-        // (2回押したつもりで、次のメールまで対応不要にしてしまわないように)
-        if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
-        archiveFromRow(b, tr);
-        return;
-      }
-      openMail(+tr.dataset.id);
+      if (p) togglePeek(Number(p.dataset.peek));
+      else if (b) archiveFromRow(b, tr);
+      else openMail(+tr.dataset.id);
     });
   setPeekWidth();
   wrap.scrollLeft = left;
@@ -2559,6 +2552,9 @@ document.querySelector("#mail-table tbody").addEventListener("click", e => {
   if (!e.target.closest(".peek-row")) return;
   const b = e.target.closest("button");
   if (!b) return;
+  // 行の「対応不要」と同じく、行が動いた・ボタンが消えた直後は何もしない
+  // (プルダウンの「対応不要」を2回押したつもりで、その場所に来た「閉じる」を押さないように)
+  if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
   const d = b.dataset;
   if (d.pkOpen) { openMail(Number(d.pkOpen)).catch(() => {}); return; }
   if (d.pkClose) {
@@ -2576,8 +2572,6 @@ document.querySelector("#mail-table tbody").addEventListener("click", e => {
     return;
   }
   if (b.matches("button.row-archive")) {
-    // 行の「対応不要」と同じく、行が動いた直後は何もしない
-    if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
     const tr = mailRowOf(Number(d.archive));
     if (tr) archiveFromRow(b, tr);
   }
@@ -2595,8 +2589,8 @@ let shownMails = new Map();       // 受信箱に出しているメール (番�
 const archivingIds = new Set();   // 対応不要にしている途中のメール (取り直してもボタンを押せないままにする)
 const TOAST_MS = 6000, TOAST_MAX = 3;
 const TOAST_AGAIN_MS = 4000;      // 返信画面などを閉じた後に、知らせを出し直す長さ
-const ROW_QUIET_MS = 600;         // 行が動いた後、「対応不要」を押しても何もしない長さ
-let rowsMovedAt = 0;              // 一覧の行が消えた・動いた時刻
+const ROW_QUIET_MS = 600;         // 行が動いた後、一覧のボタン・行を押しても何もしない長さ
+let rowsMovedAt = 0;              // 一覧の行が消えた・動いた (行の「対応不要」が消えた) 時刻
 
 // メールを変えた後に、見ている画面を取り直す (受信箱は見ていた場所を動かさない)
 function afterMailChange() {
@@ -2643,6 +2637,8 @@ async function archiveFromRow(b, tr) {
     refreshInbox();
     return;
   }
+  // 対応不要にしたメールは見たことにする (「新着」の印を外す。描き直しても付けない)
+  markOpened(id);
   if (leave && tr.isConnected) {
     // 次のメールの行 (開いているプルダウンの下から読んでいたときは、それを画面の上に出す)
     const next = (pk && pk.isConnected ? pk : tr).nextElementSibling;
@@ -2659,7 +2655,9 @@ async function archiveFromRow(b, tr) {
 // 対応不要にしたメールの行を、取り直すのを待たずにその場で灰色の「対応不要」にする
 // (行は一覧に残す。「対応不要」のボタンは行とプルダウンから消す。取り直した後も同じ見た目)。
 // ボタンが消えて行の高さ・列の幅が変わっても、見ている所は動かさない
-// (一番上に見えている行が、変えた後も同じ位置に見えるようにする)
+// (一番上に見えている行が、変えた後も同じ位置に見えるようにする)。
+// 消えた「対応不要」の場所には「本文 ▼」やプルダウンの「閉じる」・行が来るので、少しの間は
+// 一覧を押しても何もしない (rowsMovedAt。2回押したつもりで、プルダウン・返信画面を開かないように)
 function showRowArchived(id) {
   const m = shownMails.get(id), tr = mailRowOf(id);
   if (m) m.status = "archived";
@@ -2673,6 +2671,7 @@ function showRowArchived(id) {
     tr.classList.add("done");
     tr.classList.remove("two-btn");
     tr.querySelector('td[data-label="状態"]').innerHTML = `<span class="st-archived">${esc(ST.archived)}</span>`;
+    rowsMovedAt = Date.now();
   }
   if (anchor) window.scrollBy(0, anchor.getBoundingClientRect().top - anchorTop);
 }
