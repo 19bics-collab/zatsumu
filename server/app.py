@@ -2737,8 +2737,11 @@ def _search_terms(q: str | None) -> list[str]:
         raise HTTPException(400, str(e))
 
 
-# 受信箱で[低]を出さない (hide_low) ときに出すメール。確認待ちは[低]でも出す (隠すと承認できない)
-_LOW_SHOWN = "(m.priority <> 3 OR m.status = 'pending_approval')"
+# 受信箱で[低]を出さない (hide_low) ときに出すメール。確認待ちは[低]でも出す (隠すと承認できない)。
+# 差し戻したメール (未対応に戻してコメントを付けたもの) も[低]でも出す (隠すとメール担当者が
+# 差し戻されたことに気付かない)
+_LOW_SHOWN = ("(m.priority <> 3 OR m.status = 'pending_approval'"
+              " OR (m.status = 'unhandled' AND m.return_note <> ''))")
 
 
 @app.get("/api/mail")
@@ -2769,6 +2772,7 @@ def list_mail(
     X-Search-Partial: 1 を入れる。
     hide_low=1 で優先度[低]のメールを出さない (受信箱の「重要度」の「高・中」。既定の表示)。
     ただし確認待ち (メール担当者からの確認のお願い) は、[低]でも出す (管理者が承認・差し戻しをする)。
+    差し戻したメールも[低]でも出す (メール担当者が直して頼み直す)。
     そのときは、ほかの絞り込みに合うのに出さなかった[低]のメールの数をヘッダ X-Hidden-Low に入れる。
     """
     order = MAIL_SORTS.get(sort or "date")
@@ -2802,7 +2806,7 @@ def list_mail(
     if hide_low:
         if response is not None:
             hidden = conn.execute("SELECT COUNT(*) FROM mails m WHERE " + " AND ".join(
-                [*where, "m.priority = 3 AND m.status <> 'pending_approval'"]), params).fetchone()[0]
+                [*where, "NOT " + _LOW_SHOWN]), params).fetchone()[0]
             response.headers["X-Hidden-Low"] = str(hidden)
         where.append(_LOW_SHOWN)
     sql = _MAIL_LIST_SELECT
@@ -2899,7 +2903,7 @@ def _mail_tab_counts(conn, user, status: str | None, assignee: str | None,
     has_uncategorized は未分類のメールが (返信済みなども含めて) 1通でもあるか (「未分類」の
     タブを出すか決める用)。
     hide_low のときは優先度[低]のメールを数えない (受信箱で[低]を出していないとき。一覧とそろえる。
-    確認待ちは[低]でも一覧に出すので数える)。
+    確認待ち・差し戻したメールは[低]でも一覧に出すので数える)。
     """
     if status and status not in mail.MAIL_STATUSES:
         raise HTTPException(400, f"不明な状態です: {status}")
@@ -2944,7 +2948,8 @@ def mail_status(
     受信箱のタブ (種類ごと・重要) の数 (tabs) も返す。tabs だけは、受信箱で選んでいる
     状態 (status)・担当 (assignee)・アドレス (account) で絞り込む (一覧の /api/mail と同じ
     書き方。状態は未対応・確認待ちのときだけ効く。_mail_tab_counts)。hide_low=1 なら tabs に
-    優先度[低]を数えない (受信箱で[低]を出していないとき。確認待ちの[低]は一覧に出すので数える)。
+    優先度[低]を数えない (受信箱で[低]を出していないとき。確認待ち・差し戻しの[低]は一覧に
+    出すので数える)。
     1分ごと・タブごとに呼ばれるので、DB は読むだけにする (書き込みのロックを取らない)。
     """
     tabs = _mail_tab_counts(conn, user, status, assignee, account, hide_low)

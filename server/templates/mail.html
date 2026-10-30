@@ -218,6 +218,8 @@
   .sort-tg button:last-of-type { border-radius: 0 6px 6px 0; border-left: 0; }
   .sort-tg button[aria-pressed="true"] { background: #e5e7eb; color: #111827; font-weight: 700; }
   .sort-tg + .sort-tg { margin-left: 0; }
+  /* 指で押す画面では、並び順・重要度のボタンを押しやすい高さにする */
+  @media (pointer: coarse) { .sort-tg button { min-height: 40px; padding: .45rem .7rem; } }
   .low-note { font-size: .82rem; color: #6b7280; margin: -.2rem 0 .6rem; overflow-wrap: anywhere; }
   .low-note[hidden] { display: none; }
   /* 検索欄 (受信箱・送信箱の上)。iPhone で欄を押したときに画面が拡大されないよう、文字は16px以上 */
@@ -870,7 +872,7 @@
   <p><small>受信メールを新しい順（届いた日時の新しいものが上）に表示します。一覧の上の「並び順」で
   「重要度順」（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）にもできます。
   重要度は色で分けています（<span class="prb pr-1">高</span> 赤・<span class="prb pr-2">中</span> だいだい・<span class="prb pr-3">低</span> 灰色）。
-  ふだんは「重要度」が「高・中」で、重要度が低のメールは出しません（確認待ちのメールは低でも出します。隠している数は一覧の上に出ます）。
+  ふだんは「重要度」が「高・中」で、重要度が低のメールは出しません（確認待ちと差し戻したメールは低でも出します。隠している数は一覧の上に出ます）。
   「すべて」を押すと低のメールも出ます（このブラウザに覚えておきます。検索欄で探すときは、低のメールからも探します）。
   一覧のすぐ上のタブで、問い合わせの種類ごとや「重要（高）」だけに分けて見られます
   （タブの数字は、まだ対応していないメールの数です。上の「状態」が「未対応」なら未対応の数、
@@ -1694,18 +1696,23 @@ function hl(text, terms) {
    出し、引用は「引用を表示 ▼」を押したときだけ出す。相手が新しく書いた所 (お客様の依頼・予約の
    知らせの中身・答え) は決して隠さない。前のメールとはっきり分からないときは畳まない。引用と見るのは
    ・「>」「＞」で始まる行が続く所で、次のどれかのもの
-     - すぐ上に「〜 wrote:」「〜さんは書きました:」「2026年10月27日(月) 10:00 山田 <a@b>:」などがあり
-       (一緒に畳む)、4行以上か300文字以上
+     - すぐ上に「〜 wrote:」「〜さんは書きました:」「2026年10月27日(月) 10:00 山田 <a@b>:」などの
+       メールソフトが書く行があり (一緒に畳む)、4行以上か300文字以上
      - 本文の一番下にあり (下は空行だけ)、4行以上か300文字以上 (スマホの返信など)
      - どこにあっても、とても長い (10行以上か600文字以上)
      途中の短いものは畳まない。全角の「＞」の所 (「＞日程：…」のような箇条書きかもしれない) は、誰が
-     書いたかの行があるときだけ畳む。一番下の引用も、誰が書いたかの行が無ければ上の文との間に空行があるときだけ。
+     書いたかの行があるときだけ畳む。誰が書いたかの行が無い半角の「>」の所は、メールソフトの引用と分かる
+     ときだけ (「>」だけの行か「>>」の行がある、か600文字以上。「> 11/3 渋谷A」のような箇条書きは畳まない)。
+     一番下の引用も、誰が書いたかの行が無ければ上の文との間に空行があるときだけ。
      引用と答えを交互に書いたメール (「>」の所が2つ以上あり、間に文がある) は、一番下の引用のほかは
      とても長いときだけ畳む (質問の引用だけが隠れて、答えだけが残らないように)
    ・「-----Original Message-----」「----- 元のメッセージ -----」から下と、Outlook などの見出しから下の全部。
      見出しは「差出人:」(From:) の行のすぐ下に、空行を挟まずに「送信日時:」「日付:」(Sent: / Date:) と
-     「宛先:」(To:) の行が続くもの。差出人の行にアドレスが無いときは「送信日時:」(Sent:) のときだけ
-     (Outlook は社内の人のアドレスを書かない)。「日時:」「メールアドレス:」などのフォームの項目は見出しにしない
+     「宛先:」(To:) と「件名:」(Subject:) の行が続くもの。差出人の行にアドレスが無いときは「送信日時:」
+     (Sent:) のときだけ (Outlook は社内の人のアドレスを書かない)。「日時:」「メールアドレス:」などの
+     フォームの項目や、見出しの下が「お問い合わせ内容:」のような項目のものは見出しにしない。
+     新しく書いた所に「以下、インラインにて回答いたします」「文中失礼いたします」「以下のメールが来ました」
+     などとあるときや、前のメールに「→ 可能です」「【回答】」と答えを書き込んでいるときは畳まない
    見つからないとき・畳むと何も残らないとき・転送のメール (転送した中身が本文)・HPフォームから
    届いたメールは、畳まずに全部出す。文字は esc() を通してから HTML にする */
 // 引用: ここから
@@ -1716,6 +1723,8 @@ const Q_LONG_CHARS = 600;
 const qMark = l => /^[ \t\u3000]*[>＞]/.test(l);
 const qBlank = l => !/\S/.test(l);
 const Q_WIDE = /^[ \t\u3000]*＞/;   // 全角の「＞」(人が箇条書きの印に使う。メールソフトの引用は半角の「>」)
+// メールソフトの引用にある行 (前のメールの空行を引用した「>」だけの行・引用の引用の「>>」)
+const Q_MAIL_MARK = /^[ \t]*>[ \t]*(?:>|$)/;
 // ここから下は全部が前のメール
 const Q_SEP = /^[ \t]*[-_=]{2,}[ \t]*(?:original message|元のメッセージ|オリジナル ?メッセージ|元メッセージ)[ \t]*[-_=]{2,}[ \t]*$/i;
 const Q_LINE = /^[ \t]*[-_=─━]{5,}[ \t]*$/;     // Outlook の見出しの上の線
@@ -1727,27 +1736,57 @@ const Q_FROM = /^[ \t*]*(?:from|差出人|送信者)[ \t*]*[:：]/i;
 const Q_DATE = /^[ \t*]*(?:sent|date|送信日時|日付)[ \t*]*[:：]/i;
 const Q_SENT = /^[ \t*]*(?:sent|送信日時)[ \t*]*[:：]/i;
 const Q_TO = /^[ \t*]*(?:to|宛先|宛て先)[ \t*]*[:：]/i;
-const Q_HDR = /^[ \t*]*(?:subject|件名|cc|bcc|reply-to|重要度|importance|添付|attachments?)[ \t*]*[:：]/i;
+const Q_SUBJ = /^[ \t*]*(?:subject|件名)[ \t*]*[:：]/i;
+const Q_HDR = /^[ \t*]*(?:cc|bcc|reply-to|重要度|importance|添付|attachments?)[ \t*]*[:：]/i;
 const Q_LABEL = /^[ \t*]*[^\s:：@<>]{1,30}[ \t*]*[:：]/;   // 「項目:」で始まる行 (折り返した宛先の続きではない)
-// 「>」の引用のすぐ上の、誰がいつ書いたかの行
-const Q_ATTR = /(?:wrote|書きました)[ \t]*[:：][ \t]*$|のメール[ \t]*[:：][ \t]*$|@[^\s<>]+>[ \t]*[:：][ \t]*$|^[ \t]*\d{4}[年\/.\-]\d{1,2}[月\/.\-]\d{1,2}.*\d{1,2}:\d{2}.*[:：][ \t]*$/i;
+// 新しく書いた所の、答えや中身が前のメールの中 (区切り・見出しから下) にあるという言葉。これがあれば
+// 区切り・見出しから下を畳まない (「以下、インラインにて回答いたします」「文中失礼いたします」
+// 「赤字で回答しました」、見出しごと貼り付けた転送の「以下のメールが来ました」「転送します」)
+const Q_KEEP = /インライン|inline|see below|(?:answers?|comments?|responses?) below|文中(?:に|にて|で)?(?:失礼|ご?回答|返答|お答え|コメント)|(?:赤|青|緑)(?:字|文字)(?:で|にて)|(?:以下|下記).{0,12}(?:回答|返答|お答え|コメント)|下に.{0,8}(?:回答|返答|お答え|記入|記載|書き)|(?:以下|下記)の?メール|転送(?:し|いたし|致し|させ)/i;
+// 前のメールに書き込んだ答えの印 (行の頭の「→ 可能です」「【回答】〜」「回答: 〜」)
+const Q_ANSWER = /^[ \t\u3000]*(?:→|⇒|【(?:ご?回答|返答|お答え)】|(?:ご?回答|返答|A)[ \t]*[:：])/i;
+// 「>」の引用のすぐ上の、誰がいつ書いたかの行。メールソフトが書くものだけ: 「〜 wrote:」「〜さんは書きました:」、
+// iPhone の「〜 <アドレス>のメール:」、Gmail の「2026年10月27日(月) 10:00 山田 <アドレス>:」。
+// 「山田様からのメール：」「作業報告を書きました：」「2026年11月3日 10:00からの作業内容：」のような、
+// 自分で書いた文は入れない (下の「＞」の箇条書きや、お客様の言葉の写しと一緒に畳んでしまう)
+const Q_ATTR = /\bwrote[ \t]*[:：][ \t]*$|さん[ \t]*は書きました[ \t]*[:：][ \t]*$|@[^\s<>]+>?[ \t]*のメール[ \t]*[:：][ \t]*$|@[^\s<>]+>[ \t]*[:：][ \t]*$/i;
 // 2行に折り返した、誰が書いたかの行の前の行 (「On 〜2026〜」か日付で始まる) と、続きの行の頭のアドレス
 const Q_ATTR_HEAD = /^[ \t]*(?:on[ \t].*\d{4}|\d{4}[年\/.\-])/i;
 const Q_ATTR_ADDR = /^[ \t]*<?[^\s<>@]+@[^\s<>]+>/;
 const Q_ATTR_END = /[。．.!?！？:：][ \t]*$/;   // 文の終わり (ここで終わる行は、新しく書かれた文)
 
 // 差出人の行 (i) から下が見出しか。見出しの行が空行を挟まずに続く所だけを見て、
-// 送った日時と宛先の行があれば見出し。差出人の行にアドレスが無ければ、日時は「送信日時:」(Sent:) だけ
+// 送った日時・宛先・件名の行があれば見出し (Outlook などは件名を必ず書く)。差出人の行にアドレスが
+// 無ければ、日時は「送信日時:」(Sent:) だけ。見出しの下 (空行は飛ばす) が「お問い合わせ内容:」
+// 「Message:」のような項目なら、フォームや知らせの中身なので見出しにしない (前のメールの本文は
+// 「山田様」のような文で始まる)
 function qHeaderAt(lines, i, end) {
   if (!Q_FROM.test(lines[i])) return false;
-  let date = false, sent = false, to = false;
-  for (let k = i + 1; k < end; k++) {
+  let date = false, sent = false, to = false, subj = false, k = i + 1;
+  for (; k < end; k++) {
     const l = lines[k];
     if (Q_DATE.test(l)) { date = true; sent = sent || Q_SENT.test(l); }
     else if (Q_TO.test(l)) to = true;
+    else if (Q_SUBJ.test(l)) subj = true;
     else if (!Q_HDR.test(l) && !(l.includes("@") && !Q_LABEL.test(l))) break;   // 宛先の続きでもない
   }
-  return date && to && (sent || lines[i].includes("@"));
+  if (!(date && to && subj && (sent || lines[i].includes("@")))) return false;
+  while (k < end && qBlank(lines[k])) k++;
+  return !(k < end && Q_LABEL.test(lines[k]));
+}
+// 区切り・見出し (s) のすぐ下の前のメール (この返信が答えているメール) に、答えを書き込んだ印があるか。
+// 次の区切り・見出しまでを見る (もっと前のやり取りに書き込んだ答えは、前に読んだもの)
+function qAnswered(lines, s, end) {
+  let k = s + 1;
+  // 見出しの行 (差出人・送信日時・宛先・件名とその続き) と空行は飛ばす
+  while (k < end && (qBlank(lines[k]) || Q_FROM.test(lines[k]) || Q_DATE.test(lines[k]) ||
+         Q_TO.test(lines[k]) || Q_SUBJ.test(lines[k]) || Q_HDR.test(lines[k]) ||
+         (lines[k].includes("@") && !Q_LABEL.test(lines[k])))) k++;
+  for (; k < end; k++) {
+    if (Q_SEP.test(lines[k]) || Q_LINE.test(lines[k]) || Q_FWD.test(lines[k]) || qHeaderAt(lines, k, end)) break;
+    if (Q_ANSWER.test(lines[k])) return true;
+  }
+  return false;
 }
 // 「>」の引用の始まり (すぐ上の「〜 wrote:」の行も含める。空行は1行まで飛ばす)。
 // 調べるのは短い行だけ (とても長い1行で、調べるのに時間がかからないように)
@@ -1758,6 +1797,8 @@ function qAttrStart(lines, s, floor) {
   if (p < floor || lines[p].length > Q_ATTR_MAX || !Q_ATTR.test(lines[p])) return s;
   const a = lines[p], h = p - 1 >= floor ? lines[p - 1] : "";
   if (qBlank(h) || h.length > Q_ATTR_MAX || Q_ATTR.test(h)) return p;
+  // 折り返した行の上は、どのメールソフトも空行 (か本文の始まり)。空行でなければ、上の行は新しく書いた文
+  if (p - 2 >= 0 && !qBlank(lines[p - 2])) return p;
   // 上の行もつなげるのは、2行に折り返したと分かるときだけ (新しく書いた文を引用に入れない):
   // 上の行が「<」で終わる・この行がアドレスで始まる (名前とアドレスの所で折り返した)、
   // 上の行が「On 〜2026〜 10:00」「2026年10月27日(月) 10:00」で文の終わりが無く、この行にアドレスがある
@@ -1773,9 +1814,10 @@ function splitQuotes(text, opts = {}) {
   const lines = whole[0].t.split(/\r\n?|\n/);
   const n = lines.length;
   // 転送の印があれば、そこから下は見ない。前のメールの区切り・見出しがあれば、そこから下は全部引用
-  let limit = n, tail = -1;
+  let limit = n, tail = -1, keep = false;
   for (let i = 0; i < n; i++) {
     if (Q_FWD.test(lines[i])) { limit = i; break; }
+    keep = keep || (!qMark(lines[i]) && Q_KEEP.test(lines[i]));
     if (Q_SEP.test(lines[i])) { tail = i; break; }
     if (qHeaderAt(lines, i, n)) {
       tail = i;
@@ -1785,16 +1827,25 @@ function splitQuotes(text, opts = {}) {
       break;
     }
   }
-  if (tail >= 0) limit = tail;
+  if (tail >= 0) {
+    limit = tail;
+    // 新しく書いた所に「以下、インラインにて回答いたします」などとある・前のメールに答えを書き込んで
+    // いる (「→ 可能です」) ときは、区切り・見出しから下にも新しく書いた文があるので畳まない
+    if (keep || qAnswered(lines, tail, n)) tail = -1;
+  }
   // 「>」の行が続く所 (間の空行も含める) を集める
   const runs = [];
   for (let i = 0; i < limit;) {
     if (!qMark(lines[i])) { i++; continue; }
-    let last = i, marks = 0, chars = 0, wide = false;
+    let last = i, marks = 0, chars = 0, wide = false, mail = false;
     for (let j = i; j < limit && (qMark(lines[j]) || qBlank(lines[j])); j++) {
-      if (qMark(lines[j])) { last = j; marks++; chars += lines[j].length; wide = wide || Q_WIDE.test(lines[j]); }
+      if (qMark(lines[j])) {
+        last = j; marks++; chars += lines[j].length;
+        wide = wide || Q_WIDE.test(lines[j]);
+        mail = mail || Q_MAIL_MARK.test(lines[j]);
+      }
     }
-    runs.push({ s: i, e: last, marks, chars, wide });
+    runs.push({ s: i, e: last, marks, chars, wide, mail });
     i = last + 1;
   }
   // 新しく書かれた所の一番下の行 (前のメールの区切り・転送の印より上で、空行でない最後の行)
@@ -1810,7 +1861,10 @@ function splitQuotes(text, opts = {}) {
     const long = r.marks >= Q_LONG_LINES || r.chars >= Q_LONG_CHARS;
     // 一番下 (下は空行だけ)。誰が書いたかの行が無ければ、上の文との間に空行があるときだけ
     const atBottom = r.e >= bottom && (attr || r.s === 0 || qBlank(lines[r.s - 1]));
-    if ((attr || !r.wide) && (long || (big && (atBottom || (attr && !mixed))))) ranges.push([start, r.e]);
+    // 誰が書いたかの行が無いときは、メールソフトの引用と分かるものだけ (半角の「>」で、中に「>」だけの行か
+    // 「>>」の行がある、か600文字以上)。「> 11/3 渋谷A」のような自分で書いた箇条書きは畳まない
+    const looks = attr || (!r.wide && (r.mail || r.chars >= Q_LONG_CHARS));
+    if (looks && (long || (big && (atBottom || (attr && !mixed))))) ranges.push([start, r.e]);
     floor = r.e + 1;
   }
   if (tail >= 0) ranges.push([tail, n - 1]);

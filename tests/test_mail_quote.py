@@ -4,8 +4,10 @@
   (「>」の行・「〜 wrote:」「〜さんは書きました:」・Gmail / iPhone の日本語の書き方・
   「-----Original Message-----」・Outlook の「差出人: / 送信日時: / 宛先: / 件名:」)
 - 相手が新しく書いた所は畳まないこと: フォーム・予約の知らせの「差出人:」「日時:」の項目、
-  文の中の「From: / To: / Date:」、「〜 wrote:」のすぐ上の文、「書きました」で終わる文、
-  「＞」の箇条書き、引用と答えを交互に書いたメールの質問の引用
+  文の中の「From: / To: / Date:」、件名の無い見出しの形・見出しの下が「お問い合わせ内容:」の項目、
+  「〜 wrote:」のすぐ上の文 (空行の無い所)、「書きました」「〜のメール：」や日時で終わる自分の文、
+  「＞」の箇条書き、誰が書いたかの行の無い「> 11/3 渋谷A」のような箇条書き、引用と答えを交互に
+  書いたメールの質問の引用、「以下、インラインにて回答いたします」として前のメールに書き込んだ答え
 - 畳まないもの: 引用が無い・短い引用 (途中に挟んだもの)・全部が引用・転送・HPフォーム
 - とても長い本文でも、すぐに分けられること
 - 文字は esc() を通してから HTML にすること (本文の <script> などを動かさない)
@@ -70,14 +72,25 @@ def test_quote_styles_are_folded(client):
         # Becky! など「〜さんは書きました:」・全角の「＞」
         "becky": ["はい\n\n山田さんは書きました:\n" + QUOTE.replace(">", "＞"), {}],
         # 改行が CRLF
-        "crlf": ["了解\r\n\r\n" + QUOTE.replace("\n", "\r\n"), {}],
+        "crlf": ["了解\r\n\r\n" + (QUOTE + "\n>").replace("\n", "\r\n"), {}],
         # Gmail (英語) が日時の後で折り返したもの・Gmail (日本語) が名前の後で折り返したもの
         "gmail_en2": ["OK\n\nOn Mon, Oct 27, 2026 at 10:00 AM\nTaro Yamada <taro@example.com> wrote:\n"
                       + QUOTE, {}],
         "gmail_jp2": ["承知しました。\n\n2026年10月27日(月) 10:00 山田太郎\n<taro@example.com>:\n\n"
                       + QUOTE, {}],
         # スマホの返信: 誰が書いたかの行が無く、本文の一番下 (空行の後) に「>」の引用
-        "mobile": ["了解です。明日伺います。\n\n" + QUOTE + "\n\n", {}],
+        # (前のメールの空行を引用した「>」だけの行がある)
+        "mobile": ["了解です。明日伺います。\n\n" + QUOTE + "\n>\n> 山田\n\n", {}],
+        # 引用の引用 (「>>」) がある
+        "nested": ["了解です。\n\n> 11/3でお願いします\n>> 何日がいいですか\n>> 山田\n> 黒須", {}],
+        # ほかの書き方: iPhone (名前が無い)・Thunderbird (日本語)・Becky! (英語の2行)・Gmail (英語) が
+        # 名前の途中で折り返したもの
+        "iphone_addr": ["了解です\n\n2026/10/27 10:00、taro@example.com のメール:\n\n" + QUOTE, {}],
+        "tb_jp": ["はい\n\n2026/10/27 10:00 に 山田 太郎 さんは書きました:\n" + QUOTE, {}],
+        "becky_en": ["はい\n\nOn Mon, 27 Oct 2026 10:00:00 +0900\nTaro Yamada <taro@example.com> wrote:\n"
+                     + QUOTE, {}],
+        "gmail_en3": ["OK\n\nOn Mon, Oct 27, 2026 at 10:00 AM Taro\nYamada <taro@example.com> wrote:\n"
+                      + QUOTE, {}],
     })
     assert out["gmail_jp"] == [
         (False, "承知しました。\n\n黒須"),
@@ -88,14 +101,24 @@ def test_quote_styles_are_folded(client):
     assert out["iphone"] == [
         (False, "了解です"), (True, "2026/10/27 10:00、山田 太郎 <taro@example.com>のメール:\n\n" + QUOTE)]
     assert out["becky"] == [(False, "はい"), (True, "山田さんは書きました:\n" + QUOTE.replace(">", "＞"))]
-    assert out["crlf"] == [(False, "了解"), (True, QUOTE)]
+    assert out["crlf"] == [(False, "了解"), (True, QUOTE + "\n>")]
     assert out["gmail_en2"] == [
         (False, "OK"),
         (True, "On Mon, Oct 27, 2026 at 10:00 AM\nTaro Yamada <taro@example.com> wrote:\n" + QUOTE)]
     assert out["gmail_jp2"] == [
         (False, "承知しました。"),
         (True, "2026年10月27日(月) 10:00 山田太郎\n<taro@example.com>:\n\n" + QUOTE)]
-    assert out["mobile"] == [(False, "了解です。明日伺います。"), (True, QUOTE)]
+    assert out["mobile"] == [(False, "了解です。明日伺います。"), (True, QUOTE + "\n>\n> 山田")]
+    assert out["nested"] == [(False, "了解です。"),
+                             (True, "> 11/3でお願いします\n>> 何日がいいですか\n>> 山田\n> 黒須")]
+    assert out["iphone_addr"] == [
+        (False, "了解です"), (True, "2026/10/27 10:00、taro@example.com のメール:\n\n" + QUOTE)]
+    assert out["tb_jp"] == [(False, "はい"), (True, "2026/10/27 10:00 に 山田 太郎 さんは書きました:\n" + QUOTE)]
+    assert out["becky_en"] == [
+        (False, "はい"),
+        (True, "On Mon, 27 Oct 2026 10:00:00 +0900\nTaro Yamada <taro@example.com> wrote:\n" + QUOTE)]
+    assert out["gmail_en3"] == [
+        (False, "OK"), (True, "On Mon, Oct 27, 2026 at 10:00 AM Taro\nYamada <taro@example.com> wrote:\n" + QUOTE)]
 
 
 def test_whole_previous_message_is_folded(client):
@@ -110,6 +133,10 @@ def test_whole_previous_message_is_folded(client):
     # 宛先の続きの行の後に日時 (Outlook for Mac など「Date:」の書き方)
     mac = ("From: Taro <t@example.com>\nTo: a@example.com; b@example.com;\n c@example.com\n"
            "Date: Monday, October 27, 2026 at 10:00\nSubject: x\n\nold")
+    # もっと前のやり取り (前のメールの下に続くもの) に書き込んだ答え
+    older = ("________________________________\n差出人: 鈴木 <suzuki@example.com>\n"
+             "送信日時: 2026年10月19日 9:00\n宛先: info@example.com\n件名: 清掃\n\n"
+             "1. 清掃は可能ですか？\n→ 可能です。")
     out = _split(client, {
         "orig": ["了解です\n\n-----Original Message-----\nFrom: a@example.com\nSent: x\n\n前の本文", {}],
         "orig_jp": ["了解です\n\n----- 元のメッセージ -----\n前の本文", {}],
@@ -122,6 +149,11 @@ def test_whole_previous_message_is_folded(client):
         "mac": ["Thanks\n\n" + mac, {}],
         # 見出しの前の「>」の引用も畳む (別々に。誰が書いたかの行があるもの)
         "both": ["はい\n\n山田さんは書きました:\n" + QUOTE + "\n\nいいえ\n\n-----Original Message-----\n前", {}],
+        # ふつうの返信の言葉 (「以下の内容で」「ご回答ありがとう」) や署名の「転送を禁じます」では止めない
+        "ok": ["以下の内容で承知しました。\nご回答ありがとうございます。\n\n--\n黒須\n本メールの無断転送を禁じます。"
+               "\n\n" + outlook, {}],
+        # 答えを書き込んだのが、もっと前のやり取り (2つ目の見出しの下) なら畳む
+        "older": ["承知しました。\n\n" + outlook + "\n\n" + older, {}],
     })
     assert out["orig"] == [(False, "了解です"),
                            (True, "-----Original Message-----\nFrom: a@example.com\nSent: x\n\n前の本文")]
@@ -137,10 +169,16 @@ def test_whole_previous_message_is_folded(client):
     assert out["mac"] == [(False, "Thanks"), (True, mac)]
     assert out["both"] == [(False, "はい"), (True, "山田さんは書きました:\n" + QUOTE), (False, "いいえ"),
                            (True, "-----Original Message-----\n前")]
+    assert out["ok"] == [
+        (False, "以下の内容で承知しました。\nご回答ありがとうございます。\n\n--\n黒須\n本メールの無断転送を禁じます。"),
+        (True, outlook)]
+    assert out["older"] == [(False, "承知しました。"), (True, outlook + "\n\n" + older)]
 
 
 def test_new_text_is_never_folded(client):
     """相手が新しく書いた所 (依頼・予約の知らせの中身・答え) は、引用に見えても畳まない."""
+    hdr = ("________________________________\n差出人: 山田太郎 <taro@example.com>\n"
+           "送信日時: 2026年10月27日 10:00\n宛先: info@bicsminpaku.com\n件名: 清掃の件\n\n")
     cases = {
         # HPのお問い合わせの知らせ (フォーム経由と分からないもの): 送信者・メールアドレス・送信日時・件名の項目
         "form_lead": "ホームページからお問い合わせがありました。\n\n送信者: 山田\nメールアドレス: yamada@example.com\n"
@@ -173,6 +211,51 @@ def test_new_text_is_never_folded(client):
                        "> 5. 備品\n3と4は確認します。",
         # 誰が書いたかの行が無い「>」の所が一番下にあっても、上の文とのあいだに空行が無ければ畳まない
         "no_gap": "了解です。\n" + QUOTE,
+        # 自分で書いた「〜のメール：」「〜を書きました：」「日時〜：」の下の、お客様の言葉の写しや箇条書き
+        # (メールソフトが書く「〜 wrote:」「〜さんは書きました:」「<アドレス>のメール:」ではない)
+        "relay": "オーナーの山田です。\n山田様からのメール：\n＞チェックイン時に鍵が見つかりませんでした。\n"
+                 "＞30分外で待ちました。\n＞返金をお願いしたいです。\n＞連絡ください。\n至急対応お願いします。",
+        "relay_hw": "ゲストのメール：\n> 部屋に髪の毛が落ちていました。\n> タオルが足りません。\n"
+                    "> エアコンが壊れています。\n> 鍵が固いです。\n対応方針を今日中に教えてください。",
+        "report": "作業報告を書きました：\n＞清掃完了 10:30\n＞リネン交換済み\n＞備品補充済み\n＞破損なし\nご確認ください。",
+        "report_hw": "お疲れ様です。\n下記のとおり報告書を書きました:\n> 101 清掃完了\n> 102 清掃完了\n"
+                     "> 103 リネン不足\n> 104 鍵の返却なし\n対応をお願いします。",
+        "date_time": "お世話になっております。\n2026年11月3日(火) 10:00からの作業内容：\n＞鍵の受け取り\n"
+                     "＞リビング・寝室の清掃\n＞リネン交換\n＞完了報告（写真付き）\nよろしくお願いします。",
+        "date_time_hw": "お世話になっております。\n2026/11/03 10:00 の作業予定：\n> 鍵の受け取り\n"
+                        "> リビング・寝室の清掃\n> リネン交換\n> 完了報告（写真付き）\nよろしくお願いします。",
+        "date_time_end": "了解です。\n2026年11月3日 10:00からの作業予定は以下のとおりです：\n> 鍵の受け取り\n"
+                         "> 清掃\n> 点検\n> 完了の報告",
+        # 誰が書いたかの行が無い半角の「>」の箇条書き (「>」だけの行・「>>」の行が無い)。
+        # 一番下 (空行の後) でも、10行以上でも畳まない
+        "hw_list_end": "来週の予定です。\n\n> 11/3 渋谷A\n> 11/4 新宿B\n> 11/5 池袋C\n> 11/6 品川D\n> 11/7 上野E",
+        "hw_report_end": "作業報告書を書きました。\n\n> 清掃完了 10:30\n> リネン交換済み\n> 備品補充済み\n> 破損なし",
+        "hw_list_long": "以下の物件の清掃をお願いします。\n"
+                        + "\n".join(f"> 渋谷A 10{i} 11/{i} 10:00" for i in range(1, 11)) + "\nよろしくお願いします。",
+        # 見出しの形でも件名が無いもの (予約サイトが送ってきたゲストの言葉・文の中の From / To / 日付)
+        "relay_msg": "ゲストからメッセージが届きました。\n\nFrom: John Smith <john.smith.1234@guest.booking.com>\n"
+                     "Date: 2026-10-30 10:00\nTo: BICS Shibuya A\nMessage:\n"
+                     "Can we check in early at 11am? We arrive at Haneda at 8am.",
+        "prose_addr": "鍵の受け渡しについて\nFrom: yamada@example.com（オーナー）\nTo: 清掃スタッフ\n"
+                      "日付: 11月3日 10:00\n以上でお願いします。",
+        # 見出しの形で件名もあるが、下が「お問い合わせ内容:」の項目 (フォームの知らせ)
+        "form_hdr": "以下の内容でお問い合わせを受け付けました。\n\n差出人: 山田太郎 <yamada@example.com>\n"
+                    "宛先: info@bicsminpaku.com\n送信日時: 2026/11/03 10:00\n件名: 清掃のご依頼\n\n"
+                    "お問い合わせ内容:\n来週の清掃をお願いしたいです。",
+        # 前のメールの中に答えを書き込んだもの (「以下、インラインにて回答」「赤字で回答」と書いてある・
+        # 「→」「【回答】」の印がある)。見出しごと貼り付けた転送 (件名に FW: が無い)
+        "inline_hdr": "お世話になっております。\n以下、インラインにて回答いたします。\n\n" + hdr
+                      + "1. 11/3の清掃は可能ですか？\n→ 可能です。10時に伺います。\n2. 料金は？\n→ 8,000円です。",
+        "red": "ご質問に赤字で回答しました。\n\n" + hdr + "鍵はどこに置けばよいですか？\nキーボックスに入れておきます。",
+        "bunchu": "文中失礼いたします。\n\n" + hdr + "鍵はどこに置けばよいですか？\nキーボックスに入れておきます。",
+        "arrow": "お世話になっております。\n\n" + hdr + "1. 11/3の清掃は可能ですか？\n→ 可能です。10時に伺います。",
+        "kakko": "お世話になっております。\n\n" + hdr + "鍵はどこに置けばよいですか？\n【回答】キーボックスに入れておきます。",
+        "inline_sep": "以下、インラインで回答します。\n\n-----Original Message-----\nFrom: a@example.com\nSent: x\n\n"
+                      "清掃は可能ですか？\n可能です。",
+        "manual_fwd": "管理会社から以下のメールが来ました。対応をお願いできますか。\n\n"
+                      + hdr.replace("山田太郎 <taro@example.com>", "〇〇管理 <kanri@example.com>")
+                      + "101号室のゲストが燃えるゴミを月曜に出しています。",
+        "fwd_word": "ゲストからの苦情を転送します。\n\n" + hdr + "部屋が汚れていました。返金してください。",
     }
     out = _split(client, {k: [t, {}] for k, t in cases.items()})
     for name, text in cases.items():
@@ -191,6 +274,12 @@ def test_attribution_does_not_take_new_text(client):
         "gmail_jp": ["承知しました。\n2026/11/03 は10時に伺います", jp_attr],
         "gmail_jp_time": ["承知しました。\n2026/11/03 10:00 に伺います", jp_attr],
         "addr": ["承知しました。\n明日の10:00に伺います。", "<taro@example.com> wrote:"],
+        # 年で始まり「。」の無い文のすぐ下に、アドレスのある1行の「〜 wrote:」(折り返しなら上は空行)
+        "year_addr": ["承知しました\n2026年11月3日 10:00に伺います", "山田太郎 <taro@example.com> wrote:"],
+        "year_addr_only": ["承知しました\n2026年11月3日 10:00 に伺います", "taro@example.com wrote:"],
+        "en_year_addr": ["Sure.\nOn Nov 3, 2026 we can come at 10:30", "Taro Yamada <taro@example.com> wrote:"],
+        # 前の「>」の所のすぐ下 (空行なし) に書いた答え
+        "after_quote": ["> 何時ごろですか\n> 鍵は？\n2026年11月3日 10:00に伺います", "山田太郎 <taro@example.com> wrote:"],
     }
     out = _split(client, {k: [new + "\n" + attr + "\n" + q4, {}] for k, (new, attr) in cases.items()})
     for name, (new, attr) in cases.items():
@@ -198,7 +287,7 @@ def test_attribution_does_not_take_new_text(client):
 
 
 def test_long_quotes_and_inline_replies(client):
-    long_q = "\n".join(f"> 前のメールの{i}行目" for i in range(1, 13))
+    long_q = "\n".join(f"> 前のメールの{i}行目" for i in range(1, 13)) + "\n>\n> 山田"
     sig = "--\n黒須"
     cases = {
         # とても長い引用は、誰が書いたかの行が無くても・本文の途中でも畳む
@@ -250,9 +339,15 @@ def test_what_is_not_folded(client):
 
 def test_long_single_line_quote_is_folded(client):
     long_line = "> " + "あ" * 320
-    out = _split(client, {"long": ["はい\n\n" + long_line, {}], "short": ["はい\n\n> " + "あ" * 50, {}]})
-    assert out["long"] == [(False, "はい"), (True, long_line)]
+    very_long = "> " + "あ" * 620
+    attr = "山田さんは書きました:\n"
+    out = _split(client, {"long": ["はい\n\n" + attr + long_line, {}], "short": ["はい\n\n> " + "あ" * 50, {}],
+                          "very_long": ["はい\n\n" + very_long, {}], "no_attr": ["はい\n\n" + long_line, {}]})
+    assert out["long"] == [(False, "はい"), (True, attr + long_line)]
+    assert out["very_long"] == [(False, "はい"), (True, very_long)]
+    # 誰が書いたかの行が無く、600文字より短い1行は、自分で書いたものかもしれないので畳まない
     assert out["short"] == [(False, "はい\n\n> " + "あ" * 50)]
+    assert out["no_attr"] == [(False, "はい\n\n" + long_line)]
 
 
 def test_split_quotes_is_fast_on_huge_input(client):
@@ -279,7 +374,7 @@ console.log(JSON.stringify(o));""")
 def test_body_html_escapes_text_and_toggles(client):
     page = client.get("/mail").text
     out = _run(page, r"""
-const t = "hi <b>x</b> & 'q'\n\n> <script>alert(1)</script>\n> 2\n> 3\n> 4";
+const t = "hi <b>x</b> & 'q'\n\n> <script>alert(1)</script>\n> 2\n>\n> 4";
 quoteOpen.add("k:1");
 console.log(JSON.stringify({
   closed: bodyHtml(t), open: bodyHtml(t, { key: "k" }), plain: bodyHtml("<img src=x onerror=alert(1)>"),
@@ -289,7 +384,7 @@ console.log(JSON.stringify({
         "hi &lt;b&gt;x&lt;/b&gt; &amp; &#39;q&#39;"
         '<button type="button" class="ghost q-tg" aria-expanded="false" data-lines="4">'
         "▼ 引用を表示（前のやり取り・4行）</button>"
-        '<div class="q-body" hidden>&gt; &lt;script&gt;alert(1)&lt;/script&gt;\n&gt; 2\n&gt; 3\n&gt; 4'
+        '<div class="q-body" hidden>&gt; &lt;script&gt;alert(1)&lt;/script&gt;\n&gt; 2\n&gt;\n&gt; 4'
         '<button type="button" class="ghost q-end">▲ 引用を隠す</button></div>')
     # key を付けたものは、開いたことを覚えていれば開いたまま描く
     assert 'aria-expanded="true" data-lines="4" data-qk="k:1">▲ 引用を隠す</button><div class="q-body">' in out["open"]

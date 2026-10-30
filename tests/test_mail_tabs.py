@@ -8,7 +8,7 @@
   「状態」で未対応か確認待ちを選んでいるときはその状態だけ) と権限
 - 未分類のメールが無くても、タブの数を数えるのに表を全部読まないこと (種類の索引)
 - hide_low=1 (受信箱の「重要度」の「高・中」) で優先度[低]を一覧・タブの数から外すこと。
-  確認待ちの[低]は外さないこと
+  確認待ちの[低]と、差し戻した[低] (メール担当者が直して頼み直す) は外さないこと
 - 画面にタブと並び順の切り替えがあること
 """
 from datetime import datetime, timedelta, timezone
@@ -428,6 +428,35 @@ def test_hide_low_tab_counts(client, users, tmp_path):
     assert t["has_uncategorized"] is True
 
 
+def test_hide_low_keeps_sent_back_mail(client, users, tmp_path):
+    """差し戻した[低]のメールは、「高・中」の表示でもメール担当者に出す (差し戻しとコメントに気付くように)."""
+    _, admin, staff = users
+    mid = _add_mail(tmp_path, n=1, priority=2)
+    low = _add_mail(tmp_path, n=2, priority=3)
+    back = _add_mail(tmp_path, n=3, priority=3, status="pending_approval")
+    # メール担当者が確認をお願いし、管理者が差し戻す (未対応に戻り、コメントが付く)
+    _set(tmp_path, back, requested_by="suzuki", draft_reply="下書き")
+    r = client.post(f"/api/mail/{back}/send-back", json={"note": "宛名を直してください"}, headers=auth(admin))
+    assert r.status_code == 200, r.text
+    # 返信済み・対応不要にしたものは、差し戻しのコメントが残っていても出さない
+    done = _add_mail(tmp_path, n=4, priority=3, status="archived")
+    _set(tmp_path, done, return_note="前のコメント")
+    for user in (admin, staff):
+        r = client.get("/api/mail?status=unhandled&hide_low=1", headers=auth(user))
+        assert r.status_code == 200, r.text
+        rows = {m["id"]: m for m in r.json()}
+        assert set(rows) == {back, mid} and rows[back]["returned"] is True
+        assert r.headers["X-Hidden-Low"] == "1"   # 差し戻していない[低] (low) だけ
+        r = client.get("/api/mail?hide_low=1", headers=auth(user))
+        assert {m["id"] for m in r.json()} == {back, mid} and r.headers["X-Hidden-Low"] == "2"
+        # タブの数も一覧とそろえる
+        assert _tabs(client, user, "?status=unhandled&hide_low=1")["all"] == 2
+        assert _tabs(client, user, "?hide_low=1")["all"] == 2
+    # 頼み直すと確認待ちに戻り、コメントは消える (確認待ちなので[低]でも出す)
+    _set(tmp_path, back, status="pending_approval", return_note="")
+    assert _ids(client, admin, "?hide_low=1") == [back, mid]
+
+
 def test_mail_page_hides_low_by_default_and_colors_priority(client):
     page = client.get("/mail").text
     # 「重要度」の切り替え: 既定は「高・中」。このブラウザに覚えておく
@@ -446,7 +475,9 @@ def test_mail_page_hides_low_by_default_and_colors_priority(client):
     # 一覧を取るので、タブの数と一覧が同じ絞り込みになる)
     assert "syncSearchStatus(word);\n  showInbox().catch(() => {});" in page
     assert "searchStatus = null;" in page[page.index("function showPending() {"):page.index("$(\"approval-show\")")]
-    assert "確認待ちのメールは低でも出します" in page
+    assert "確認待ちと差し戻したメールは低でも出します" in page
+    # 指で押す画面では、並び順・重要度のボタンを押しやすい高さにする
+    assert "@media (pointer: coarse) { .sort-tg button { min-height: 40px; padding: .45rem .7rem; } }" in page
     assert page.count('hiddenLow = Number(r.headers.get("X-Hidden-Low")) || 0;') == 2
     assert 'id="low-note" class="low-note" role="status" hidden' in page
     assert '[inboxHiddenLow > 0, "「重要度」"]' in page
