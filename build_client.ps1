@@ -3,9 +3,17 @@
 #
 #   使い方:  PowerShell で  .\build_client.ps1
 #
-# 完成物:  dist\zatsumu.exe  (Python のインストール不要で配布できる)
-# 配布時は exe と同じフォルダに zatsumu_config.json を置き、サーバ URL を記載:
+# 完成物:  dist\勤怠管理\ (フォルダ版) と dist\勤怠管理.zip (それを固めたもの)
+#          Python のインストール不要で配布できる。zatsumu.exe は作られない。
+#
+# 別ドメインで運用する場合は、ZIP を作り直す前に
+#   dist\勤怠管理\zatsumu_config.json  (勤怠管理.exe と同じ階層)
+# を作り、サーバ URL を記載する:
 #   { "server": "https://kintai.example.com" }
+# そのうえで  Compress-Archive -Path "dist\勤怠管理" -DestinationPath "dist\勤怠管理.zip" -Force
+# で ZIP を作り直す。ビルド直後の ZIP には入っていないので必ず作り直すこと。
+# 同梱しないと client/config.py の DEFAULT_SERVER が使われ、全員が既定の
+# 接続先へ打刻を送ってしまう。
 # 各メンバーは初回起動で自分のトークンを一度だけ入力すれば、以降はダブルクリックで着席。
 
 $ErrorActionPreference = "Stop"

@@ -1,6 +1,13 @@
 # Docker を使わずホストに Caddy を入れる場合の設定 (/etc/caddy/Caddyfile)。
 # kintai.example.com を実際のドメインに書き換える。
 # DNS が向いていれば Let's Encrypt の証明書を自動取得して HTTPS になる。
+#
+# 勤怠管理とメール対応は同じアプリ(127.0.0.1:8000)・同じDBで動き、
+# 1つのドメインのパス違いで開く。
+#   /admin → 勤怠管理   /me → 各自の打刻   /mail → メール対応
+#
+# メール画面だけ別のドメインで開きたい場合は、DEPLOY.md の
+# 「メール画面を別のドメインにしたい場合」を参照。
 
 kintai.example.com {
 	reverse_proxy 127.0.0.1:8000

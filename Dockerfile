@@ -13,6 +13,11 @@ ENV ZATSUMU_DATA_DIR=/data
 RUN useradd --create-home app && mkdir -p /data && chown app:app /data
 USER app
 
+# 版の名前 (git のコミット)。/healthz で返し、どの版が動いているかを外から確かめられるようにする。
+# 自動更新係 (deploy/auto-update) が渡す。最後の方に置き、依存のキャッシュを壊さない
+ARG ZATSUMU_VERSION=
+ENV ZATSUMU_VERSION=$ZATSUMU_VERSION
+
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" || exit 1
