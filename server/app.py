@@ -588,6 +588,10 @@ class MailArchiveBody(BaseModel):
     from_status: str
 
 
+class MailFlagBody(BaseModel):
+    on: bool   # true で★フラグを付ける・false で外す
+
+
 class MailUnarchiveBody(BaseModel):
     # 対応不要にする前の状態 (POST /api/mail/{id}/archive が返した previous_status) と、
     # そのとき対応不要にした時刻 (同じく archived_at。その後に変わっていないかを確かめる)
@@ -2496,6 +2500,8 @@ def audit_csv(
         "mail_update": "メール状態変更",
         "mail_archive": "メールを対応不要にした",
         "mail_unarchive": "メールの対応不要を元に戻した",
+        "mail_flag": "メールに★フラグを付けた",
+        "mail_unflag": "メールの★フラグを外した",
         "mail_report_send": "メールの週ごとのまとめを送信",
         "mail_notion": "メールをNotionに登録",
         "mail_account_create": "受信するメールアドレスを追加",
@@ -2623,6 +2629,16 @@ def _mail_summary(r, thread_count: int | None = None) -> dict:
         # 差し戻されて未対応に戻ったか (一覧に「差し戻し」を出す)
         "requested_by": r["requested_by"] if r["status"] == "pending_approval" else "",
         "returned": r["status"] == "unhandled" and bool(r["return_note"]),
+        # ★フラグ (みんなで共有) と、付けた時刻・人
+        "flagged": r["flagged_at"] is not None,
+        "flagged_at": r["flagged_at"],
+        "flagged_by": r["flagged_by"],
+        # 一覧の「↩ 返信済み」「✓ 対応不要」の横に出す、誰が (Webメール・Gmail から返信したものは
+        # reply_source) と、対応不要にした時刻 (いま返信済み・対応不要のときだけ)
+        "replied_by": r["replied_by"] if r["replied_at"] else "",
+        "reply_source": r["reply_source"] if r["replied_at"] else "",
+        "archived_at": r["archived_at"] if r["status"] == "archived" else None,
+        "archived_by": r["archived_by"] if r["status"] == "archived" else "",
     }
 
 
@@ -2742,9 +2758,10 @@ def _search_terms(q: str | None) -> list[str]:
 
 # 受信箱で[低]を出さない (hide_low) ときに出すメール。確認待ちは[低]でも出す (隠すと承認できない)。
 # 差し戻したメール (未対応に戻してコメントを付けたもの) も[低]でも出す (隠すとメール担当者が
-# 差し戻されたことに気付かない)
+# 差し戻されたことに気付かない)。★フラグを付けたメールも[低]でも出す (目立たせたくて付けた印)
 _LOW_SHOWN = ("(m.priority <> 3 OR m.status = 'pending_approval'"
-              " OR (m.status = 'unhandled' AND m.return_note <> ''))")
+              " OR (m.status = 'unhandled' AND m.return_note <> '')"
+              " OR m.flagged_at IS NOT NULL)")
 
 
 @app.get("/api/mail")
@@ -2758,6 +2775,7 @@ def list_mail(
     sort: str | None = None,
     q: str | None = None,
     hide_low: bool = False,
+    flagged: bool = False,
     user=Depends(require_mail_user),
     conn=Depends(get_conn),
 ):
@@ -2765,7 +2783,8 @@ def list_mail(
 
     category は種類の名前 (none で未分類)、assignee は担当の人の番号
     (none で担当なし、me で自分の担当)、account は届いたアドレスの番号
-    (none で削除したアドレス) で絞り込む。出すのは並べた順に500通まで
+    (none で削除したアドレス) で絞り込む。flagged=1 で★フラグを付けたメールだけ (「★ フラグ」の
+    タブ。ほかの絞り込みと一緒に効く)。出すのは並べた順に500通まで
     (新しい順なら新しい方の500通)。状態を送らず探してもいない (受信箱を開いたときの
     「状態：すべて」) ときは、対応が要るメール (未対応・確認待ち) を古くても先に入れ、
     残りに返信済み・対応不要の新しい方を入れる。
@@ -2777,7 +2796,8 @@ def list_mail(
     X-Search-Partial: 1 を入れる。
     hide_low=1 で優先度[低]のメールを出さない (受信箱の「重要度」の「高・中」。既定の表示)。
     ただし確認待ち (メール担当者からの確認のお願い) は、[低]でも出す (管理者が承認・差し戻しをする)。
-    差し戻したメールも[低]でも出す (メール担当者が直して頼み直す)。
+    差し戻したメールも[低]でも出す (メール担当者が直して頼み直す)。★フラグを付けたメールも
+    [低]でも出す (目立たせたくて付けた印)。
     そのときは、ほかの絞り込みに合うのに出さなかった[低]のメールの数をヘッダ X-Hidden-Low に入れる。
     """
     order = MAIL_SORTS.get(sort or "date")
@@ -2800,6 +2820,8 @@ def list_mail(
         where.append("m.category = ?")
         params.append("" if category == "none" else category)
     _mail_scope_filters(user, assignee, account, where, params)
+    if flagged:
+        where.append("m.flagged_at IS NOT NULL")
     # 名前を付けた取引先にまとめた相手には、取引先の名前も出す (決まりは表から1回だけ読む)
     g = clients.Grouping(conn)
     search = None
@@ -2913,9 +2935,10 @@ def _mail_tab_counts(conn, user, status: str | None, assignee: str | None,
     担当・届いたアドレスの絞り込み (受信箱で選んでいるもの) は一覧と同じに効かせる。
     categories は種類の名前ごとの数 (未分類は入れず uncategorized に)、high は優先度[高]の数、
     has_uncategorized は未分類のメールが (返信済みなども含めて) 1通でもあるか (「未分類」の
-    タブを出すか決める用)。
+    タブを出すか決める用)。flagged は★フラグを付けたメールの数 (「★ フラグ」のタブ。これだけは
+    返信済み・対応不要も数え、状態を選んでいるときは4つの状態のどれでもその状態だけを数える)。
     hide_low のときは優先度[低]のメールを数えない (受信箱で[低]を出していないとき。一覧とそろえる。
-    確認待ち・差し戻したメールは[低]でも一覧に出すので数える)。
+    確認待ち・差し戻したメール・★のメールは[低]でも一覧に出すので数える)。
     """
     if status and status not in mail.MAIL_STATUSES:
         raise HTTPException(400, f"不明な状態です: {status}")
@@ -2933,9 +2956,20 @@ def _mail_tab_counts(conn, user, status: str | None, assignee: str | None,
     has_none = conn.execute(
         "SELECT EXISTS (SELECT 1 FROM mails m WHERE m.category = ''" + extra + ")",
         params).fetchone()[0]
+    # 「★ フラグ」のタブは★のメールの数 (返信済み・対応不要も。状態を選んでいるときは、4つの
+    # 状態のどれでもその状態だけ。押したときの一覧の通数とそろえる)。★は[低]でも一覧に出すので
+    # hide_low は関係ない。★のメールだけの小さい索引で数える (状態・担当・アドレスの索引を使うと、
+    # 返信済みが何万通あるときなどに、その全部を読んでしまう)
+    fw, fp = ["m.flagged_at IS NOT NULL", *where], list(params)
+    if status:
+        fw.append("m.status = ?")
+        fp.append(status)
+    flagged = conn.execute("SELECT COUNT(*) FROM mails m INDEXED BY idx_mails_flagged WHERE "
+                           + " AND ".join(fw), fp).fetchone()[0]
     return {
         "all": sum(r[1] for r in rows),
         "high": sum(r[2] for r in rows),
+        "flagged": flagged,
         "categories": cats,
         "uncategorized": sum(r[1] for r in rows if not r[0]),
         "has_uncategorized": bool(has_none),
@@ -2959,9 +2993,9 @@ def mail_status(
     受信するアドレスが複数あるときは、アドレスごとの様子 (accounts) も返す (mail.fetch_state)。
     受信箱のタブ (種類ごと・重要) の数 (tabs) も返す。tabs だけは、受信箱で選んでいる
     状態 (status)・担当 (assignee)・アドレス (account) で絞り込む (一覧の /api/mail と同じ
-    書き方。状態は未対応・確認待ちのときだけ効く。_mail_tab_counts)。hide_low=1 なら tabs に
-    優先度[低]を数えない (受信箱で[低]を出していないとき。確認待ち・差し戻しの[低]は一覧に
-    出すので数える)。
+    書き方。状態は未対応・確認待ちのときだけ効く。★フラグの数 flagged だけは、どの状態でも効く。
+    _mail_tab_counts)。hide_low=1 なら tabs に優先度[低]を数えない (受信箱で[低]を出していないとき。
+    確認待ち・差し戻し・★の[低]は一覧に出すので数える)。
     1分ごと・タブごとに呼ばれるので、DB は読むだけにする (書き込みのロックを取らない)。
     """
     tabs = _mail_tab_counts(conn, user, status, assignee, account, hide_low)
@@ -4165,9 +4199,9 @@ def mail_patch(
         if not cur.rowcount:
             raise HTTPException(409, STATUS_CHANGED)
         if changes["status"] == "archived" and row["status"] != "archived":
-            # 対応不要にした時刻も残す (週ごとのまとめの「対応不要にした」の数)
-            conn.execute("UPDATE mails SET archived_at = ? WHERE id = ?",
-                         (now_iso(), mail_id))
+            # 対応不要にした時刻 (週ごとのまとめの「対応不要にした」の数) と人 (一覧に出す) も残す
+            conn.execute("UPDATE mails SET archived_at = ?, archived_by = ? WHERE id = ?",
+                         (now_iso(), user["name"], mail_id))
     if "category" in changes:
         conn.execute("UPDATE mails SET category = ? WHERE id = ?",
                      (changes["category"], mail_id))
@@ -4230,15 +4264,42 @@ def mail_archive(
     if row["status"] != body.from_status:
         raise HTTPException(409, _archive_refused(row["status"]))
     at = now_iso()
-    # 確かめた後に返信・確認のお願いがあったときは変えない (書き込みの中でもう一度確かめる)
+    # 確かめた後に返信・確認のお願いがあったときは変えない (書き込みの中でもう一度確かめる)。
+    # 対応不要にした人も残す (一覧の「✓ 対応不要」の横に出す)
     cur = conn.execute(
-        "UPDATE mails SET status = 'archived', archived_at = ? WHERE id = ? AND status = ?",
-        (at, mail_id, body.from_status))
+        "UPDATE mails SET status = 'archived', archived_at = ?, archived_by = ?"
+        " WHERE id = ? AND status = ?",
+        (at, user["name"], mail_id, body.from_status))
     if not cur.rowcount:
         raise HTTPException(409, _archive_refused(_mail_or_404(conn, mail_id)["status"]))
     _audit(conn, user, "mail_archive", detail=f"mail={mail_id} status={body.from_status}->archived")
     return {"updated": mail_id, "status": "archived", "previous_status": body.from_status,
-            "archived_at": at, "subject": row["subject"]}
+            "archived_at": at, "archived_by": user["name"], "subject": row["subject"]}
+
+
+@app.post("/api/mail/{mail_id}/flag")
+def mail_flag(
+    mail_id: int, body: MailFlagBody, user=Depends(require_mail_user),
+    conn=Depends(get_conn),
+):
+    """★フラグを付ける (on: true)・外す (on: false)。受信箱の行の ☆ と、返信画面の「☆ フラグ」.
+
+    ★はみんなで共有する印 (1通に1つ)。状態は変えないので、メール担当者も使える。
+    もう付いているときに付けても、最初に付けた人・時刻のまま (記録も残さない)。
+    外したときは付けた人・時刻も消す。返り値はいまの★ (flagged・付けた時刻・人)。
+    """
+    row = _mail_or_404(conn, mail_id)
+    if body.on:
+        cur = conn.execute("UPDATE mails SET flagged_at = ?, flagged_by = ?"
+                           " WHERE id = ? AND flagged_at IS NULL", (now_iso(), user["name"], mail_id))
+    else:
+        cur = conn.execute("UPDATE mails SET flagged_at = NULL, flagged_by = ''"
+                           " WHERE id = ? AND flagged_at IS NOT NULL", (mail_id,))
+    if cur.rowcount:
+        _audit(conn, user, "mail_flag" if body.on else "mail_unflag", detail=f"mail={mail_id}")
+    r = conn.execute("SELECT flagged_at, flagged_by FROM mails WHERE id = ?", (mail_id,)).fetchone()
+    return {"id": mail_id, "flagged": r[0] is not None, "flagged_at": r[0], "flagged_by": r[1],
+            "subject": row["subject"]}
 
 
 @app.post("/api/mail/{mail_id}/unarchive")
@@ -4265,7 +4326,7 @@ def mail_unarchive(
             "unhandled": "このメールは、もう未対応に戻っています",
         }.get(row["status"], STATUS_CHANGED))
     cur = conn.execute(
-        "UPDATE mails SET status = ?, archived_at = NULL"
+        "UPDATE mails SET status = ?, archived_at = NULL, archived_by = ''"
         " WHERE id = ? AND status = 'archived' AND archived_at = ?",
         (body.restore_to, mail_id, body.archived_at))
     if not cur.rowcount:

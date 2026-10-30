@@ -271,7 +271,7 @@ def test_status_counts_and_newest(client, users, tmp_path):
     assert s == {"unhandled": 0, "pending_approval": 0, "newest_id": None, "last_fetch_at": None,
                  "last_error": "", "last_error_at": None, "last_error_account": "",
                  "error_count": 0, "fetching": False, "accounts": [], "deleted_mail_count": 0,
-                 "tabs": {"all": 0, "high": 0, "categories": {}, "uncategorized": 0,
+                 "tabs": {"all": 0, "high": 0, "flagged": 0, "categories": {}, "uncategorized": 0,
                           "has_uncategorized": False,
                           "statuses": ["unhandled", "pending_approval"]},
                  "imap_set": False, "auto_fetch": False, "interval_min": 5, "sent_mark": "0|"}

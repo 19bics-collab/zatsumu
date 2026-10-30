@@ -1,6 +1,6 @@
 """ワンタップの「対応不要」と「元に戻す」のテスト.
 
-- POST /api/mail/{id}/archive: 未対応 → 対応不要 (対応不要にした時刻・操作の記録)。
+- POST /api/mail/{id}/archive: 未対応 → 対応不要 (対応不要にした時刻・人・操作の記録)。
   見ている間に返信された・確認をお願いされた・もう対応不要のときは 409 で変えない
   (分かりやすい理由)。確認待ちのメールはここでは対応不要にしない
 - POST /api/mail/{id}/unarchive: 対応不要にする前の状態 (未対応) に戻す。その後に返信された・
@@ -11,6 +11,7 @@
 - 対応不要は「返信しなくてよい」印: 受信箱は「状態：すべて」で開き、対応不要にした行も
   一覧に残って灰色の「対応不要」になる (「未対応」を選んでいるときだけ一覧から外れる)
   (一覧は500通までだが、未対応・確認待ちのメールは古くても出す)
+- 一覧・詳細に、対応不要にした時刻・人と、返信した人・どこから返信したか (Webメール・Gmail) が出る
 """
 import re
 
@@ -300,6 +301,65 @@ def test_patch_does_not_archive_replied_or_pending_mail(client, users, tmp_path)
     assert _row(tmp_path, mid)["status"] == "archived"
 
 
+def test_archive_records_who_and_undo_clears_it(client, users, tmp_path):
+    """対応不要にした人を残し (一覧の「✓ 対応不要」の横に出す)、元に戻したら消す."""
+    _, admin, _ = users
+    mid = _add_mail(tmp_path, n=1)
+    out = _archive(client, admin, mid).json()
+    assert out["archived_by"] == "boss"
+    assert _row(tmp_path, mid)["archived_by"] == "boss"
+    item = next(m for m in client.get("/api/mail", headers=auth(admin)).json() if m["id"] == mid)
+    assert item["archived_by"] == "boss" and item["archived_at"] == out["archived_at"]
+    d = client.get(f"/api/mail/{mid}", headers=auth(admin)).json()
+    assert d["archived_by"] == "boss" and d["archived_at"] == out["archived_at"]
+    assert _undo(client, admin, mid, out).status_code == 200
+    row = _row(tmp_path, mid)
+    assert row["archived_by"] == "" and row["archived_at"] is None
+    item = next(m for m in client.get("/api/mail", headers=auth(admin)).json() if m["id"] == mid)
+    assert item["archived_by"] == "" and item["archived_at"] is None
+    # PATCH で対応不要にしたときも残す
+    other = _add_mail(tmp_path, n=2)
+    assert client.patch(f"/api/mail/{other}", headers=auth(admin),
+                        json={"status": "archived"}).status_code == 200
+    row = _row(tmp_path, other)
+    assert row["archived_by"] == "boss" and row["archived_at"]
+    # 未対応に戻した後は、一覧には出さない (いまは対応不要ではないので)
+    assert client.patch(f"/api/mail/{other}", headers=auth(admin),
+                        json={"status": "unhandled"}).status_code == 200
+    item = next(m for m in client.get("/api/mail", headers=auth(admin)).json() if m["id"] == other)
+    assert item["archived_by"] == "" and item["archived_at"] is None
+    # 前の版が対応不要にしたメール (人が空) は、時刻だけ
+    old = _add_mail(tmp_path, n=3, status="archived")
+    _set(tmp_path, old, archived_at="2026-10-01T00:00:00+00:00")
+    item = next(m for m in client.get("/api/mail", headers=auth(admin)).json() if m["id"] == old)
+    assert item["archived_by"] == "" and item["archived_at"] == "2026-10-01T00:00:00+00:00"
+
+
+def test_summary_tells_who_replied_and_from_where(client, users, tmp_path):
+    """一覧の「↩ 返信済み」の横に出す、誰が (この画面) / どこから (Webメール・Gmail) 返信したか."""
+    _, admin, _ = users
+    app_sent = _add_mail(tmp_path, n=1, status="replied")
+    webmail = _add_mail(tmp_path, n=2, status="replied")
+    gmail = _add_mail(tmp_path, n=3, status="replied")
+    at = "2026-10-29T05:03:00+00:00"
+    _set(tmp_path, app_sent, replied_at=at, replied_by="boss")
+    _set(tmp_path, webmail, replied_at=at, replied_by="Webメール", reply_source="webmail")
+    _set(tmp_path, gmail, replied_at=at, replied_by="Gmail", reply_source="gmail")
+    # 返信していないメールに、前の値が残っていても出さない
+    open_mail = _add_mail(tmp_path, n=4)
+    _set(tmp_path, open_mail, replied_by="boss", reply_source="webmail")
+    items = {m["id"]: m for m in client.get("/api/mail", headers=auth(admin)).json()}
+    assert (items[app_sent]["replied_by"], items[app_sent]["reply_source"]) == ("boss", "")
+    assert (items[webmail]["replied_by"], items[webmail]["reply_source"]) == ("Webメール", "webmail")
+    assert (items[gmail]["replied_by"], items[gmail]["reply_source"]) == ("Gmail", "gmail")
+    assert items[app_sent]["replied_at"] == at
+    assert (items[open_mail]["replied_by"], items[open_mail]["reply_source"]) == ("", "")
+    # 詳細も同じ値 (返信画面の「〜から送信」)
+    d = client.get(f"/api/mail/{webmail}", headers=auth(admin)).json()
+    assert d["replied_by"] == "Webメール" and d["reply_source"] == "webmail"
+    assert d["reply_source_label"] == "Webメールなど"
+
+
 def test_patch_status_checks_again_when_writing(client, users, tmp_path, monkeypatch):
     """PATCH で確かめた直後に返信されたときも、状態を書きかえない (ほかの変更もしない)."""
     from server import app as app_module
@@ -451,15 +511,17 @@ def test_mail_page_archive_keeps_row_in_list(client):
     a = re.search(r"async function archiveFromRow\(b, tr\) \{(.*?)\n\}", page, re.S).group(1)
     # 行を動かして消すのは「状態」で「未対応」を選んでいるときだけ。ほかは行を残して灰色にする
     assert 'const leave = $("filter").value === "unhandled";' in a
-    assert "} else if (!leave) {\n    showRowArchived(id);" in a
-    assert a.index("showRowArchived(id)") < a.index("showArchivedToast(") < a.rindex("refreshInbox();")
-    s = re.search(r"function showRowArchived\(id\) \{(.*?)\n\}", page, re.S).group(1)
-    assert 'm.status = "archived"' in s
+    assert "} else if (!leave) {\n    showRowArchived(id, r);" in a
+    assert a.index("showRowArchived(id, r)") < a.index("showArchivedToast(") < a.rindex("refreshInbox();")
+    s = re.search(r"function showRowArchived\(id, r = \{\}\) \{(.*?)\n\}", page, re.S).group(1)
+    assert 'const done = { status: "archived", archived_at: r.archived_at || null,' in s
+    assert "if (m) Object.assign(m, done);" in s
     assert 'tr.classList.add("done");' in s and 'tr.classList.remove("two-btn");' in s
-    # 「対応不要」のボタンは行とプルダウンの両方から消す。状態の欄は決まった言葉だけを入れる
+    # 「対応不要」のボタンは行とプルダウンの両方から消す。状態の欄は取り直したときと同じ印
+    # (「✓ 対応不要」と、対応不要にした時刻・人。statusMark が esc() を通す)
     assert ('document.querySelectorAll(`button.row-archive[data-archive="${id}"]`)'
             '.forEach(x => x.remove());') in s
-    assert '.innerHTML = `<span class="st-archived">${esc(ST.archived)}</span>`;' in s
+    assert '.innerHTML = statusMark({ ...(m || {}), ...done });' in s
     # ボタンが消えて行の高さが変わっても、見ている所は動かさない (一番上に見えている行の位置をそろえる)
     assert ".find(x => x.getBoundingClientRect().bottom > 0)" in s
     assert (s.index("const anchorTop = ") < s.index(".forEach(x => x.remove());")
@@ -473,8 +535,8 @@ def test_mail_page_archive_keeps_row_in_list(client):
     assert 'const canArchive = admin && m.status === "unhandled";' in page
     # 返信画面の「対応不要にする」も、閉じた後に行を残して灰色にする
     m = re.search(r'\$\("m-archive"\)\.onclick = async \(\) => \{(.*?)\n\};', page, re.S).group(1)
-    assert 'if ($("filter").value !== "unhandled") showRowArchived(id);' in m
-    assert m.index("await closeModal()") < m.index("showRowArchived(id)")
+    assert 'if ($("filter").value !== "unhandled") showRowArchived(id, r);' in m
+    assert m.index("await closeModal()") < m.index("showRowArchived(id, r)")
 
 
 def test_mail_page_keeps_keyboard_focus_after_archive(client):
@@ -484,7 +546,7 @@ def test_mail_page_keeps_keyboard_focus_after_archive(client):
     # ボタンを押せなくする前に、どこにいたかを覚える
     assert "const focus = document.activeElement === b ? focusedRowButton(tr.parentNode) : null;" in a
     assert a.index("focusedRowButton(") < a.index("x.disabled = true")
-    assert "showRowArchived(id);\n    refocus(focus);" in a
+    assert "showRowArchived(id, r);\n    refocus(focus);" in a
     # 消したボタンの代わりは、行の「本文 ▼」かプルダウンの「閉じる」
     f = page[page.index("function focusedRowButton("):page.index("function peekButton(")]
     assert "button[data-pk-close]" in f and "button.row-peek" in f
@@ -506,13 +568,13 @@ def test_mail_page_ignores_second_tap_after_archive_keeps_row(client):
     """
     page = client.get("/mail").text
     # ボタンを消したら、行が動いたときと同じく時刻を覚える
-    s = re.search(r"function showRowArchived\(id\) \{(.*?)\n\}", page, re.S).group(1)
+    s = re.search(r"function showRowArchived\(id, r = \{\}\) \{(.*?)\n\}", page, re.S).group(1)
     assert s.index(".forEach(x => x.remove());") < s.index("rowsMovedAt = Date.now();")
     # 行の中は「対応不要」だけでなく、「本文 ▼」・行 (返信画面を開く) も、その間は何もしない
     m = re.search(r'tr\.onclick = e => \{(.*?)\n    \}\);', page, re.S).group(1)
     quiet = m.index("if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;")
-    assert m.index("if (p || b) e.stopPropagation();") < quiet
-    for call in ("togglePeek(", "archiveFromRow(b, tr)", "openMail("):
+    assert m.index("if (f || p || b) e.stopPropagation();") < quiet
+    for call in ("toggleFlag(", "togglePeek(", "archiveFromRow(b, tr)", "openMail("):
         assert quiet < m.index(call), call
     # プルダウンの中のボタン (「閉じる」など) も全部
     click = page[page.index('document.querySelector("#mail-table tbody").addEventListener("click"'):]

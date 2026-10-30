@@ -4579,6 +4579,7 @@ def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
 
     received_at は差出人が付けた Date ヘッダ由来で細工され得るため、
     サーバが付与した取込時刻 (fetched_at) を基準にする。
+    ★フラグを付けたメールは、日数を過ぎても消さない (★を外すと、次の片付けで消える)。
     ファイルを先に消してから DB の行を消す (途中で止まっても、次の回にもう一度
     同じメールが対象になり、残りが消える。消えているファイルは飛ばす)。
     """
@@ -4600,7 +4601,7 @@ def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
         conn.executemany("DELETE FROM sent_mails WHERE id = ?", chunk)
         conn.commit()
     ids = [(r["id"],) for r in conn.execute(
-        "SELECT id FROM mails WHERE fetched_at < ?", (cutoff,))]
+        "SELECT id FROM mails WHERE fetched_at < ? AND flagged_at IS NULL", (cutoff,))]
     for i in range(0, len(ids), PURGE_CHUNK):
         chunk = ids[i:i + PURGE_CHUNK]
         if attachment_dir is not None:

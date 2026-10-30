@@ -118,6 +118,8 @@ MATRIX = [
     ("PATCH", "/api/mail/{mid}", {"priority": 1}, True),
     ("POST", "/api/mail/{mid}/request-approval", {"body": "本文"}, True),
     ("POST", "/api/mail/{mid}/misdirect-checked", None, True),
+    # ★フラグは状態を変えない印なので、メール担当者も付け外しできる
+    ("POST", "/api/mail/{mid}/flag", {"on": True}, True),
     # 取引先は見るだけ (変えるのは管理者だけ)
     ("GET", "/api/mail/clients", None, True),
     ("GET", "/api/mail/clients/{ckey}", None, True),
@@ -933,7 +935,7 @@ def test_mail_page_has_role_aware_ui(client):
     assert "const locked = replied || (!admin && pending);" in page
     # 名前・ひとこと・コメントは textContent / esc() で入れる
     for line in ('$("m-appr-head").textContent = head;', '$("m-appr-note").textContent = note;',
-                 "<b>${esc(u.name)}</b>", "<small>（${esc(m.requested_by)}）</small>"):
+                 "<b>${esc(u.name)}</b>", '<small class="st-sub">（${esc(m.requested_by)}）</small>'):
         assert line in page, line
     # メール担当者から外されたら (決まった 403)、ログイン画面に戻す
     assert 'const NO_MAIL_ACCESS = "mail_access_required";' in page

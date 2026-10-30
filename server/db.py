@@ -176,7 +176,13 @@ CREATE TABLE IF NOT EXISTS mails (
     -- どこから返信したか ('' = この画面 (前の版が送ったものも) / 'webmail' / 'gmail' =
     -- 送信済みフォルダに入っていた返信を見て、自動で返信済みにした) と、その送ったメール (sent_mails.id)
     reply_source TEXT NOT NULL DEFAULT '',
-    reply_sent_id INTEGER
+    reply_sent_id INTEGER,
+    -- ★フラグ (みんなで共有。目立たせたいメールの印)。付けた時刻 (NULL = 付いていない) と
+    -- 付けた人 (名前のスナップショット)。★のメールは「メール保存日数」を過ぎても消さない
+    flagged_at TEXT,
+    flagged_by TEXT NOT NULL DEFAULT '',
+    -- 対応不要にした人 (名前のスナップショット。前の版が対応不要にしたものは空)
+    archived_by TEXT NOT NULL DEFAULT ''
 );
 -- 取引先 (管理者が名前を付けた・まとめたもの。server/clients.py)。名前を付けていない取引先は
 -- 表に入れず、メールの相手のアドレスから決まった分け方で毎回まとめる (会社のドメインごと・
@@ -786,7 +792,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 送信箱の「この画面から送った返信」を新しい順に読む用 (返信したメールだけの小さい索引)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_app_sent ON mails(replied_at)"
                  " WHERE replied_at IS NOT NULL AND reply_source = ''")
-    acols = [r["name"] for r in conn.execute("PRAGMA table_info(mail_accounts)")]
+    # ★フラグ (付けた時刻・人) と、対応不要にした人。前からあるメールは★なし・対応不要にした人は
+    # 空のまま (画面では、対応不要にした日だけを出す)
+    if "flagged_at" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN flagged_at TEXT")
+    for col in ("flagged_by", "archived_by"):
+        if col not in mcols:
+            conn.execute(f"ALTER TABLE mails ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    # ★のメールだけの小さい索引 (「★ フラグ」のタブの数・一覧・保存日数の片付け用)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_flagged ON mails(flagged_at)"
+                 " WHERE flagged_at IS NOT NULL")
+    acols =[r["name"] for r in conn.execute("PRAGMA table_info(mail_accounts)")]
     for col, decl in (("sent_only", "INTEGER NOT NULL DEFAULT 0"),
                       ("sent_import", "INTEGER NOT NULL DEFAULT 1"),
                       ("sent_state_folder", "TEXT NOT NULL DEFAULT ''"),

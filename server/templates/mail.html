@@ -77,6 +77,35 @@
   .ret-badge { display: inline-block; font-size: .72rem; line-height: 1.5; padding: 0 .45rem;
                border-radius: 99px; background: #fee2e2; color: #991b1b; margin-left: .3rem;
                white-space: nowrap; vertical-align: 1px; font-weight: normal; }
+  /* 一覧の「状態」の印 (未対応・確認待ち・↩ 返信済み・✓ 対応不要) と、その下の「いつ・誰が」 */
+  .st-chip { display: inline-block; border-radius: 99px; padding: 0 .5rem; font-size: .78rem; line-height: 1.6;
+             font-weight: 700; white-space: nowrap; border: 1px solid transparent; }
+  .st-chip.st-unhandled { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
+  .st-chip.st-pending_approval { color: #6d28d9; border-color: #c4b5fd; background: #f5f3ff; }
+  .st-chip.st-replied { color: #166534; border-color: #86efac; background: #dcfce7; }
+  .st-chip.st-archived { color: #4b5563; border-color: #e5e7eb; background: #f3f4f6; }
+  .mail-row.done .st-chip { opacity: 1; }      /* 灰色の行でも、何をしたかははっきり */
+  .st-sub { display: block; font-size: .72rem; color: #6b7280; font-weight: normal; white-space: nowrap; }
+  /* 件名の前の ↩ (返信したメール。Webメールの返信済みの印と同じ) */
+  .rep-ic { color: #16a34a; font-weight: 700; margin-right: .25rem; }
+  /* 受信日時: 表とスマホのカードは「2026/10/29 20:15」(会社のタイムゾーン)。短い形は使う所だけで出す */
+  .d-short { display: none; }
+  /* ★フラグ (行の差出人の左の ☆。押すと ★ になる。みんなの画面に出る) */
+  .row-flag { background: transparent; padding: 0; width: 32px; height: 32px; margin: -6px .15rem -6px -6px;
+              display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+              border-radius: 6px; }
+  .row-flag .star { width: 20px; height: 20px; fill: none; stroke: #9ca3af; stroke-width: 1.6; opacity: .65; }
+  .row-flag:hover .star { opacity: 1; }
+  .row-flag:focus-visible { outline: 2px solid #14532d; outline-offset: 1px; }
+  .row-flag[aria-pressed="true"] .star { fill: #facc15; stroke: #a16207; opacity: 1; }
+  /* 指で押す画面は、押しやすい大きさにし、☆ も薄くしない (指したときに濃くならないので) */
+  @media (pointer: coarse), (max-width: 640px) {
+    .row-flag { width: 40px; height: 40px; margin: -4px .1rem -4px -6px; }
+    .row-flag .star { opacity: 1; }
+  }
+  /* ★の行は右端に黄色の線 (地の色は変えない: 赤=高・黄=新着・灰=済み と重ならない) */
+  .mail-row.flagged td.act { box-shadow: -8px 0 8px -8px rgba(0,0,0,.18), inset -4px 0 0 #eab308; }
+  .mail-row.flagged td.act:empty { box-shadow: inset -4px 0 0 #eab308; }
   /* ログインしている人 (ヘッダ) */
   #whoami { font-size: .85rem; opacity: .9; overflow-wrap: anywhere; }
   /* 確認のお願いが来ている (受信箱の上。管理者だけ) */
@@ -211,6 +240,10 @@
   .ctab[aria-selected="true"] .cnt { background: #fff; color: #14532d; }
   .ctab.hi[aria-selected="true"] { background: #b91c1c; border-color: #b91c1c; }
   .ctab.hi[aria-selected="true"] .cnt { color: #b91c1c; }
+  .ctab.fl { color: #92400e; border-color: #fcd34d; }
+  .ctab.fl .cnt:not(.zero) { background: #fef3c7; color: #92400e; }
+  .ctab.fl[aria-selected="true"] { background: #a16207; border-color: #a16207; color: #fff; }
+  .ctab.fl[aria-selected="true"] .cnt { color: #a16207; }
   .sort-tg { display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem;
              color: #6b7280; white-space: nowrap; margin-left: auto; }
   .sort-tg button { background: transparent; color: #4b5563; border: 1px solid #d1d5db;
@@ -516,9 +549,16 @@
   .m-top { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin-bottom: .4rem; }
   .m-top-act { display: flex; gap: .6rem; margin-left: auto; }
   .m-top button { min-height: 44px; padding: .45rem .9rem; white-space: nowrap; }
-  #m-back[hidden], #m-archive[hidden] { display: none; }
+  #m-back[hidden], #m-archive[hidden], #m-flag[hidden] { display: none; }
   /* iPhone の縦では「← 戻る」と短くして、上の列を1行に収める */
   @media (max-width: 480px) { .m-back-long { display: none; } }
+  /* 「☆ フラグ」(★フラグ。付いているときは「★ フラグ中」)。iPhone の縦では ☆・★ だけにする */
+  .m-flag .m-flag-ic { color: #a16207; }
+  .m-flag[aria-pressed="true"] { background: #fef3c7; color: #92400e; font-weight: 700; }
+  @media (max-width: 480px) {
+    .m-top .m-flag { width: 44px; padding: 0; font-size: 1.15rem; }
+    .m-flag .m-flag-txt { display: none; }
+  }
   /* 「対応不要にする」は消す操作ではなく (返信しなくてよい印。メールは一覧に残り、下の知らせで元に戻せる)、
      片付ける操作なので、赤ではなく青の枠の白いボタンにして、「閉じる」(灰色) とも見分けやすくする */
   .m-archive { background: #fff; color: #1d4ed8; border: 1.5px solid #93c5fd; font-weight: 600; }
@@ -781,6 +821,7 @@
     .table-wrap tr.mail-row.p2 { border-left: 5px solid #f59e0b; }
     .table-wrap tr.mail-row.p3 { border-left: 5px solid #d1d5db; }
     .table-wrap tr.mail-row.done { border-left: 5px solid #e5e7eb; }
+    .table-wrap tr.mail-row.flagged { border-right: 5px solid #eab308; }
     .table-wrap tr.mail-row td.act { position: absolute; top: .45rem; right: .6rem; width: auto;
                                      padding: 0; border: none; background: transparent;
                                      box-shadow: none; }
@@ -874,15 +915,22 @@
   <summary>使い方を見る</summary>
   <p><small>受信メールを新しい順（届いた日時の新しいものが上）に表示します。
   返信済み・対応不要にしたメールも一覧に残り、灰色で出ます（「状態」の欄に「返信済み」「対応不要」と出ます）。
+  返信したメールには「↩ 返信済み」と、いつ・誰が返信したかが出ます（件名の前にも ↩ が付きます。
+  Webメール・Gmail から返信したものは「Webメールから」「Gmailから」と出ます）。
+  対応不要にしたメールには「✓ 対応不要」と、いつ・誰がしたかが出ます。
   まだ対応していないメールだけを見たいときは、上の「状態」で「未対応」を選んでください
   （ページを開き直すと「状態：すべて」に戻ります）。一覧の上の「並び順」で
   「重要度順」（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）にもできます。
   重要度は色で分けています（<span class="prb pr-1">高</span> 赤・<span class="prb pr-2">中</span> だいだい・<span class="prb pr-3">低</span> 灰色）。
-  ふだんは「重要度」が「高・中」で、重要度が低のメールは出しません（確認待ちと差し戻したメールは低でも出します。隠している数は一覧の上に出ます）。
+  ふだんは「重要度」が「高・中」で、重要度が低のメールは出しません（確認待ち・差し戻したメール・★のメールは低でも出します。隠している数は一覧の上に出ます）。
   「すべて」を押すと低のメールも出ます（このブラウザに覚えておきます。検索欄で探すときは、低のメールからも探します）。
   一覧のすぐ上のタブで、問い合わせの種類ごとや「重要（高）」だけに分けて見られます
   （タブの数字は、まだ対応していないメール（未対応と確認待ちを合わせたもの）の数です。
   上の「状態」で「未対応」を選んでいるときは未対応の数、「確認待ち」なら確認待ちの数になります）。
+  ★（フラグ）：目立たせたいメールは、行の左の ☆ を押すと ★ になります（もう一度押すと外れます。
+  返信画面の上の「☆ フラグ」でも付けられます）。★はみんなの画面に出て、誰がいつ付けたかも残ります。
+  「★ フラグ」のタブで ★ のメールだけを見られます（タブの数字は ★ のメールの数で、返信済み・対応不要も入ります）。
+  ★のメールは、重要度が「低」でも一覧に出し、メールの保存日数を過ぎても消しません（要らなくなったら ★ を外してください）。
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
@@ -1155,6 +1203,7 @@
         <input type="number" id="set-mail-fetch-days" min="1" max="365"></label>
       <label class="set-row"><span>メール保存日数（0=削除なし）</span>
         <input type="number" id="set-mail-retention" min="0" max="3650"></label>
+      <p class="set-help"><small>★フラグを付けたメールは、日数を過ぎても消しません（★を外すと、次の片付けで消えます）。</small></p>
       <label class="set-row"><span>優先度[高]の受信を通知</span>
         <input type="checkbox" id="set-notify-mail-high"></label>
       <p><small>「受信するメールアドレス」のメールボックスを定期的に受信し、「受信箱」に優先度順で
@@ -1465,11 +1514,12 @@
 
 <div id="mail-modal" class="modal" hidden>
   <div class="box">
-    <!-- 上の列: 「前のメールに戻る」と、「対応不要にする」(管理者だけ)・「閉じる」。
+    <!-- 上の列: 「前のメールに戻る」と、「☆ フラグ」・「対応不要にする」(管理者だけ)・「閉じる」。
          本文を全部出すので、下まで進まなくても対応不要にしたり閉じたりできるように上に置く -->
     <div class="m-top">
       <button id="m-back" class="ghost" aria-label="前のメールに戻る" hidden>← <span class="m-back-long">前のメールに</span>戻る</button>
       <div class="m-top-act">
+        <button id="m-flag" type="button" class="ghost m-flag" aria-pressed="false" hidden><span class="m-flag-ic" aria-hidden="true">☆</span><span class="m-flag-txt"> フラグ</span></button>
         <button id="m-archive" class="m-archive" type="button" title="返信しなくてよい印を付けます（メールは受信箱に残ります）">✓ 対応不要にする</button>
         <button id="m-close-top" class="ghost" type="button">閉じる</button>
       </div>
@@ -2157,6 +2207,92 @@ const formTag = m => m.via_form
   ? ` <span class="form-tag" title="HPのお問い合わせフォームから届いたメールです（差出人: ${esc(m.from_addr)}）。相手は本文に書かれたお客様です">HPフォーム経由</span>`
   : "";
 
+// 一覧の行: ここから
+// 受信箱の行の ☆ (★フラグ)・状態の印・受信日時。使うのは esc・ST・snip・fmtTz・fmtDate だけ
+// (node のテストで、この間だけを動かす)。外から来た文字 (件名・名前) は esc() を通す
+
+// 日時を一覧用に短く (会社のタイムゾーン): 今日「20:15」・6日以内「木 20:15」・今年「10/23」・前の年「2025/10/23」
+function fmtListDate(iso, now = new Date()) {
+  const d = new Date(iso);
+  if (!iso || isNaN(d)) return "";
+  // 会社のタイムゾーンでの年・月・日 (何日前かは、その年月日どうしで数える)
+  const ymd = x => fmtTz(x, { year: "numeric", month: "numeric", day: "numeric" }).split("/").map(Number);
+  const [y, mo, da] = ymd(d), [ny, nmo, nda] = ymd(now);
+  if ([y, mo, da, ny, nmo, nda].some(isNaN)) return fmtDate(iso);   // 日付の書き方が違うブラウザ
+  const day = Date.UTC(y, mo - 1, da);
+  const ago = Math.round((Date.UTC(ny, nmo - 1, nda) - day) / 864e5);
+  const time = fmtTz(d, { hour: "2-digit", minute: "2-digit" });
+  if (ago === 0) return time;
+  if (ago > 0 && ago <= 6) return `${"日月火水木金土"[new Date(day).getUTCDay()]} ${time}`;
+  return y === ny ? `${mo}/${da}` : `${y}/${mo}/${da}`;
+}
+// 受信日時の欄。表とカードは「2026/10/29 20:15」、指すと曜日も出る (どれも会社のタイムゾーン)
+function listTime(iso) {
+  const d = new Date(iso);
+  if (!iso || isNaN(d)) return "";
+  const full = fmtTz(d, { year: "numeric", month: "numeric", day: "numeric", weekday: "short",
+                          hour: "2-digit", minute: "2-digit" });
+  return `<time datetime="${esc(iso)}" title="${esc(full)}"><span class="d-long">${esc(fmtDate(iso))}</span>` +
+    `<span class="d-short">${esc(fmtListDate(iso))}</span></time>`;
+}
+// ★ (aria-pressed で付いているか。付けた人・時刻は title)
+const STAR_SVG = '<svg class="star" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2.8l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.6l-5.8 3.1 1.1-6.5L2.6 9.6l6.5-.9z"/></svg>';
+// ☆ のボタンの読み上げの名前と、指したときの説明 (どちらも textContent・esc() で入れる)
+function starText(m) {
+  const on = !!m.flagged;
+  const subj = snip(m.subject, 30) || "件名なし";
+  const who = (m.flagged_by ? "：" + m.flagged_by : "") + (m.flagged_at ? `（${fmtDate(m.flagged_at)}）` : "");
+  return {
+    on,
+    label: `★フラグを${on ? "外す" : "付ける"}（${subj}）`,
+    title: on ? `★フラグ${who}。押すと外します` : "★フラグを付けると、みんなの画面で目立ちます",
+  };
+}
+// 行の ☆ のボタン。サーバが★を返さない (前の版の) ときは出さない
+function starButton(m) {
+  if (!("flagged" in m)) return "";
+  const t = starText(m);
+  return `<button type="button" class="row-flag" data-flag="${Number(m.id)}" aria-pressed="${t.on}"
+             aria-label="${esc(t.label)}" title="${esc(t.title)}">${STAR_SVG}</button>`;
+}
+// 返信した人 (Webメール・Gmail から返信して、自動で返信済みにしたものは「Webメールから」「Gmailから」)
+const REPLY_VIA = { webmail: "Webメール", gmail: "Gmail" };
+const replyWho = m => m.reply_source ? `${REPLY_VIA[m.reply_source] || "Webメールなど"}から` : (m.replied_by || "");
+// 件名の前の ↩ (返信したメール)。指すと、いつ・誰が返信したか
+function repliedIcon(m) {
+  if (m.status !== "replied") return "";
+  const when = [m.replied_at ? fmtListDate(m.replied_at) : "", replyWho(m)].filter(Boolean).join("・");
+  return `<span class="rep-ic" aria-hidden="true" title="${esc(ST.replied + (when ? `（${when}）` : ""))}">↩</span>`;
+}
+// 状態の欄: 状態の印 (未対応・確認待ち・↩ 返信済み・✓ 対応不要) と、その下に、いつ・誰が
+function statusMark(m) {
+  const st = String(m.status || "");
+  const chip = (label, title) => `<span class="st-chip st-${esc(st)}"${title ? ` title="${esc(title)}"` : ""}>${esc(label)}</span>`;
+  const sub = parts => {
+    const text = parts.filter(Boolean).join("・");
+    return text ? `<small class="st-sub">${esc(text)}</small>` : "";
+  };
+  if (st === "replied") {
+    const via = m.reply_source ? REPLY_VIA[m.reply_source] || "Webメールなど" : "";
+    const title = via
+      ? `${via}から返信してあります（送信済みフォルダから取り込んで、自動で返信済みにしました）`
+      : `${m.replied_at ? fmtDate(m.replied_at) + " に " : ""}${m.replied_by ? m.replied_by + " が" : ""}返信しました`;
+    return chip("↩ " + ST.replied, title) + sub([m.replied_at ? fmtListDate(m.replied_at) : "", replyWho(m)]);
+  }
+  if (st === "archived") {
+    // 対応不要にした時刻が無い (前の版が対応不要にした) ときは、印だけ
+    const when = m.archived_at ? [fmtDate(m.archived_at), m.archived_by].filter(Boolean).join(" ") : "";
+    return chip("✓ " + ST.archived, `返信しなくてよい印です${when ? `（${when}）` : ""}`) +
+      (m.archived_at ? sub([fmtListDate(m.archived_at), m.archived_by]) : "");
+  }
+  if (st === "pending_approval") {
+    return chip(ST.pending_approval) + (m.requested_by ? `<small class="st-sub">（${esc(m.requested_by)}）</small>` : "");
+  }
+  return chip(ST[st] || st) + (m.returned
+    ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : "");
+}
+// 一覧の行: ここまで
+
 let inboxSeq = 0;        // 受信箱を取り直した回数 (前の取り直しの結果で上書きしない用)
 let inboxStale = false;  // 返信画面・設定を開いている間に受信箱が変わった (戻ったときに取り直す)
 
@@ -2178,6 +2314,7 @@ async function showInbox(opts = {}) {
   const q = new URLSearchParams();
   if ($("filter").value) q.set("status", $("filter").value);
   if (activeTab === TAB_HIGH) q.set("priority", "1");
+  else if (activeTab === TAB_FLAG) q.set("flagged", "1");
   else if (activeTab === TAB_NONE) q.set("category", "none");
   else if (activeTab.startsWith(TAB_CAT)) q.set("category", activeTab.slice(TAB_CAT.length));
   for (const [key, id] of [["assignee", "filter-asg"], ["account", "filter-acct"]]) {
@@ -2276,10 +2413,13 @@ function renderInbox(list, keepPlace) {
   const filtered = $("filter").value || activeTab !== TAB_ALL || $("filter-asg").value ||
     $("filter-acct").value || inboxHiddenLow > 0;
   // 何も出ないときの案内で「すべて」に戻すとよいもの (選んでいるものだけを挙げる)
-  const narrowed = [[$("filter").value, "「状態」"], [activeTab !== TAB_ALL, "タブ"],
-                    [$("filter-asg").value, "「担当」"], [$("filter-acct").value, "「アドレス」"],
-                    [inboxHiddenLow > 0, "「重要度」"]]
-    .filter(([on]) => on).map(([, name]) => name).join("・");
+  const narrowList = [[$("filter").value, "「状態」"], [activeTab !== TAB_ALL, "タブ"],
+                      [$("filter-asg").value, "「担当」"], [$("filter-acct").value, "「アドレス」"],
+                      [inboxHiddenLow > 0, "「重要度」"]]
+    .filter(([on]) => on).map(([, name]) => name);
+  const narrowed = narrowList.join("・");
+  // 「★ フラグ」のタブで何も出ないとき、タブのほかに絞り込んでいるもの
+  const flagNarrowed = narrowList.filter(name => name !== "タブ").join("・");
   const admin = isAdmin();   // 「対応不要」ボタンは管理者だけ (サーバも確かめる)
   // 探しているときは、探した言葉に印を付けて、本文の言葉のあたりを件名の下に出す
   const T = inboxFound ? hlTerms(inboxFound.q) : null;
@@ -2296,12 +2436,12 @@ function renderInbox(list, keepPlace) {
     const canArchive = admin && m.status === "unhandled";
     const peeking = peekOpen.has(id);
     return `
-    <tr class="mail-row p${Number(m.priority)}${["unhandled", "pending_approval"].includes(m.status) ? "" : " done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}" data-id="${id}">
+    <tr class="mail-row p${Number(m.priority)}${["unhandled", "pending_approval"].includes(m.status) ? "" : " done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}${m.flagged ? " flagged" : ""}" data-id="${id}">
       <td data-label="優先度"><span class="prb pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span></td>
-      <td data-label="差出人"><strong>${hl(contactLabel(m), T)}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m, T)}</td>
-      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${hl(m.subject, T) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}${T ? hitSnip(m, T) : ""}</td>
-      <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
-      <td data-label="状態"><span class="st-${esc(m.status)}">${esc(ST[m.status] || m.status)}</span>${m.status === "pending_approval" && m.requested_by ? `<small>（${esc(m.requested_by)}）</small>` : ""}${m.returned ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : ""}</td>
+      <td data-label="差出人">${starButton(m)}<strong>${hl(contactLabel(m), T)}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m, T)}</td>
+      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${repliedIcon(m)}${hl(m.subject, T) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}${T ? hitSnip(m, T) : ""}</td>
+      <td data-label="受信日時">${listTime(m.received_at)}</td>
+      <td data-label="状態">${statusMark(m)}</td>
       <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
       <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
       <td class="act">${peekButton(m, peeking)}${canArchive ? archiveButton(m) : ""}</td>
@@ -2309,6 +2449,8 @@ function renderInbox(list, keepPlace) {
   }).join("") ||
     (inboxFound
       ? `<tr><td colspan="8"><small>「${esc(inboxFound.q)}」に合うメールはありません（言葉を短くするか、言葉を減らしてください${narrowed ? `。上の${narrowed}を「すべて」に戻すと、ほかのメールからも探します` : ""}）</small></td></tr>`
+      : activeTab === TAB_FLAG
+      ? `<tr><td colspan="8"><small>★フラグを付けたメールはありません（一覧の ☆ を押すと付けられます${flagNarrowed ? `。上の${flagNarrowed}を「すべて」に戻すと、ほかの★のメールも見られます` : ""}）</small></td></tr>`
       : filtered
       ? `<tr><td colspan="8"><small>この条件に合うメールはありません（上の${narrowed}を「すべて」に戻すと全部見られます）</small></td></tr>`
       : isAdmin()
@@ -2316,15 +2458,17 @@ function renderInbox(list, keepPlace) {
         : `<tr><td colspan="8"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
     tr.onclick = e => {
-      // 「本文 ▼」「対応不要」ボタンを押したときは、返信画面を開かない
+      // ☆ (★フラグ)・「本文 ▼」「対応不要」ボタンを押したときは、返信画面を開かない
+      const f = e.target.closest("button.row-flag");
       const p = e.target.closest("button.row-peek"), b = e.target.closest("button.row-archive");
-      if (p || b) e.stopPropagation();
+      if (f || p || b) e.stopPropagation();
       // 行が消えて下の行が上がってきた・対応不要にして行の「対応不要」が消えた直後は、
       // 同じ所をもう一度押しても何もしない (2回押したつもりで、次のメールまで対応不要にしたり、
       // その場所に来た「本文 ▼」や行を押して、プルダウン・返信画面を開いたりしないように)
       if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
-      // 「本文 ▼」は、その行の下に本文とやり取りを出す (返信画面は開かない)
-      if (p) togglePeek(Number(p.dataset.peek));
+      // ☆ は★フラグを付ける・外す。「本文 ▼」は、その行の下に本文とやり取りを出す (返信画面は開かない)
+      if (f) toggleFlag(Number(f.dataset.flag), f.getAttribute("aria-pressed") !== "true");
+      else if (p) togglePeek(Number(p.dataset.peek));
       else if (b) archiveFromRow(b, tr);
       else openMail(+tr.dataset.id);
     });
@@ -2459,11 +2603,11 @@ const mailRowOf = id => document.querySelector(`#mail-table .mail-row[data-id="$
 const peekRowOf = id => document.querySelector(`#mail-table .peek-row[data-peek-row="${Number(id)}"]`);
 const subjLabel = m => esc(snip(m.subject, 30)) || "件名なし";
 
-// キーボードで一覧のボタン (行の「本文 ▼」「対応不要」・プルダウンの中のボタン) にいたときは、
+// キーボードで一覧のボタン (行の ☆・「本文 ▼」「対応不要」・プルダウンの中のボタン) にいたときは、
 // 描き直した後も同じボタンに戻す。そのボタンが無くなった (対応不要にした など)・押せないときは、
 // 行なら「本文 ▼」、プルダウンなら「閉じる」に移る (画面は動かさない)。
 // ボタンはどれも data-… にメールの番号を持つので、どの行・プルダウンの、どのボタンかで探す
-const ROW_BTN_KEYS = ["data-peek", "data-archive", "data-pk-open", "data-pk-close", "data-pk-earlier", "data-pk-retry"];
+const ROW_BTN_KEYS = ["data-peek", "data-archive", "data-flag", "data-pk-open", "data-pk-close", "data-pk-earlier", "data-pk-retry"];
 function focusedRowButton(box) {
   const b = document.activeElement;
   const tr = b && box.contains(b) ? b.closest(".mail-row, .peek-row") : null;
@@ -2742,22 +2886,25 @@ async function archiveFromRow(b, tr) {
     removeRows([tr, pk], next && next.classList.contains("mail-row") ? next : null);
     rowsMovedAt = Date.now();
   } else if (!leave) {
-    showRowArchived(id);
+    showRowArchived(id, r);
     refocus(focus);
   }
   showArchivedToast(id, m.subject, r);
   refreshInbox();      // タブの数・未対応の数も取り直す (行は「対応不要」のまま残る)
 }
 
-// 対応不要にしたメールの行を、取り直すのを待たずにその場で灰色の「対応不要」にする
-// (行は一覧に残す。「対応不要」のボタンは行とプルダウンから消す。取り直した後も同じ見た目)。
+// 対応不要にしたメールの行を、取り直すのを待たずにその場で灰色の「✓ 対応不要」にする
+// (行は一覧に残す。「対応不要」のボタンは行とプルダウンから消す。取り直した後も同じ見た目。
+// r は /archive の返事で、対応不要にした時刻・人を状態の欄に出す)。
 // ボタンが消えて行の高さ・列の幅が変わっても、見ている所は動かさない
 // (一番上に見えている行が、変えた後も同じ位置に見えるようにする)。
 // 消えた「対応不要」の場所には「本文 ▼」やプルダウンの「閉じる」・行が来るので、少しの間は
 // 一覧を押しても何もしない (rowsMovedAt。2回押したつもりで、プルダウン・返信画面を開かないように)
-function showRowArchived(id) {
+function showRowArchived(id, r = {}) {
   const m = shownMails.get(id), tr = mailRowOf(id);
-  if (m) m.status = "archived";
+  const done = { status: "archived", archived_at: r.archived_at || null,
+                 archived_by: r.archived_by || (r.archived_at ? me.name || "" : "") };
+  if (m) Object.assign(m, done);
   const tbody = document.querySelector("#mail-table tbody");
   const anchor = viewName === "inbox" && window.scrollY > 0
     ? [...tbody.querySelectorAll(".mail-row, .peek-row")].find(x => x.getBoundingClientRect().bottom > 0)
@@ -2767,7 +2914,7 @@ function showRowArchived(id) {
   if (tr) {
     tr.classList.add("done");
     tr.classList.remove("two-btn");
-    tr.querySelector('td[data-label="状態"]').innerHTML = `<span class="st-archived">${esc(ST.archived)}</span>`;
+    tr.querySelector('td[data-label="状態"]').innerHTML = statusMark({ ...(m || {}), ...done });
     rowsMovedAt = Date.now();
   }
   if (anchor) window.scrollBy(0, anchor.getBoundingClientRect().top - anchorTop);
@@ -2872,6 +3019,53 @@ function undoToast(items) {
   return t;
 }
 
+/* ---------- ★フラグ (みんなで共有する、目立たせたいメールの印) ----------
+   行の ☆ と返信画面の「☆ フラグ」で付ける・外す (メール担当者も使える)。押したらすぐ見た目を
+   変え (待たせない)、サーバに送れなかったら元に戻す (理由はアラートで出る)。一覧はすぐには
+   取り直さない (「★ フラグ」のタブで外しても行は消えずに ☆ のまま残り、もう一度押せば付け直せる。
+   次に取り直したときに外れる)。送っている間に同じメールの ☆ をもう一度押しても何もしない */
+const flagBusy = new Set();   // ★を送っている途中のメール
+
+// そのメールの★の見た目を、出ている所 (一覧の行の ☆・返信画面) 全部でそろえる
+function setFlagUi(id, at, by) {
+  const f = { flagged: !!at, flagged_at: at || null, flagged_by: at ? by || "" : "" };
+  const m = shownMails.get(id);
+  if (m) Object.assign(m, f);
+  for (const b of document.querySelectorAll(`button.row-flag[data-flag="${Number(id)}"]`)) {
+    const t = starText({ ...(m || {}), ...f });
+    b.setAttribute("aria-pressed", String(t.on));
+    b.setAttribute("aria-label", t.label);
+    b.title = t.title;
+  }
+  mailRowOf(id)?.classList.toggle("flagged", f.flagged);
+  if (modal.id === id && modal.mail) {
+    Object.assign(modal.mail, f);
+    renderModalFlag(modal.mail);
+  }
+}
+
+async function toggleFlag(id, on) {
+  if (flagBusy.has(id)) return;
+  flagBusy.add(id);
+  const m = shownMails.get(id) || (modal.id === id && modal.mail) || {};
+  const before = [m.flagged_at || null, m.flagged_by || ""];
+  setFlagUi(id, on ? new Date().toISOString() : null, on ? me.name : "");
+  let r = null;
+  try {
+    r = await apiJson(`/api/mail/${id}/flag`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on }),
+    });
+  } catch {}
+  flagBusy.delete(id);
+  if (!r) { setFlagUi(id, ...before); return; }
+  // 付けた人・時刻はサーバのもの (ほかの人が先に付けていたら、その人のまま)
+  setFlagUi(id, r.flagged_at, r.flagged_by);
+  // タブの数をそろえる。一緒に、ほかの変わったこと (新着など) に気付いたら、次の確認で一覧を取り直す
+  // (ここで変わったと分かった分は、1分ごとの確認では「変わった」にならないので)
+  try { if (await checkStatus()) inboxStale = true; } catch {}
+}
+
 // 確認待ちのメールだけを出す (受信箱の上の知らせ・受信箱の横の「確認待ち」から)。
 // 種類に関係なく全部の確認待ちを見せるため、タブは「すべて」にする
 function showPending() {
@@ -2922,10 +3116,11 @@ function setOptions(sel, opts, value) {
   sel.value = opts.some(([v]) => v === value) ? value : opts[0][0];
 }
 
-/* ---------- 受信箱のタブ (すべて・重要（高）・種類ごと・未分類) と並び順 ---------- */
-// 選んでいるタブ: TAB_ALL / TAB_HIGH (優先度[高]だけ) / TAB_NONE (未分類) / TAB_CAT + 種類の名前。
+/* ---------- 受信箱のタブ (すべて・重要（高）・★ フラグ・種類ごと・未分類) と並び順 ---------- */
+// 選んでいるタブ: TAB_ALL / TAB_HIGH (優先度[高]だけ) / TAB_FLAG (★フラグを付けたメールだけ) /
+// TAB_NONE (未分類) / TAB_CAT + 種類の名前。
 // 選んだタブと並び順はこのブラウザに覚えておく (覚えておけないブラウザでも動く)
-const TAB_ALL = "all", TAB_HIGH = "high", TAB_NONE = "none", TAB_CAT = "cat:";
+const TAB_ALL = "all", TAB_HIGH = "high", TAB_FLAG = "flag", TAB_NONE = "none", TAB_CAT = "cat:";
 const TAB_KEY = "zatsumu_mail_tab", SORT_KEY = "zatsumu_mail_sort";
 const SORTS = ["date", "priority"];   // 新しい順 (既定)・重要度順
 function loadPref(key) {
@@ -2960,7 +3155,8 @@ function scopeQuery() {
 }
 
 // タブを出す。数はサーバが数えた、対応が要るメール (未対応と確認待ち。「状態」で未対応か
-// 確認待ちを選んでいるときはその状態だけ) の数。
+// 確認待ちを選んでいるときはその状態だけ) の数。「★ フラグ」はいつも出し (まだ★が無くても
+// 見つけられるように)、数は★のメールの数 (返信済み・対応不要も。「状態」で選んでいればその状態だけ)。
 // 1分ごとに呼ばれるので、タブの顔ぶれが変わったときだけ作り直し、いつもは数と選択だけ直す
 // (横にずらしていたタブの列の位置も動かさない)。種類の名前は textContent で入れる
 function renderTabs() {
@@ -2968,6 +3164,7 @@ function renderTabs() {
   const t = (mailStatus && mailStatus.tabs) || null;
   const byCat = (t && t.categories) || {};
   const tabs = [[TAB_ALL, "すべて", t && t.all], [TAB_HIGH, "重要（高）", t && t.high],
+                [TAB_FLAG, "★ フラグ", t && t.flagged],
                 ...categories().map(c => [TAB_CAT + c, c, t && (byCat[c] || 0)])];
   // 未分類は、未分類のメールがあるときだけ (選んでいる間は、無くなっても残す)
   if ((t && t.has_uncategorized) || activeTab === TAB_NONE) {
@@ -2986,7 +3183,7 @@ function renderTabs() {
     for (const [key, label] of tabs) {
       const b = document.createElement("button");
       b.type = "button";
-      b.className = "ctab" + (key === TAB_HIGH ? " hi" : "");
+      b.className = "ctab" + (key === TAB_HIGH ? " hi" : key === TAB_FLAG ? " fl" : "");
       b.setAttribute("role", "tab");
       b.dataset.tab = key;
       const name = document.createElement("span");
@@ -3018,7 +3215,10 @@ function renderTabs() {
     cnt.hidden = n === null || n === undefined;   // 数をまだ聞けていない
     cnt.textContent = String(Number(n) || 0);
     cnt.classList.toggle("zero", !n);
-    b.title = n === null || n === undefined ? "" : `${countWhat}のメール ${Number(n) || 0} 件`;
+    b.title = n === null || n === undefined ? ""
+      : b.dataset.tab === TAB_FLAG
+        ? `★フラグを付けたメール ${Number(n) || 0} 件（上の「状態」で選んでいるときは、その状態だけ）`
+        : `${countWhat}のメール ${Number(n) || 0} 件`;
   }
   // 「確認待ち」を押して「すべて」に戻ったときなど、選んだタブが列の外にあれば見えるところへ
   // (選んだタブが変わらない1分ごとの更新では、横にずらした位置を動かさない)
@@ -3297,18 +3497,43 @@ $("m-ab-add").onclick = async () => {
   }
 };
 
-// 返信画面のボタンと欄を、メールの状態と自分の役割 (管理者・メール担当者) に合わせる。
-// 送信・対応不要は管理者だけ、「確認をお願いする」はメール担当者だけ (サーバも確かめる)
-function renderControls(m) {
-  const admin = isAdmin();
-  const replied = m.status === "replied", pending = m.status === "pending_approval";
-  $("m-meta").textContent =
-    contactLine(m) + (m.via_form ? `（HPフォーム経由・送信元: ${m.from_addr}）` : "") + " ・ " +
-    `${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${ST[m.status] || m.status}` +
+// 返信画面の件名の下の行 (相手・受信日時 (会社のタイムゾーン)・状態・誰が送ったか・★フラグ)。
+// iPhone では指して説明を見られないので、★を付けた人もここに出す。textContent で入れる
+function modalMeta(m) {
+  const replied = m.status === "replied";
+  return contactLine(m) + (m.via_form ? `（HPフォーム経由・送信元: ${m.from_addr}）` : "") + " ・ " +
+    `${fmtDate(m.received_at)} ・ ${ST[m.status] || m.status}` +
     (!replied || !m.replied_by ? ""
       : m.reply_source ? `（${m.reply_source_label || m.replied_by}から送信）`
       : m.approved_by && m.requested_by ? `（${m.requested_by} さんの下書きを ${m.approved_by} が確認して送信）`
-      : `（${m.replied_by} が送信）`);
+      : `（${m.replied_by} が送信）`) +
+    (m.flagged ? `・★フラグ${m.flagged_by ? `（${m.flagged_by}）` : ""}` : "");
+}
+
+// 返信画面の「☆ フラグ」(付いていれば「★ フラグ中」。付けた人・時刻は指したときの説明)。
+// サーバが★を返さない (前の版の) ときは出さない。件名の下の行もそろえる
+function renderModalFlag(m) {
+  const b = $("m-flag"), on = !!m.flagged;
+  b.hidden = !("flagged" in m);
+  b.setAttribute("aria-pressed", String(on));
+  b.setAttribute("aria-label", on ? "★フラグを外す" : "★フラグを付ける");
+  b.querySelector(".m-flag-ic").textContent = on ? "★" : "☆";
+  b.querySelector(".m-flag-txt").textContent = on ? " フラグ中" : " フラグ";
+  b.title = !on ? "★フラグを付けると、みんなの画面で目立ちます"
+    : `${m.flagged_by ? m.flagged_by + " が " : ""}${m.flagged_at ? fmtDate(m.flagged_at) + " に" : ""}付けました（押すと外します）`;
+  $("m-meta").textContent = modalMeta(m);
+}
+$("m-flag").onclick = () => {
+  if (modal.id && modal.mail) toggleFlag(modal.id, !modal.mail.flagged);
+};
+
+// 返信画面のボタンと欄を、メールの状態と自分の役割 (管理者・メール担当者) に合わせる。
+// 送信・対応不要は管理者だけ、「確認をお願いする」はメール担当者だけ (サーバも確かめる)。
+// ☆ フラグは、どちらも使える
+function renderControls(m) {
+  const admin = isAdmin();
+  const replied = m.status === "replied", pending = m.status === "pending_approval";
+  renderModalFlag(m);   // 件名の下の行も出す
   // Webメール・Gmail などから送った返信で、自動で返信済みにしたメール (送った文と送信箱へのつながり)
   const via = replied && !!m.reply_source;
   $("m-reply-via").hidden = !via;
@@ -3813,7 +4038,7 @@ $("m-archive").onclick = async () => {
   inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
   clientStale = true;  // 取引先の画面から開いていたら、閉じたときに取り直す
   if (modal.id === id) await closeModal();
-  if ($("filter").value !== "unhandled") showRowArchived(id);
+  if ($("filter").value !== "unhandled") showRowArchived(id, r);
   showArchivedToast(id, m.subject, r);
 };
 
