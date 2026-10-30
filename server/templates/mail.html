@@ -120,7 +120,8 @@
   #mail-table td[data-label="下書き"] { white-space: nowrap; }
   .row-archive:hover { background: #f3f4f6; border-color: #9ca3af; }
   .row-archive:focus-visible { outline: 2px solid #14532d; outline-offset: 2px; }
-  /* 対応不要にした行が、受信箱 (未対応) から消えるときの動き */
+  /* 「状態」で「未対応」を選んでいるときに、対応不要にした行が一覧から消える動き
+     (ふだんの「すべて」では消さずに、その場で灰色の「対応不要」にする) */
   .mail-row.leaving, .peek-row.leaving { opacity: 0; transform: translateX(1.5rem); pointer-events: none;
                       transition: opacity .25s ease, transform .25s ease; }
   @media (prefers-reduced-motion: reduce) { .mail-row.leaving, .peek-row.leaving { transition: none; } }
@@ -518,8 +519,8 @@
   #m-back[hidden], #m-archive[hidden] { display: none; }
   /* iPhone の縦では「← 戻る」と短くして、上の列を1行に収める */
   @media (max-width: 480px) { .m-back-long { display: none; } }
-  /* 「対応不要にする」は消す操作ではなく (下の知らせで元に戻せる)、片付ける操作なので、
-     赤ではなく青の枠の白いボタンにして、「閉じる」(灰色) とも見分けやすくする */
+  /* 「対応不要にする」は消す操作ではなく (返信しなくてよい印。メールは一覧に残り、下の知らせで元に戻せる)、
+     片付ける操作なので、赤ではなく青の枠の白いボタンにして、「閉じる」(灰色) とも見分けやすくする */
   .m-archive { background: #fff; color: #1d4ed8; border: 1.5px solid #93c5fd; font-weight: 600; }
   .m-archive:disabled { color: #6b7280; border-color: #d1d5db; }
   /* カレンダーに登録 (返信モーダル)。予定の候補を1つずつカードにして、その場で直せる */
@@ -846,12 +847,14 @@
 
 <section id="inbox" hidden>
   <h2>受信箱
-    <select id="filter" class="flt" aria-label="状態" style="margin-left:1rem">
+    <!-- 状態は、開いたときはいつも「すべて」(返信済み・対応不要のメールも灰色で一覧に残す)。
+         選んだ状態は覚えない (ブラウザが再読み込みで前の選択に戻さないように autocomplete="off") -->
+    <select id="filter" class="flt" aria-label="状態" autocomplete="off" style="margin-left:1rem">
+      <option value="">状態：すべて</option>
       <option value="unhandled">未対応</option>
       <option value="pending_approval">確認待ち</option>
       <option value="replied">返信済み</option>
       <option value="archived">対応不要</option>
-      <option value="">すべて</option>
     </select>
     <select id="filter-asg" class="flt" aria-label="担当"><option value="">担当：すべて</option></select>
     <select id="filter-acct" class="flt" aria-label="アドレス" hidden><option value="">アドレス：すべて</option></select>
@@ -869,14 +872,17 @@
   </details>
   <details class="howto" data-howto="inbox">
   <summary>使い方を見る</summary>
-  <p><small>受信メールを新しい順（届いた日時の新しいものが上）に表示します。一覧の上の「並び順」で
+  <p><small>受信メールを新しい順（届いた日時の新しいものが上）に表示します。
+  返信済み・対応不要にしたメールも一覧に残り、灰色で出ます（「状態」の欄に「返信済み」「対応不要」と出ます）。
+  まだ対応していないメールだけを見たいときは、上の「状態」で「未対応」を選んでください
+  （ページを開き直すと「状態：すべて」に戻ります）。一覧の上の「並び順」で
   「重要度順」（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）にもできます。
   重要度は色で分けています（<span class="prb pr-1">高</span> 赤・<span class="prb pr-2">中</span> だいだい・<span class="prb pr-3">低</span> 灰色）。
   ふだんは「重要度」が「高・中」で、重要度が低のメールは出しません（確認待ちと差し戻したメールは低でも出します。隠している数は一覧の上に出ます）。
   「すべて」を押すと低のメールも出ます（このブラウザに覚えておきます。検索欄で探すときは、低のメールからも探します）。
   一覧のすぐ上のタブで、問い合わせの種類ごとや「重要（高）」だけに分けて見られます
-  （タブの数字は、まだ対応していないメールの数です。上の「状態」が「未対応」なら未対応の数、
-  「確認待ち」なら確認待ちの数で、ほかを選んでいるときは未対応と確認待ちを合わせた数です）。
+  （タブの数字は、まだ対応していないメール（未対応と確認待ちを合わせたもの）の数です。
+  上の「状態」で「未対応」を選んでいるときは未対応の数、「確認待ち」なら確認待ちの数になります）。
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
@@ -894,8 +900,10 @@
   （「鍵」のような1文字でも探せます。「清掃 10月」のように空白で区切ると、全部を含むメールだけが出ます）。
   探している間は「状態」が「すべて」になり、返信済み・対応不要のメールからも探します
   （「状態」を選び直せば、その中だけを探します。「✕ 検索をやめる」で元に戻ります）。
-  <span id="admin-help">返事のいらないメールは、行の右の「対応不要」を押すとすぐ一覧から外れます
-  （間違えたときは、画面の下に出る「元に戻す」で戻せます）。
+  <span id="admin-help">返事のいらないメールは、行の右の「対応不要」を押してください（返信しなくてよい印です）。
+  対応不要にしたメールは一覧に残り、灰色で「対応不要」と出ます
+  （「状態」で「未対応」を選んでいるときだけ、すぐ一覧から外れます。
+  間違えたときは、画面の下に出る「元に戻す」で未対応に戻せます）。
   受信するメールアドレスとAIの設定は「設定」画面で行ってください。</span></small></p>
   </details>
   <p id="ai-warn" class="error" hidden><small>⚠ <span id="ai-warn-text"></span>
@@ -1462,7 +1470,7 @@
     <div class="m-top">
       <button id="m-back" class="ghost" aria-label="前のメールに戻る" hidden>← <span class="m-back-long">前のメールに</span>戻る</button>
       <div class="m-top-act">
-        <button id="m-archive" class="m-archive" type="button">✓ 対応不要にする</button>
+        <button id="m-archive" class="m-archive" type="button" title="返信しなくてよい印を付けます（メールは受信箱に残ります）">✓ 対応不要にする</button>
         <button id="m-close-top" class="ghost" type="button">閉じる</button>
       </div>
     </div>
@@ -2253,6 +2261,7 @@ function renderInbox(list, keepPlace) {
   const anchorSel = !anchor ? ""
     : anchor.classList.contains("peek-row") ? `.peek-row[data-peek-row="${Number(anchor.dataset.peekRow)}"]`
     : `.mail-row[data-id="${Number(anchor.dataset.id)}"]`;
+  const focus = focusedRowButton(tbody);   // キーボードでいたボタン (描き直した後に戻す)
   const newest = mailStatus && mailStatus.newest_id || 0;
   // 初めて開いた (覚えていない) ときは、今あるメールには印を付けない。
   // DB を作り直した (覚えている番号の方が大きい) ときも、今あるメールまでを見たことにする
@@ -2263,8 +2272,9 @@ function renderInbox(list, keepPlace) {
     seenId = newest || Math.max(0, ...list.map(m => Number(m.id)));
     saveSeen(seenId, reset);
   }
-  const filtered = activeTab !== TAB_ALL || $("filter-asg").value || $("filter-acct").value ||
-    inboxHiddenLow > 0;
+  // 「状態」で未対応などを選んでいて何も出ないときも、「すべて」に戻せば出ることを案内する
+  const filtered = $("filter").value || activeTab !== TAB_ALL || $("filter-asg").value ||
+    $("filter-acct").value || inboxHiddenLow > 0;
   // 何も出ないときの案内で「すべて」に戻すとよいもの (選んでいるものだけを挙げる)
   const narrowed = [[$("filter").value, "「状態」"], [activeTab !== TAB_ALL, "タブ"],
                     [$("filter-asg").value, "「担当」"], [$("filter-acct").value, "「アドレス」"],
@@ -2274,8 +2284,8 @@ function renderInbox(list, keepPlace) {
   // 探しているときは、探した言葉に印を付けて、本文の言葉のあたりを件名の下に出す
   const T = inboxFound ? hlTerms(inboxFound.q) : null;
   shownMails = new Map(list.map(m => [Number(m.id), m]));
-  // 自動で取り直して行が増えた・減ったときは、少しの間「対応不要」を押せないようにする
-  // (押そうとした指の下に、別のメールのボタンが来ることがあるため)
+  // 自動で取り直して行が増えた・減ったときは、少しの間「対応不要」などの行のボタン・行を押せないようにする
+  // (押そうとした指の下に、別のメールのボタン・行が来ることがあるため)
   if (keepPlace) {
     const before = [...tbody.querySelectorAll(".mail-row")].map(tr => tr.dataset.id).join();
     if (before && before !== list.map(m => String(Number(m.id))).join()) rowsMovedAt = Date.now();
@@ -2306,29 +2316,23 @@ function renderInbox(list, keepPlace) {
         : `<tr><td colspan="8"><small>メールはありません（「今すぐ受信」を押すと、新しいメールを確かめます）</small></td></tr>`);
   document.querySelectorAll(".mail-row").forEach(tr =>
     tr.onclick = e => {
+      // 「本文 ▼」「対応不要」ボタンを押したときは、返信画面を開かない
+      const p = e.target.closest("button.row-peek"), b = e.target.closest("button.row-archive");
+      if (p || b) e.stopPropagation();
+      // 行が消えて下の行が上がってきた・対応不要にして行の「対応不要」が消えた直後は、
+      // 同じ所をもう一度押しても何もしない (2回押したつもりで、次のメールまで対応不要にしたり、
+      // その場所に来た「本文 ▼」や行を押して、プルダウン・返信画面を開いたりしないように)
+      if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
       // 「本文 ▼」は、その行の下に本文とやり取りを出す (返信画面は開かない)
-      const p = e.target.closest("button.row-peek");
-      if (p) {
-        e.stopPropagation();
-        togglePeek(Number(p.dataset.peek));
-        return;
-      }
-      // 「対応不要」ボタンを押したときは、返信画面を開かない
-      const b = e.target.closest("button.row-archive");
-      if (b) {
-        e.stopPropagation();
-        // 行が消えて下の行が上がってきた直後は、同じ所をもう一度押しても何もしない
-        // (2回押したつもりで、次のメールまで対応不要にしてしまわないように)
-        if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
-        archiveFromRow(b, tr);
-        return;
-      }
-      openMail(+tr.dataset.id);
+      if (p) togglePeek(Number(p.dataset.peek));
+      else if (b) archiveFromRow(b, tr);
+      else openMail(+tr.dataset.id);
     });
   setPeekWidth();
   wrap.scrollLeft = left;
   const again = anchorSel && tbody.querySelector(anchorSel);
   if (again) window.scrollBy(0, again.getBoundingClientRect().top - anchorTop);
+  refocus(focus);
   // 開いているプルダウンは、まだ読んでいない・メールが変わった (返信した・続きが届いた) ときだけ
   // 読み直す (読み直す間も、前に読んだものを出したままにする)
   for (const m of list) {
@@ -2455,6 +2459,29 @@ const mailRowOf = id => document.querySelector(`#mail-table .mail-row[data-id="$
 const peekRowOf = id => document.querySelector(`#mail-table .peek-row[data-peek-row="${Number(id)}"]`);
 const subjLabel = m => esc(snip(m.subject, 30)) || "件名なし";
 
+// キーボードで一覧のボタン (行の「本文 ▼」「対応不要」・プルダウンの中のボタン) にいたときは、
+// 描き直した後も同じボタンに戻す。そのボタンが無くなった (対応不要にした など)・押せないときは、
+// 行なら「本文 ▼」、プルダウンなら「閉じる」に移る (画面は動かさない)。
+// ボタンはどれも data-… にメールの番号を持つので、どの行・プルダウンの、どのボタンかで探す
+const ROW_BTN_KEYS = ["data-peek", "data-archive", "data-pk-open", "data-pk-close", "data-pk-earlier", "data-pk-retry"];
+function focusedRowButton(box) {
+  const b = document.activeElement;
+  const tr = b && box.contains(b) ? b.closest(".mail-row, .peek-row") : null;
+  const key = tr && ROW_BTN_KEYS.find(k => b.hasAttribute(k));
+  if (!key) return null;
+  const id = Number(tr.dataset.id || tr.dataset.peekRow);
+  const peek = tr.classList.contains("peek-row");
+  const where = peek ? `.peek-row[data-peek-row="${id}"]` : `.mail-row[data-id="${id}"]`;
+  return { btn: `${where} button[${key}="${Number(b.getAttribute(key))}"]`,
+           alt: peek ? `${where} button[data-pk-close]` : `${where} button.row-peek` };
+}
+function refocus(f) {
+  if (!f) return;
+  const t = document.querySelector("#mail-table tbody");
+  const b = [t.querySelector(f.btn), t.querySelector(f.alt)].find(x => x && !x.disabled);
+  b?.focus({ preventScroll: true });
+}
+
 function peekButton(m, open) {
   const id = Number(m.id);
   return `<button type="button" class="row-peek" data-peek="${id}" aria-expanded="${open}"
@@ -2463,7 +2490,7 @@ function peekButton(m, open) {
 function archiveButton(m) {
   const id = Number(m.id);
   return `<button type="button" class="row-archive" data-archive="${id}"${archivingIds.has(id) ? " disabled" : ""}
-             aria-label="対応不要にする（${subjLabel(m)}）">対応不要</button>`;
+             aria-label="対応不要にする（${subjLabel(m)}）" title="返信しなくてよい印を付けます">対応不要</button>`;
 }
 
 // 開いたメールは「新着」の印を外す (返信画面・プルダウン)
@@ -2565,8 +2592,10 @@ function fillPeek(id) {
   const box = $(`peek-${id}`), tr = peekRowOf(id);
   if (!box || !tr) return;
   const above = tr.getBoundingClientRect().bottom < 0, h0 = tr.offsetHeight;
+  const focus = focusedRowButton(box);
   box.innerHTML = peekInner(id);
   if (above) window.scrollBy(0, tr.offsetHeight - h0);
+  refocus(focus);
 }
 
 async function loadPeek(id, earlier) {
@@ -2620,6 +2649,9 @@ document.querySelector("#mail-table tbody").addEventListener("click", e => {
   if (!e.target.closest(".peek-row")) return;
   const b = e.target.closest("button");
   if (!b) return;
+  // 行の「対応不要」と同じく、行が動いた・ボタンが消えた直後は何もしない
+  // (プルダウンの「対応不要」を2回押したつもりで、その場所に来た「閉じる」を押さないように)
+  if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
   const d = b.dataset;
   if (d.pkOpen) { openMail(Number(d.pkOpen)).catch(() => {}); return; }
   if (d.pkClose) {
@@ -2637,8 +2669,6 @@ document.querySelector("#mail-table tbody").addEventListener("click", e => {
     return;
   }
   if (b.matches("button.row-archive")) {
-    // 行の「対応不要」と同じく、行が動いた直後は何もしない
-    if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
     const tr = mailRowOf(Number(d.archive));
     if (tr) archiveFromRow(b, tr);
   }
@@ -2646,6 +2676,8 @@ document.querySelector("#mail-table tbody").addEventListener("click", e => {
 
 /* ---------- 対応不要 (ワンタップ) と「元に戻す」 ----------
    未対応のメールを、確かめの画面を出さずにすぐ対応不要にする (管理者だけ。サーバも確かめる)。
+   対応不要は「返信しなくてよい」印で、メールは一覧に残り、灰色で「対応不要」と出る
+   (「状態」で「未対応」を選んでいるときだけ、一覧から外れる)。
    間違えたときのために、画面の下に「元に戻す」付きの知らせを6秒ほど出す (続けて押したときは
    1通ずつ知らせを重ねて、どれも元に戻せる。4通目からは古い知らせを「（2通）」のように
    1つにまとめるので、消えて戻せなくなることはない)。見ている間にほかの人が返信していたなどで
@@ -2654,8 +2686,8 @@ let shownMails = new Map();       // 受信箱に出しているメール (番�
 const archivingIds = new Set();   // 対応不要にしている途中のメール (取り直してもボタンを押せないままにする)
 const TOAST_MS = 6000, TOAST_MAX = 3;
 const TOAST_AGAIN_MS = 4000;      // 返信画面などを閉じた後に、知らせを出し直す長さ
-const ROW_QUIET_MS = 600;         // 行が動いた後、「対応不要」を押しても何もしない長さ
-let rowsMovedAt = 0;              // 一覧の行が消えた・動いた時刻
+const ROW_QUIET_MS = 600;         // 行が動いた後、一覧のボタン・行を押しても何もしない長さ
+let rowsMovedAt = 0;              // 一覧の行が消えた・動いた (行の「対応不要」が消えた) 時刻
 
 // メールを変えた後に、見ている画面を取り直す (受信箱は見ていた場所を動かさない)
 function afterMailChange() {
@@ -2673,12 +2705,15 @@ async function archiveMail(id, fromStatus) {
   });
 }
 
-// 一覧の行の「対応不要」。未対応だけを出しているときは、行を動かして消す
+// 一覧の行の「対応不要」(返信しなくてよい印)。行は一覧に残し、その場で灰色の「対応不要」にする。
+// 「状態」で「未対応」を選んでいるときだけ、行を動かして消す
 // (b は行かプルダウンの中のボタン、tr はそのメールの行。開いているプルダウンも一緒に動かす)
 async function archiveFromRow(b, tr) {
   const id = +b.dataset.archive;
   if (archivingIds.has(id)) return;
   archivingIds.add(id);
+  // キーボードで押したときは、終わった後も同じあたり (行の「本文 ▼」・プルダウンの「閉じる」) にいる
+  const focus = document.activeElement === b ? focusedRowButton(tr.parentNode) : null;
   const btns = () => document.querySelectorAll(`button.row-archive[data-archive="${id}"]`);
   btns().forEach(x => { x.disabled = true; });
   const m = shownMails.get(id) || {};
@@ -2695,17 +2730,47 @@ async function archiveFromRow(b, tr) {
     tr.classList.remove("leaving");
     pk?.classList.remove("leaving");
     btns().forEach(x => { x.disabled = false; });
+    refocus(focus);
     refreshInbox();
     return;
   }
+  // 対応不要にしたメールは見たことにする (「新着」の印を外す。描き直しても付けない)
+  markOpened(id);
   if (leave && tr.isConnected) {
     // 次のメールの行 (開いているプルダウンの下から読んでいたときは、それを画面の上に出す)
     const next = (pk && pk.isConnected ? pk : tr).nextElementSibling;
     removeRows([tr, pk], next && next.classList.contains("mail-row") ? next : null);
     rowsMovedAt = Date.now();
+  } else if (!leave) {
+    showRowArchived(id);
+    refocus(focus);
   }
   showArchivedToast(id, m.subject, r);
-  refreshInbox();      // タブの数・未対応の数も取り直す
+  refreshInbox();      // タブの数・未対応の数も取り直す (行は「対応不要」のまま残る)
+}
+
+// 対応不要にしたメールの行を、取り直すのを待たずにその場で灰色の「対応不要」にする
+// (行は一覧に残す。「対応不要」のボタンは行とプルダウンから消す。取り直した後も同じ見た目)。
+// ボタンが消えて行の高さ・列の幅が変わっても、見ている所は動かさない
+// (一番上に見えている行が、変えた後も同じ位置に見えるようにする)。
+// 消えた「対応不要」の場所には「本文 ▼」やプルダウンの「閉じる」・行が来るので、少しの間は
+// 一覧を押しても何もしない (rowsMovedAt。2回押したつもりで、プルダウン・返信画面を開かないように)
+function showRowArchived(id) {
+  const m = shownMails.get(id), tr = mailRowOf(id);
+  if (m) m.status = "archived";
+  const tbody = document.querySelector("#mail-table tbody");
+  const anchor = viewName === "inbox" && window.scrollY > 0
+    ? [...tbody.querySelectorAll(".mail-row, .peek-row")].find(x => x.getBoundingClientRect().bottom > 0)
+    : null;
+  const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+  document.querySelectorAll(`button.row-archive[data-archive="${id}"]`).forEach(x => x.remove());
+  if (tr) {
+    tr.classList.add("done");
+    tr.classList.remove("two-btn");
+    tr.querySelector('td[data-label="状態"]').innerHTML = `<span class="st-archived">${esc(ST.archived)}</span>`;
+    rowsMovedAt = Date.now();
+  }
+  if (anchor) window.scrollBy(0, anchor.getBoundingClientRect().top - anchorTop);
 }
 
 // 「対応不要にしました（件名）　元に戻す」の知らせ。文字は textContent で入れる
@@ -3735,6 +3800,7 @@ $("m-send").onclick = async () => {
 };
 
 // 返信画面の「対応不要にする」: すぐ対応不要にして閉じ、受信箱の下に「元に戻す」を出す。
+// 受信箱の行は残り、灰色の「対応不要」になる (「状態」で「未対応」を選んでいるときは、取り直すと外れる)。
 // 書きかけの返信文は、閉じるときに今までどおり下書きに残す
 $("m-archive").onclick = async () => {
   const b = $("m-archive");
@@ -3747,6 +3813,7 @@ $("m-archive").onclick = async () => {
   inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
   clientStale = true;  // 取引先の画面から開いていたら、閉じたときに取り直す
   if (modal.id === id) await closeModal();
+  if ($("filter").value !== "unhandled") showRowArchived(id);
   showArchivedToast(id, m.subject, r);
 };
 

@@ -8,6 +8,9 @@
 - メール担当者は 403 (どちらも)。勤怠だけの人・トークンなしも使えない
 - PATCH の状態変更も、返信済み・確認待ちのメールは対応不要にしない
 - 画面: 一覧の「対応不要」ボタン (管理者だけ)・「元に戻す」の知らせ・確かめの画面を出さない
+- 対応不要は「返信しなくてよい」印: 受信箱は「状態：すべて」で開き、対応不要にした行も
+  一覧に残って灰色の「対応不要」になる (「未対応」を選んでいるときだけ一覧から外れる)
+  (一覧は500通までだが、未対応・確認待ちのメールは古くても出す)
 """
 import re
 
@@ -80,7 +83,7 @@ def test_archive_then_undo_restores_unhandled(client, users, tmp_path):
     assert out["subject"] == "ご案内（返事不要）"
     row = _row(tmp_path, mid)
     assert row["status"] == "archived" and row["archived_at"] == out["archived_at"]
-    # 受信箱 (未対応) から外れ、タブと未対応の数も減る
+    # 「未対応」の一覧から外れ、タブと未対応の数も減る (「すべて」の一覧には残る。次のテスト)
     ids = [m["id"] for m in client.get("/api/mail?status=unhandled", headers=auth(admin)).json()]
     assert ids == [other]
     st = client.get("/api/mail/status?status=unhandled", headers=auth(admin)).json()
@@ -105,6 +108,75 @@ def test_archive_then_undo_restores_unhandled(client, users, tmp_path):
     # 操作の記録 (CSV) には分かりやすい名前で出る
     csv = client.get("/api/reports/audit.csv", headers=auth(admin)).text
     assert "メールを対応不要にした" in csv and "メールの対応不要を元に戻した" in csv
+
+
+def test_archived_mail_stays_in_default_list(client, users, tmp_path):
+    """受信箱を開いたときの一覧 (状態を送らない =「すべて」) には、対応不要にしたメールも残る."""
+    _, admin, _ = users
+    mid = _add_mail(tmp_path, subject="ご案内（返事不要）")
+    other = _add_mail(tmp_path, n=2)
+    out = _archive(client, admin, mid).json()
+
+    def listed():
+        r = client.get("/api/mail?sort=date&hide_low=1", headers=auth(admin))
+        return [(m["id"], m["status"]) for m in r.json()]
+
+    assert listed() == [(other, "unhandled"), (mid, "archived")]
+    # 未対応の数 (受信箱のボタン・タブの名前) とタブの数 (「すべて」のとき) からは外れる
+    st = client.get("/api/mail/status?hide_low=1", headers=auth(admin)).json()
+    assert st["unhandled"] == 1 and st["tabs"]["all"] == 1
+    # 「元に戻す」で、同じ場所のまま未対応に戻る
+    assert _undo(client, admin, mid, out).status_code == 200
+    assert listed() == [(other, "unhandled"), (mid, "unhandled")]
+    st = client.get("/api/mail/status?hide_low=1", headers=auth(admin)).json()
+    assert st["unhandled"] == 2 and st["tabs"]["all"] == 2
+
+
+def test_default_list_keeps_old_open_mails_beyond_limit(client, users, tmp_path):
+    """「状態：すべて」の一覧は500通までだが、古い未対応・確認待ちのメールも必ず出す.
+
+    新しい順の500通だけだと、後に届いた返信済み・対応不要のメールが500通を超えたときに、
+    その前に届いた未対応のメールが一覧に出ず、未対応の数 (1) とも合わなくなっていた。
+    """
+    from server import app as app_module
+    from server import db
+    _, admin, _ = users
+    limit = app_module.MAIL_LIST_LIMIT
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        def add(key, subject, when, priority, status):
+            return conn.execute(
+                "INSERT INTO mails (message_id, from_addr, from_name, subject, body, received_at,"
+                " fetched_at, priority, status) VALUES (?, ?, 'A', ?, '本文', ?, ?, ?, ?)",
+                (f"<{key}@example.com>", f"{key}@example.com", subject, when, when,
+                 priority, status)).lastrowid
+        old = add("old", "古い未対応", "2026-05-01T00:00:00+00:00", 1, "unhandled")
+        pending = add("pend", "古い確認待ち", "2026-05-02T00:00:00+00:00", 2, "pending_approval")
+        old_done = add("done", "古い返信済み", "2026-05-03T00:00:00+00:00", 2, "replied")
+        for i in range(limit):
+            t = f"2026-06-01T{i // 3600:02d}:{i // 60 % 60:02d}:{i % 60:02d}+00:00"
+            add(f"r{i}", f"お知らせ{i}", t, 2, "replied" if i % 2 else "archived")
+
+    def listed(query):
+        r = client.get("/api/mail?" + query, headers=auth(admin))
+        assert r.status_code == 200, r.text
+        return [m["id"] for m in r.json()], r.headers
+
+    for sort in ("date", "priority"):
+        ids, _ = listed(f"sort={sort}&hide_low=1")
+        assert len(ids) == limit and old in ids and pending in ids, sort
+        assert old_done not in ids, sort   # 返信済み・対応不要は新しい方だけ
+    # 並びはいつもの順 (新しい順なら、古い2通は一番下)
+    ids, _ = listed("sort=date&hide_low=1")
+    assert ids[-2:] == [pending, old]
+    # 一覧と、未対応の数・タブの数 (未対応と確認待ち) が合う
+    st = client.get("/api/mail/status?hide_low=1", headers=auth(admin)).json()
+    assert st["unhandled"] == 1 and st["tabs"]["all"] == 2
+    # 「状態」を選んだときは今までどおり
+    assert listed("status=unhandled&sort=date&hide_low=1")[0] == [old]
+    # 探したときは今までどおり新しい方から500通 (合った数はヘッダに出し、画面が「新しい方から」と出す)
+    ids, headers = listed("q=" + "本文")
+    assert len(ids) == limit and old not in ids and pending not in ids
+    assert headers["X-Search-Total"] == str(limit + 3)
 
 
 def test_archive_refuses_when_status_changed(client, users, tmp_path):
@@ -346,3 +418,117 @@ def test_mail_page_keeps_undo_while_mail_is_open(client):
     assert 'if (!ctl.busy && !anyModalOpen()) close();' in page
     assert "if (modalWasOpen && !open) for (const t of $(\"toasts\").children) t.undo?.again();" in page
     assert "Math.max(ctl.until - Date.now(), TOAST_AGAIN_MS)" in page
+
+
+def test_mail_page_inbox_opens_with_all_statuses(client):
+    """受信箱は「状態：すべて」で開く (返信済み・対応不要のメールも一覧に残す)。選んだ状態は覚えない."""
+    page = client.get("/mail").text
+    start = page.index('<select id="filter"')
+    sel = page[start:page.index("</select>", start)]
+    # 先頭 (開いたときに選ばれているもの) が「すべて」。未対応などは選べば今までどおり絞り込む
+    assert re.findall(r'<option value="([^"]*)"', sel) == [
+        "", "unhandled", "pending_approval", "replied", "archived"]
+    assert '<option value="">状態：すべて</option>' in sel and "selected" not in sel
+    # ブラウザが再読み込みで前の選択に戻さない。このブラウザに覚えておくこともしない
+    assert 'autocomplete="off"' in sel[:sel.index(">")]
+    assert not re.search(r"(savePref|loadPref|localStorage\.\w+)\([^)]*filter\b", page)
+    # 「状態」で選んでいて何も出ないときは、「すべて」に戻すと出ることを案内する
+    assert 'const filtered = $("filter").value || activeTab !== TAB_ALL' in page
+    # 使い方: 対応不要にしても一覧に残る (返信しなくてよい印)。未対応だけを見る方法も書く
+    howto = page[page.index('data-howto="inbox"'):]
+    howto = howto[:howto.index("</details>")]
+    for text in ("返信済み・対応不要にしたメールも一覧に残り、灰色で出ます",
+                 "上の「状態」で「未対応」を選んでください",
+                 "対応不要にしたメールは一覧に残り、灰色で「対応不要」と出ます",
+                 "（返信しなくてよい印です）"):
+        assert text in howto, text
+    assert "「対応不要」を押すとすぐ一覧から外れます" not in page
+
+
+def test_mail_page_archive_keeps_row_in_list(client):
+    """対応不要 (行・プルダウン・返信画面) にしても、行は一覧に残り、その場で灰色の「対応不要」になる."""
+    page = client.get("/mail").text
+    a = re.search(r"async function archiveFromRow\(b, tr\) \{(.*?)\n\}", page, re.S).group(1)
+    # 行を動かして消すのは「状態」で「未対応」を選んでいるときだけ。ほかは行を残して灰色にする
+    assert 'const leave = $("filter").value === "unhandled";' in a
+    assert "} else if (!leave) {\n    showRowArchived(id);" in a
+    assert a.index("showRowArchived(id)") < a.index("showArchivedToast(") < a.rindex("refreshInbox();")
+    s = re.search(r"function showRowArchived\(id\) \{(.*?)\n\}", page, re.S).group(1)
+    assert 'm.status = "archived"' in s
+    assert 'tr.classList.add("done");' in s and 'tr.classList.remove("two-btn");' in s
+    # 「対応不要」のボタンは行とプルダウンの両方から消す。状態の欄は決まった言葉だけを入れる
+    assert ('document.querySelectorAll(`button.row-archive[data-archive="${id}"]`)'
+            '.forEach(x => x.remove());') in s
+    assert '.innerHTML = `<span class="st-archived">${esc(ST.archived)}</span>`;' in s
+    # ボタンが消えて行の高さが変わっても、見ている所は動かさない (一番上に見えている行の位置をそろえる)
+    assert ".find(x => x.getBoundingClientRect().bottom > 0)" in s
+    assert (s.index("const anchorTop = ") < s.index(".forEach(x => x.remove());")
+            < s.index("window.scrollBy(0, anchor.getBoundingClientRect().top - anchorTop);"))
+    # ボタンを指すと、返信しなくてよい印だと分かる
+    assert 'title="返信しなくてよい印を付けます">対応不要</button>' in page
+    assert 'title="返信しなくてよい印を付けます（メールは受信箱に残ります）">✓ 対応不要にする</button>' in page
+    # 取り直した後も同じ見た目 (灰色の行・「対応不要」のボタンは未対応の行だけ)
+    assert '["unhandled", "pending_approval"].includes(m.status) ? "" : " done"' in page
+    assert ".mail-row.done td { color: #9ca3af; }" in page
+    assert 'const canArchive = admin && m.status === "unhandled";' in page
+    # 返信画面の「対応不要にする」も、閉じた後に行を残して灰色にする
+    m = re.search(r'\$\("m-archive"\)\.onclick = async \(\) => \{(.*?)\n\};', page, re.S).group(1)
+    assert 'if ($("filter").value !== "unhandled") showRowArchived(id);' in m
+    assert m.index("await closeModal()") < m.index("showRowArchived(id)")
+
+
+def test_mail_page_keeps_keyboard_focus_after_archive(client):
+    """キーボードで「対応不要」を押しても・一覧を描き直しても、フォーカスが先頭に飛ばない (画面も動かさない)."""
+    page = client.get("/mail").text
+    a = re.search(r"async function archiveFromRow\(b, tr\) \{(.*?)\n\}", page, re.S).group(1)
+    # ボタンを押せなくする前に、どこにいたかを覚える
+    assert "const focus = document.activeElement === b ? focusedRowButton(tr.parentNode) : null;" in a
+    assert a.index("focusedRowButton(") < a.index("x.disabled = true")
+    assert "showRowArchived(id);\n    refocus(focus);" in a
+    # 消したボタンの代わりは、行の「本文 ▼」かプルダウンの「閉じる」
+    f = page[page.index("function focusedRowButton("):page.index("function peekButton(")]
+    assert "button[data-pk-close]" in f and "button.row-peek" in f
+    assert "b?.focus({ preventScroll: true });" in f and "!x.disabled" in f
+    # 一覧・プルダウンを描き直しても、同じボタンに戻す
+    r = page[page.index("function renderInbox("):page.index('$("filter").onchange')]
+    assert r.index("const focus = focusedRowButton(tbody);") < r.index("tbody.innerHTML")
+    assert (r.index("window.scrollBy(0, again.getBoundingClientRect().top - anchorTop);")
+            < r.index("refocus(focus);"))
+    fp = page[page.index("function fillPeek("):page.index("async function loadPeek(")]
+    assert "const focus = focusedRowButton(box);" in fp and "refocus(focus);" in fp
+
+
+def test_mail_page_ignores_second_tap_after_archive_keeps_row(client):
+    """対応不要にして行を残したとき (「状態：すべて」) も、すぐ同じ所を押したら何もしない.
+
+    行の「対応不要」が消えて、その場所に「本文 ▼」・行 (ボタンが縦に並ぶ幅)・プルダウンの「閉じる」が
+    来るので、2回押したつもりの2回目で、対応不要にしたばかりのメールのプルダウン・返信画面を開いていた。
+    """
+    page = client.get("/mail").text
+    # ボタンを消したら、行が動いたときと同じく時刻を覚える
+    s = re.search(r"function showRowArchived\(id\) \{(.*?)\n\}", page, re.S).group(1)
+    assert s.index(".forEach(x => x.remove());") < s.index("rowsMovedAt = Date.now();")
+    # 行の中は「対応不要」だけでなく、「本文 ▼」・行 (返信画面を開く) も、その間は何もしない
+    m = re.search(r'tr\.onclick = e => \{(.*?)\n    \}\);', page, re.S).group(1)
+    quiet = m.index("if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;")
+    assert m.index("if (p || b) e.stopPropagation();") < quiet
+    for call in ("togglePeek(", "archiveFromRow(b, tr)", "openMail("):
+        assert quiet < m.index(call), call
+    # プルダウンの中のボタン (「閉じる」など) も全部
+    click = page[page.index('document.querySelector("#mail-table tbody").addEventListener("click"'):]
+    click = click[:click.index("\n});")]
+    quiet = click.index("if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;")
+    for key in ("d.pkOpen", "d.pkClose", "d.pkEarlier", "d.pkRetry", 'b.matches("button.row-archive")'):
+        assert quiet < click.index(key), key
+
+
+def test_mail_page_archive_clears_new_mark(client):
+    """対応不要にしたメールは見たことにして、「新着」の印 (黄色の行) を外す (描き直しても付けない)."""
+    page = client.get("/mail").text
+    a = re.search(r"async function archiveFromRow\(b, tr\) \{(.*?)\n\}", page, re.S).group(1)
+    # 対応不要にできたときだけ (できなかったときは前で戻る)。行を残すときも、消すときも
+    assert a.index("if (!r) {") < a.index("markOpened(id);") < a.index("if (leave && tr.isConnected)")
+    mo = page[page.index("function markOpened(id) {"):]
+    mo = mo[:mo.index("\n}")]
+    assert "openedIds.add(Number(id));" in mo and 'row.classList.remove("new");' in mo
+    assert "const isNew = id > seenId && !openedIds.has(id);" in page
