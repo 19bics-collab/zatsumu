@@ -85,7 +85,9 @@
   .st-chip.st-replied { color: #166534; border-color: #86efac; background: #dcfce7; }
   .st-chip.st-archived { color: #4b5563; border-color: #e5e7eb; background: #f3f4f6; }
   .mail-row.done .st-chip { opacity: 1; }      /* 灰色の行でも、何をしたかははっきり */
-  .st-sub { display: block; font-size: .72rem; color: #6b7280; font-weight: normal; white-space: nowrap; }
+  /* いつ・誰が は欄に入らなければ折り返す (状態の欄が広がって、表が横にはみ出さないように)。日時は折り返さない */
+  .st-sub { display: block; font-size: .72rem; color: #6b7280; font-weight: normal; overflow-wrap: anywhere; }
+  .st-sub .st-when { white-space: nowrap; }
   /* 件名の前の ↩ (返信したメール。Webメールの返信済みの印と同じ) */
   .rep-ic { color: #16a34a; font-weight: 700; margin-right: .25rem; }
   /* 受信日時: 表とスマホのカードは「2026/10/29 20:15」(会社のタイムゾーン)。短い形は使う所だけで出す */
@@ -244,6 +246,8 @@
   .ctab.fl .cnt:not(.zero) { background: #fef3c7; color: #92400e; }
   .ctab.fl[aria-selected="true"] { background: #a16207; border-color: #a16207; color: #fff; }
   .ctab.fl[aria-selected="true"] .cnt { color: #a16207; }
+  /* 指で押す画面は、タブも押しやすい高さにする */
+  @media (pointer: coarse), (max-width: 640px) { .ctab { min-height: 40px; } }
   .sort-tg { display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem;
              color: #6b7280; white-space: nowrap; margin-left: auto; }
   .sort-tg button { background: transparent; color: #4b5563; border: 1px solid #d1d5db;
@@ -2268,22 +2272,23 @@ function repliedIcon(m) {
 function statusMark(m) {
   const st = String(m.status || "");
   const chip = (label, title) => `<span class="st-chip st-${esc(st)}"${title ? ` title="${esc(title)}"` : ""}>${esc(label)}</span>`;
-  const sub = parts => {
-    const text = parts.filter(Boolean).join("・");
-    return text ? `<small class="st-sub">${esc(text)}</small>` : "";
+  // いつ・誰が。日時は途中で折り返さない (名前は、欄に入らなければ折り返す)
+  const sub = (when, who) => {
+    const parts = [when ? `<span class="st-when">${esc(when)}</span>` : "", esc(who)].filter(Boolean);
+    return parts.length ? `<small class="st-sub">${parts.join("・")}</small>` : "";
   };
   if (st === "replied") {
     const via = m.reply_source ? REPLY_VIA[m.reply_source] || "Webメールなど" : "";
     const title = via
       ? `${via}から返信してあります（送信済みフォルダから取り込んで、自動で返信済みにしました）`
       : `${m.replied_at ? fmtDate(m.replied_at) + " に " : ""}${m.replied_by ? m.replied_by + " が" : ""}返信しました`;
-    return chip("↩ " + ST.replied, title) + sub([m.replied_at ? fmtListDate(m.replied_at) : "", replyWho(m)]);
+    return chip("↩ " + ST.replied, title) + sub(m.replied_at ? fmtListDate(m.replied_at) : "", replyWho(m));
   }
   if (st === "archived") {
     // 対応不要にした時刻が無い (前の版が対応不要にした) ときは、印だけ
     const when = m.archived_at ? [fmtDate(m.archived_at), m.archived_by].filter(Boolean).join(" ") : "";
     return chip("✓ " + ST.archived, `返信しなくてよい印です${when ? `（${when}）` : ""}`) +
-      (m.archived_at ? sub([fmtListDate(m.archived_at), m.archived_by]) : "");
+      (m.archived_at ? sub(fmtListDate(m.archived_at), m.archived_by) : "");
   }
   if (st === "pending_approval") {
     return chip(ST.pending_approval) + (m.requested_by ? `<small class="st-sub">（${esc(m.requested_by)}）</small>` : "");
@@ -2326,6 +2331,7 @@ async function showInbox(opts = {}) {
   if (word) q.set("q", word);
   else if (!showLow) q.set("hide_low", "1");
   const path = "/api/mail?" + q;
+  const askedAt = Date.now();   // この後に付けた・外した★は、答えが古いことがある (applyLocalFlags)
   let list, found = null, hiddenLow = 0;
   if (opts.auto) {
     try {
@@ -2353,6 +2359,7 @@ async function showInbox(opts = {}) {
   if (seq !== inboxSeq) return;        // 待っている間に、もう一度取り直し始めた
   inboxFound = found;
   inboxHiddenLow = hiddenLow;
+  applyLocalFlags(list, askedAt);
   renderInbox(list, opts.auto);
   refreshAiStatus();   // 自動受信の判定などで AI が失敗した・直ったかを、開くたびに出し直す
 }
@@ -3023,12 +3030,18 @@ function undoToast(items) {
    行の ☆ と返信画面の「☆ フラグ」で付ける・外す (メール担当者も使える)。押したらすぐ見た目を
    変え (待たせない)、サーバに送れなかったら元に戻す (理由はアラートで出る)。一覧はすぐには
    取り直さない (「★ フラグ」のタブで外しても行は消えずに ☆ のまま残り、もう一度押せば付け直せる。
-   次に取り直したときに外れる)。送っている間に同じメールの ☆ をもう一度押しても何もしない */
+   次に取り直したときに外れる)。送っている間や、押してすぐ (ROW_QUIET_MS の間) に同じメールの ☆ を
+   もう一度押しても何もしない (2回続けて押す癖で、付けた★がすぐ外れないように) */
 const flagBusy = new Set();   // ★を送っている途中のメール
+const flagTapAt = new Map();  // メールごとの、最後に ☆ を押した時刻
+// この画面で付けた・外した★ (番号 → {at: 変えた時刻, f: ★})。★を送り終えた後に、押す前に
+// 頼んでいた一覧の答えが届いても、古い★で描き直さないようにする (applyLocalFlags)
+const flagLocal = new Map();
 
 // そのメールの★の見た目を、出ている所 (一覧の行の ☆・返信画面) 全部でそろえる
 function setFlagUi(id, at, by) {
   const f = { flagged: !!at, flagged_at: at || null, flagged_by: at ? by || "" : "" };
+  flagLocal.set(id, { at: Date.now(), f });
   const m = shownMails.get(id);
   if (m) Object.assign(m, f);
   for (const b of document.querySelectorAll(`button.row-flag[data-flag="${Number(id)}"]`)) {
@@ -3044,9 +3057,19 @@ function setFlagUi(id, at, by) {
   }
 }
 
+// 一覧の答え (askedAt に頼んだもの) に、頼んだ後でこの画面が付けた・外した★を当てる
+// (頼む前に変えた★は、サーバの答えのとおりに出す。ほかの人が付け替えた★も、それで出る)
+function applyLocalFlags(list, askedAt) {
+  for (const m of list) {
+    const c = flagLocal.get(Number(m.id));
+    if (c && c.at >= askedAt && "flagged" in m) Object.assign(m, c.f);
+  }
+}
+
 async function toggleFlag(id, on) {
-  if (flagBusy.has(id)) return;
+  if (flagBusy.has(id) || Date.now() - (flagTapAt.get(id) || 0) < ROW_QUIET_MS) return;
   flagBusy.add(id);
+  flagTapAt.set(id, Date.now());
   const m = shownMails.get(id) || (modal.id === id && modal.mail) || {};
   const before = [m.flagged_at || null, m.flagged_by || ""];
   setFlagUi(id, on ? new Date().toISOString() : null, on ? me.name : "");

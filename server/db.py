@@ -802,7 +802,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # ★のメールだけの小さい索引 (「★ フラグ」のタブの数・一覧・保存日数の片付け用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_flagged ON mails(flagged_at)"
                  " WHERE flagged_at IS NOT NULL")
-    acols =[r["name"] for r in conn.execute("PRAGMA table_info(mail_accounts)")]
+    acols = [r["name"] for r in conn.execute("PRAGMA table_info(mail_accounts)")]
     for col, decl in (("sent_only", "INTEGER NOT NULL DEFAULT 0"),
                       ("sent_import", "INTEGER NOT NULL DEFAULT 1"),
                       ("sent_state_folder", "TEXT NOT NULL DEFAULT ''"),

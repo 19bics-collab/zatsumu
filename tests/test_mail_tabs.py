@@ -182,8 +182,8 @@ def test_sort_works_with_tab_filters(client, users, tmp_path):
 
 def test_tab_counts_by_category_high_and_status(client, users, tmp_path):
     _, admin, _ = users
-    assert _tabs(client, admin) == {"all": 0, "high": 0, "flagged": 0, "categories": {},
-                                    "uncategorized": 0, "has_uncategorized": False,
+    assert _tabs(client, admin) == {"all": 0, "high": 0, "flagged": 0, "flagged_mark": "",
+                                    "categories": {}, "uncategorized": 0, "has_uncategorized": False,
                                     "statuses": ["unhandled", "pending_approval"]}
     m1 = _add_mail(tmp_path, n=1, priority=1)                           # 清掃・高・未対応
     m2 = _add_mail(tmp_path, n=2, status="pending_approval")            # 清掃・確認待ち
@@ -195,7 +195,7 @@ def test_tab_counts_by_category_high_and_status(client, users, tmp_path):
     for mid in (m4, m5):
         _set(tmp_path, mid, category="予約・宿泊のお問い合わせ")
     t = _tabs(client, admin)
-    assert t == {"all": 3, "high": 2, "flagged": 0,
+    assert t == {"all": 3, "high": 2, "flagged": 0, "flagged_mark": "",
                  "categories": {"清掃のご依頼": 2, "予約・宿泊のお問い合わせ": 1},
                  "uncategorized": 0, "has_uncategorized": False,
                  "statuses": ["unhandled", "pending_approval"]}
@@ -235,8 +235,8 @@ def test_tab_counts_follow_assignee_and_account_filters(client, users, tmp_path)
     t = _tabs(client, admin, "?account=none")
     assert t["all"] == 1 and t["categories"] == {"清掃のご依頼": 1}
     t = _tabs(client, staff, "?assignee=me")
-    assert t == {"all": 1, "high": 1, "flagged": 0, "categories": {"清掃のご依頼": 1},
-                 "uncategorized": 0, "has_uncategorized": False,
+    assert t == {"all": 1, "high": 1, "flagged": 0, "flagged_mark": "",
+                 "categories": {"清掃のご依頼": 1}, "uncategorized": 0, "has_uncategorized": False,
                  "statuses": ["unhandled", "pending_approval"]}
     t = _tabs(client, admin, f"?assignee=none&account={acct}")
     assert t["all"] == 1 and t["categories"] == {"営業・宣伝": 1}

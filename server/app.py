@@ -2937,6 +2937,7 @@ def _mail_tab_counts(conn, user, status: str | None, assignee: str | None,
     has_uncategorized は未分類のメールが (返信済みなども含めて) 1通でもあるか (「未分類」の
     タブを出すか決める用)。flagged は★フラグを付けたメールの数 (「★ フラグ」のタブ。これだけは
     返信済み・対応不要も数え、状態を選んでいるときは4つの状態のどれでもその状態だけを数える)。
+    flagged_mark はその中で一番新しく★を付けた時刻 (無ければ空。★を付け替えたのに気付く用)。
     hide_low のときは優先度[低]のメールを数えない (受信箱で[低]を出していないとき。一覧とそろえる。
     確認待ち・差し戻したメール・★のメールは[低]でも一覧に出すので数える)。
     """
@@ -2964,12 +2965,16 @@ def _mail_tab_counts(conn, user, status: str | None, assignee: str | None,
     if status:
         fw.append("m.status = ?")
         fp.append(status)
-    flagged = conn.execute("SELECT COUNT(*) FROM mails m INDEXED BY idx_mails_flagged WHERE "
-                           + " AND ".join(fw), fp).fetchone()[0]
+    # flagged_mark は一番新しく付けた★の時刻 (数が同じでも、ほかの画面で★を付け替えた
+    # (1通外して別の1通に付けた) ことに気付けるように。画面は tabs を丸ごと比べている)
+    flagged, flagged_mark = conn.execute(
+        "SELECT COUNT(*), MAX(m.flagged_at) FROM mails m INDEXED BY idx_mails_flagged WHERE "
+        + " AND ".join(fw), fp).fetchone()
     return {
         "all": sum(r[1] for r in rows),
         "high": sum(r[2] for r in rows),
         "flagged": flagged,
+        "flagged_mark": flagged_mark or "",
         "categories": cats,
         "uncategorized": sum(r[1] for r in rows if not r[0]),
         "has_uncategorized": bool(has_none),
@@ -4298,6 +4303,9 @@ def mail_flag(
     if cur.rowcount:
         _audit(conn, user, "mail_flag" if body.on else "mail_unflag", detail=f"mail={mail_id}")
     r = conn.execute("SELECT flagged_at, flagged_by FROM mails WHERE id = ?", (mail_id,)).fetchone()
+    if not r:
+        # 保存日数の片付けが消し終えるのを待っている間に、メールが無くなった
+        raise HTTPException(404, "メールが見つかりません（保存日数を過ぎて消えた可能性があります）")
     return {"id": mail_id, "flagged": r[0] is not None, "flagged_at": r[0], "flagged_by": r[1],
             "subject": row["subject"]}
 

@@ -9,7 +9,10 @@
   確認待ち・差し戻した[低]も今までどおり出す
 - タブの数 tabs.flagged は、「★ フラグ」のタブを押したときの一覧の通数と同じ
   (状態を選んでいればその状態だけ・担当・アドレスの絞り込みも効く)
-- 保存日数を過ぎても★のメールは消さない (★を外すと、次の片付けで消える)
+- 保存日数を過ぎても★のメールは消さない (★を外すと、次の片付けで消える)。そのメールに Webメール・
+  Gmail から送った返信 (送信箱) も残す。片付けがメールを選んだ後に★を付けても、そのメールは消さない。
+  片付けが消している間に★を付けようとしたら、メールが無くなったと分かる (404)
+- tabs.flagged_mark (一番新しく★を付けた時刻) で、数が同じでも★を付け替えたことに気付ける
 - DB は列3つと索引1つを足すだけ (何度開いても同じ)。前の版のコードも、この DB で動く
 - 画面: 行の ☆・返信画面の「☆ フラグ」・「★ フラグ」のタブ・状態の印・会社のタイムゾーンの日時
 """
@@ -255,6 +258,25 @@ def test_flag_tab_count_matches_list(client, users, tmp_path):
     assert _tabs(client, admin)["flagged"] == 4
 
 
+def test_flag_tab_changes_when_star_moves_to_another_mail(client, users, tmp_path):
+    """1通の★を外して別の1通に付けると、★の数は同じでも tabs が変わる (ほかの画面が取り直す)."""
+    _, admin, staff = users
+    a = _add_mail(tmp_path, n=1)
+    b = _add_mail(tmp_path, n=2)
+    assert _tabs(client, admin)["flagged_mark"] == ""
+    _flag(client, admin, a)
+    before = _tabs(client, staff)
+    assert before["flagged"] == 1 and before["flagged_mark"] == _row(tmp_path, a)["flagged_at"]
+    _flag(client, admin, a, on=False)
+    _flag(client, admin, b)
+    after = _tabs(client, staff)
+    assert after["flagged"] == 1
+    assert after["flagged_mark"] == _row(tmp_path, b)["flagged_at"]
+    assert after != before
+    # 絞り込みも数と同じに効く (返信済みだけを選んでいれば、返信済みの★だけ)
+    assert _tabs(client, admin, "?status=replied")["flagged_mark"] == ""
+
+
 def test_flag_count_uses_small_index(client, users, tmp_path):
     """★の数は、★のメールだけの小さい索引で数える (状態・担当で絞っても、返信済み全部を読まない)."""
     from server import db
@@ -264,15 +286,16 @@ def test_flag_count_uses_small_index(client, users, tmp_path):
                       "m.flagged_at IS NOT NULL AND m.assignee_user_id IS NULL"
                       " AND m.account_id = 1 AND m.status = 'archived'"):
             plan = " ".join(str(tuple(r)) for r in conn.execute(
-                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM mails m INDEXED BY idx_mails_flagged"
-                " WHERE " + where))
+                "EXPLAIN QUERY PLAN SELECT COUNT(*), MAX(m.flagged_at) FROM mails m"
+                " INDEXED BY idx_mails_flagged WHERE " + where))
             assert "idx_mails_flagged" in plan, plan
         # 何も絞らなければ、索引だけで数える
         plan = " ".join(str(tuple(r)) for r in conn.execute(
-            "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM mails m WHERE m.flagged_at IS NOT NULL"))
+            "EXPLAIN QUERY PLAN SELECT COUNT(*), MAX(m.flagged_at) FROM mails m"
+            " WHERE m.flagged_at IS NOT NULL"))
         assert "COVERING INDEX idx_mails_flagged" in plan, plan
     src = (ROOT / "server" / "app.py").read_text(encoding="utf-8")
-    assert '"SELECT COUNT(*) FROM mails m INDEXED BY idx_mails_flagged WHERE "' in src
+    assert '"SELECT COUNT(*), MAX(m.flagged_at) FROM mails m INDEXED BY idx_mails_flagged WHERE "' in src
 
 
 # ---------- 保存日数 ----------
@@ -294,6 +317,121 @@ def test_purge_keeps_flagged_mail_until_unflagged(client, users, tmp_path):
     with db.get_db(tmp_path / "zatsumu.db") as conn:
         assert mail.purge_old_mails(conn, 30) == 1
         assert [r[0] for r in conn.execute("SELECT id FROM mails")] == [fresh]
+
+
+class _FlagAfterFirstChunk:
+    """purge_old_mails に渡す接続。1通目を消して確定した直後に、ほかの人が別のメールに★を付ける
+    (片付けがメールを選んだ後・そのメールを消す前に★を付けたとき)."""
+
+    def __init__(self, conn, first, flag):
+        self._conn, self._first, self._flag = conn, first, flag
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def commit(self):
+        self._conn.commit()
+        if self._flag and not self._conn.execute(
+                "SELECT 1 FROM mails WHERE id = ?", (self._first,)).fetchone():
+            flag, self._flag = self._flag, None
+            flag()
+
+
+def test_purge_keeps_mail_flagged_after_it_was_picked(client, users, tmp_path, monkeypatch):
+    """片付けが消すメールを選んだ後に★を付けても、そのメールは添付ファイルごと残る."""
+    from server import db, mail
+    _, admin, staff = users
+    monkeypatch.setattr(mail, "PURGE_CHUNK", 1)
+    att_dir = tmp_path / "mail_attachments"
+    old = "2026-01-01T00:00:00+00:00"
+    first = _add_mail(tmp_path, n=1, received_at=old)
+    late = _add_mail(tmp_path, n=2, received_at=old)
+    for mid in (first, late):
+        (att_dir / str(mid)).mkdir(parents=True)
+        (att_dir / str(mid) / "1").write_bytes(b"pdf")
+    flagged = []
+
+    def flag_late():
+        r = _flag(client, staff, late)
+        assert r.status_code == 200, r.text
+        flagged.append(r.json()["flagged"])
+
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert mail.purge_old_mails(_FlagAfterFirstChunk(conn, first, flag_late), 30, att_dir) == 1
+        assert [r[0] for r in conn.execute("SELECT id FROM mails")] == [late]
+    assert flagged == [True]
+    assert _row(tmp_path, late)["flagged_by"] == "suzuki"
+    assert (att_dir / str(late) / "1").read_bytes() == b"pdf"
+    assert not (att_dir / str(first)).exists()
+
+
+def test_flag_while_purge_is_deleting_the_mail(client, users, tmp_path, monkeypatch):
+    """片付けが消している途中に★を付けようとしたら、消し終えるのを待って 404 (サーバのエラーにしない)."""
+    import threading
+    import time
+    from server import db, mail
+    _, admin, _ = users
+    att_dir = tmp_path / "mail_attachments"
+    mid = _add_mail(tmp_path, n=1, received_at="2026-01-01T00:00:00+00:00")
+    (att_dir / str(mid)).mkdir(parents=True)
+    out, threads = [], []
+    remove = mail.remove_attachment_files
+
+    def remove_while_flagging(attachment_dir, mail_id, sent=False):
+        # ファイルを消している間 (書き込みのロックを持っている) に、ほかの人が★を押す
+        t = threading.Thread(target=lambda: out.append(_flag(client, admin, mid)))
+        t.start()
+        time.sleep(0.5)
+        remove(attachment_dir, mail_id, sent)
+        threads.append(t)
+
+    monkeypatch.setattr(mail, "remove_attachment_files", remove_while_flagging)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert mail.purge_old_mails(conn, 30, att_dir) == 1
+    for t in threads:
+        t.join(10)
+    assert [(r.status_code, r.json()["detail"]) for r in out] == [
+        (404, "メールが見つかりません（保存日数を過ぎて消えた可能性があります）")]
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM mails").fetchone()[0] == 0
+    assert not (att_dir / str(mid)).exists()
+    assert _audits(tmp_path, "mail_flag") == []
+
+
+def test_purge_keeps_replies_of_flagged_mail(client, users, tmp_path):
+    """★のメールに Webメール・Gmail から送った返信 (送信箱) も、保存日数を過ぎても残す."""
+    from server import db, mail
+    _, admin, _ = users
+    old = "2026-01-01T00:00:00+00:00"
+    keep = _add_mail(tmp_path, n=1, received_at=old)
+    gone = _add_mail(tmp_path, n=2, received_at=old)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        def sent(n, linked=None):
+            return conn.execute(
+                "INSERT INTO sent_mails (message_id, subject, sent_at, fetched_at, linked_mail_id)"
+                " VALUES (?, ?, ?, ?, ?)", (f"<s{n}@x>", f"送った{n}", old, old, linked)).lastrowid
+        reply = sent(1)                  # 返信済みにした返信 (reply_sent_id)
+        linked = sent(2, keep)           # そのメールにつながった、もう1通の返信
+        other = sent(3)                  # ほかのメールへの返信
+        gone_reply = sent(4, gone)       # ★の無いメールへの返信
+        conn.execute("UPDATE mails SET status = 'replied', replied_at = ?, reply_source = 'webmail',"
+                     " reply_sent_id = ? WHERE id = ?", (old, reply, keep))
+    _flag(client, admin, keep)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert mail.purge_old_mails(conn, 30) == 1
+        assert [r[0] for r in conn.execute("SELECT id FROM mails")] == [keep]
+        assert [r[0] for r in conn.execute("SELECT id FROM sent_mails ORDER BY id")] == [reply, linked]
+    assert other and gone_reply
+    # ★のメールの「送信箱で見る」は、送ったメールを開ける
+    d = client.get(f"/api/mail/{keep}", headers=auth(admin)).json()
+    assert d["reply_sent_key"] == f"i{reply}"
+    assert client.get(f"/api/mail/sent/i{reply}", headers=auth(admin)).status_code == 200
+    # ★を外すと、次の片付けで返信も一緒に消える
+    _flag(client, admin, keep, on=False)
+    with db.get_db(tmp_path / "zatsumu.db") as conn:
+        assert mail.purge_old_mails(conn, 30) == 1
+        assert conn.execute("SELECT COUNT(*) FROM mails").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM sent_mails").fetchone()[0] == 0
 
 
 # ---------- DB の移し替え ----------
@@ -432,15 +570,19 @@ def test_mail_page_has_star_tab_and_reply_screen_flag(client):
     # iPhone の縦では ☆・★ だけ (押しやすい大きさ)
     assert ".m-top .m-flag { width: 44px; padding: 0;" in page
     assert ".m-flag .m-flag-txt { display: none; }" in page
-    # 指で押す画面では、行の ☆ も押しやすい大きさ
+    # 指で押す画面では、行の ☆ も、「★ フラグ」などのタブも押しやすい大きさ
     assert ".row-flag { width: 40px; height: 40px;" in page
+    assert "@media (pointer: coarse), (max-width: 640px) { .ctab { min-height: 40px; } }" in page
 
 
 def test_mail_page_toggles_flag_without_reloading_list(client):
     """押したらすぐ見た目を変え、送れなかったら戻す。続けて押しても1回だけ送る."""
     page = client.get("/mail").text
     t = re.search(r"async function toggleFlag\(id, on\) \{(.*?)\n\}", page, re.S).group(1)
-    assert "if (flagBusy.has(id)) return;\n  flagBusy.add(id);" in t
+    # 送っている間や、押してすぐ (ROW_QUIET_MS の間) に同じメールを押しても何もしない
+    # (2回続けて押しても、付けてすぐ外れない。送り終えるのが速くても同じ)
+    assert ("if (flagBusy.has(id) || Date.now() - (flagTapAt.get(id) || 0) < ROW_QUIET_MS) return;\n"
+            "  flagBusy.add(id);\n  flagTapAt.set(id, Date.now());") in t
     # 送る前に見た目を変える (待たせない)
     assert t.index("setFlagUi(id, on ? new Date().toISOString() : null, on ? me.name : \"\");") < \
         t.index("await apiJson(`/api/mail/${id}/flag`")
@@ -454,6 +596,12 @@ def test_mail_page_toggles_flag_without_reloading_list(client):
     assert 'button.row-flag[data-flag="${Number(id)}"]' in s
     assert 'mailRowOf(id)?.classList.toggle("flagged", f.flagged);' in s
     assert "if (m) Object.assign(m, f);" in s and "renderModalFlag(modal.mail);" in s
+    # 押す前に頼んでいた一覧の答えが、★を送り終えた後に届いても、この画面の★で描く
+    # (古い★に戻さない。動きは tests/test_mail_list_ui.py)
+    assert "flagLocal.set(id, { at: Date.now(), f });" in s
+    show = page[page.index("async function showInbox("):page.index("function loadSeen(")]
+    assert show.index("const askedAt = Date.now();") < show.index("await api(path)")
+    assert show.index("applyLocalFlags(list, askedAt);") < show.index("renderInbox(list, opts.auto);")
 
 
 def test_mail_page_status_marks_and_dates(client):
@@ -473,6 +621,10 @@ def test_mail_page_status_marks_and_dates(client):
     assert ".d-short { display: none; }" in page
     # 灰色の行でも印ははっきり。★の行は右端に黄色の線 (スマホのカードも)
     assert ".mail-row.done .st-chip { opacity: 1; }" in page
+    # いつ・誰が は欄に入らなければ折り返す (状態の欄が広がって、表が横にはみ出さない)。日時は折り返さない
+    sub = re.search(r"\n  \.st-sub \{([^}]*)\}", page).group(1)
+    assert "nowrap" not in sub and "overflow-wrap: anywhere" in sub
+    assert ".st-sub .st-when { white-space: nowrap; }" in page
     assert ".mail-row.flagged td.act { box-shadow:" in page
     assert ".table-wrap tr.mail-row.flagged { border-right: 5px solid #eab308; }" in page
 
