@@ -216,7 +216,10 @@ def test_mail_page_has_peek_dropdown(client):
     # 行が変わったときだけ読み直す
     r = page[page.index("function renderInbox("):page.index('$("filter").onchange')]
     assert "${peeking ? peekRowHtml(id) : \"\"}" in r and "c.sig !== peekSig(m)" in r
-    assert '.find(tr => tr.getBoundingClientRect().bottom > 0)' in r and '".mail-row, .peek-row"' in r
+    # 見ていた場所は、見えている一番上の行 (開いているプルダウンも) に合わせる (スレッドが動いたときは
+    # 動かなかった行。thrStableAnchor)
+    assert 'tbody.querySelectorAll(".mail-row, .peek-row")' in r and "if (b.bottom <= 0) continue;" in r
+    assert "thrStableAnchor(seenRows, blocksBefore, rows)" in r
     # 外から来た文字は esc() を通す
     ev = page[page.index("function pkEvent("):page.index("function peekInner(")]
     # 本文は bodyHtml (引用を畳み、文字は esc() を通す。tests/test_mail_quote.py)

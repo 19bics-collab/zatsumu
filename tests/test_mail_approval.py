@@ -124,6 +124,8 @@ MATRIX = [
     ("DELETE", "/api/mail/{mid}/reply-files/{rf}", None, True),
     # ★フラグは状態を変えない印なので、メール担当者も付け外しできる
     ("POST", "/api/mail/{mid}/flag", {"on": True}, True),
+    # スレッドのメール (一覧の「▶ 5通」・右の本文の「このスレッド」) は見るだけ
+    ("GET", "/api/mail/threads/{mid}", None, True),
     # 取引先は見るだけ (変えるのは管理者だけ)
     ("GET", "/api/mail/clients", None, True),
     ("GET", "/api/mail/clients/{ckey}", None, True),
@@ -153,6 +155,8 @@ MATRIX = [
     ("POST", "/api/mail/accounts/{acc}/test", None, False),
     ("DELETE", "/api/mail/accounts/{acc}", None, False),
     ("GET", "/api/mail/report/preview", None, False),
+    # スレッドの様子の確かめ (管理者だけ)
+    ("GET", "/api/mail/threads-check", None, False),
     ("POST", "/api/mail/report/send-now", None, False),
     ("GET", "/api/settings", None, False),
     ("PATCH", "/api/settings", {"mail_require_approval": True}, False),
@@ -282,7 +286,7 @@ def test_mail_me_by_role(client, users):
     assert s["require_approval"] is True and "その他" in s["mail_category_list"]
     # 秘密や設定の中身は入れない (表示に要るものだけ)
     assert set(s) == {"id", "name", "role", "can_send", "require_approval", "company_name",
-                      "timezone", "mail_category_list"}
+                      "timezone", "mail_category_list", "thread_mode"}
 
 
 def test_staff_cannot_change_status_but_can_triage(client, users, tmp_path):

@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
-from . import db, mail, tz
+from . import db, mail, mail_threads, tz
 
 DEMO_USERS = [
     ("管理者", "demo-admin", 1),
@@ -192,9 +192,10 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
 
     def add_mail(mins_ago, from_name, from_addr, subject, body, prio, reason,
                  draft="", status="unhandled", cc="", category="", assignee=None,
-                 in_reply_to="", reply=None, to="info@example.com"):
+                 in_reply_to="", reply=None, to="info@example.com", rcpt=""):
         # reply: こちらが送った返信 (本文, 何分前に送ったか, 送った人, CC)。
-        # 返信画面の「この相手とのやり取り」の確認用
+        # 返信画面の「この相手とのやり取り」の確認用。to は届いたアドレス、rcpt は To ヘッダ
+        # (空なら届いたアドレス。問い合わせの自動返信の控えは、お客様宛て)
         received = (now_utc - timedelta(minutes=mins_ago)).isoformat()
         reply_body, reply_mins, replied_by, reply_cc = reply or ("", None, "", "")
         # 対応不要にした時刻 (週ごとのまとめの確認用。届いてから30分後に対応不要にした)
@@ -210,7 +211,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
             " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             # 取り込んだ時刻は届いた時刻と同じにする (週ごとのまとめ・お知らせの待ち時間の確認用)
             (f"<demo-{mins_ago}@example.com>", from_addr, from_name,
-             to, cc, subject, body, received,
+             rcpt or to, cc, subject, body, received,
              received, prio, reason, "rule", status, draft,
              "template" if draft else "",
              now_utc.isoformat() if draft else None, category, assignee,
@@ -472,6 +473,61 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
              "田中 様\n\nいつもお世話になっております。\n3物件の定期清掃のお見積もりをお送りします。",
              cc="suzuki@sakura-fudosan.example.co.jp", frm="kurosu@example.com")
 
+    # スレッドの確認用 (返信どうしでつながったメールを1つにまとめる)。問い合わせの自動返信の控え
+    # (自分たちの noreply@ からお客様宛て) と、そのお客様の「RE:」5通。こちらの返信 (返信済み) への
+    # 返事・届いたメールへの返事でつながる。一番新しい1通は未対応、1通には添付ファイル
+    ogawa = "小川 誠 <ogawa.makoto.demo@gmail.com>"
+    subj = "【INBICS】お問い合わせありがとうございます"
+    add_mail(7100, "INBICS", "noreply@example.com", subj,
+             "小川 誠 様\n\nこの度は、お問い合わせいただき誠にありがとうございます。\n"
+             "内容を確認のうえ、担当者より2営業日以内にご連絡いたします。\n\n"
+             "※このメールは送信専用のアドレスから自動でお送りしています。", 2, "通常",
+             status="archived", category="運営代行のご相談", rcpt=ogawa)
+    add_mail(7000, "小川 誠", "ogawa.makoto.demo@gmail.com", "RE: " + subj,
+             "ご連絡ありがとうございます。\n世田谷区の一戸建てで民泊を始めたいと考えています。\n"
+             "運営代行のプランを教えてください。", 2, "通常",
+             status="replied", category="運営代行のご相談", in_reply_to="<demo-7100@example.com>",
+             reply=("小川 様\n\nお問い合わせありがとうございます。\n"
+                    "運営代行は「清掃のみ」と「まるごと」の2つのプランがございます。\n"
+                    "物件の間取りを教えていただけますでしょうか。", 6950, "管理者", ""))
+    plan_mail = add_mail(5500, "小川 誠", "ogawa.makoto.demo@gmail.com", "RE: " + subj,
+                         "間取り図をお送りします。4LDK・庭付きです。", 2, "通常",
+                         status="archived", category="運営代行のご相談",
+                         in_reply_to="<demo-reply-7000@example.com>")
+    if attachment_dir is not None:
+        floor = _fake_floor_plan()
+        mail.save_attachments(conn, attachment_dir, plan_mail, [
+            {"filename": "小川様_間取り図.png", "content_type": "image/png",
+             "size": len(floor), "data": floor, "skip": ""}], now_utc.isoformat())
+    add_mail(3300, "小川 誠", "ogawa.makoto.demo@gmail.com", "RE: " + subj,
+             "先ほどの間取り図、見ていただけましたでしょうか。", 2, "通常",
+             status="replied", category="運営代行のご相談", in_reply_to="<demo-5500@example.com>",
+             reply=("小川 様\n\n間取り図をありがとうございます。\n"
+                    "まるごとプランでお見積もりをお送りします。", 3280, "管理者", ""))
+    add_mail(1100, "小川 誠", "ogawa.makoto.demo@gmail.com", "RE: " + subj,
+             "お見積もりを拝見しました。開始日を相談させてください。", 2, "通常",
+             status="archived", category="運営代行のご相談",
+             in_reply_to="<demo-reply-3300@example.com>")
+    add_mail(8, "小川 誠", "ogawa.makoto.demo@gmail.com", "RE: " + subj,
+             "来月1日から始めたいです。契約書をお送りいただけますか。", 1, "「契約」を含む",
+             category="運営代行のご相談", in_reply_to="<demo-reply-3300@example.com>")
+    # HPのフォームから、別々のお客様が同じ件名で送ってきたメール (差出人も件名も同じだが、
+    # 相手が違うのでまとめない)。片方のお客様が、もう片方のメールを指す返事を送ってきても同じ
+    add_mail(400, "WordPress", "wordpress@example.com", "【HPお問い合わせ】お見積もりのご依頼",
+             "お名前：井上 直樹\nメールアドレス：inoue.naoki.demo@example.net\n\n"
+             "メッセージ本文:\n2部屋の清掃のお見積もりをお願いします。" + form_footer,
+             2, "通常", category="清掃のご依頼")
+    add_mail(380, "WordPress", "wordpress@example.com", "【HPお問い合わせ】お見積もりのご依頼",
+             "お名前：松本 由美\nメールアドレス：matsumoto.yumi.demo@example.org\n\n"
+             "メッセージ本文:\n民泊1部屋の清掃の料金を知りたいです。" + form_footer,
+             2, "通常", category="清掃のご依頼")
+    add_mail(360, "松本 由美", "matsumoto.yumi.demo@example.org", "Re: 【HPお問い合わせ】お見積もりのご依頼",
+             "先ほどの問い合わせの補足です。土日の清掃もできますか。", 2, "通常",
+             category="清掃のご依頼", in_reply_to="<demo-400@example.com>")
+    # ★フラグの確認用: 重要度が低でも ★ を付けたメールは一覧に出す
+    conn.execute("UPDATE mails SET flagged_at = ?, flagged_by = '管理者' WHERE message_id = ?",
+                 ((now_utc - timedelta(minutes=100)).isoformat(), "<demo-150@example.com>"))
+
     # よく使うアドレス (アドレス帳)。返信画面の宛先・CC・BCC に打つと候補の一番上に出る
     for name, addr, note in (
             ("山本 清掃チーム", "yamamoto@clean-partner.example.jp", "清掃の外注先（平日のみ）"),
@@ -481,4 +537,7 @@ def seed(conn: sqlite3.Connection, screenshot_dir: Path,
                      " VALUES (?, ?, ?, ?, ?)", (name, addr, note, now_iso, now_iso))
 
     conn.commit()
+    # 相手 (HPのフォームは本文のお客様) を決めてから、スレッドにまとめる (起動したときと同じ決め方)
+    mail.fill_missing_contacts(conn)
+    mail_threads.rebuild(conn, mail_threads.Ctx(conn))
     return True

@@ -252,6 +252,8 @@ const modal = { id: null, mail: null };
 const renderModalFlag = () => {};
 const pv = { id: null, mail: null };
 const pvMailChanged = () => {};
+const keepShown = new Set();   // 閉じたスレッドでも出しておくメール (★を付け外ししたメール)
+let lastInboxList = [];       // 一覧の答え (一覧に無いメールの★は offFlags に覚える)
 const starText = m => ({ on: !!m.flagged, label: "", title: "" });
 const me = { name: "boss" };
 let inboxStale = false;
@@ -312,11 +314,12 @@ def test_old_list_answer_does_not_undo_star(page):
   applyLocalFlags(fresh, now - 10);
   console.log(JSON.stringify({ stale, fresh }));
 """)
+    # サーバの答えの★は srv_flagged に残す (スレッドの「★N」をそろえる。groupThreads)
     assert out["stale"] == [
-        {"id": 5, "flagged": True, "flagged_at": "2026-10-29T05:03:00Z", "flagged_by": "boss"},
-        {"id": 6, "flagged": True, "flagged_at": "2026-10-28T00:00:00Z", "flagged_by": "x"},
+        {"id": 5, "flagged": True, "flagged_at": "2026-10-29T05:03:00Z", "flagged_by": "boss", "srv_flagged": False},
+        {"id": 6, "flagged": True, "flagged_at": "2026-10-28T00:00:00Z", "flagged_by": "x", "srv_flagged": True},
         {"id": 7}]
-    assert out["fresh"] == [{"id": 5, "flagged": False, "flagged_at": None, "flagged_by": ""}]
+    assert out["fresh"] == [{"id": 5, "flagged": False, "flagged_at": None, "flagged_by": "", "srv_flagged": False}]
 
 
 def test_next_row_for_arrow_keys(page):
@@ -379,6 +382,7 @@ def _run_pane(page: str, scenario: str):
 const appSettings = { timezone: "Asia/Tokyo" };
 let viewName = "inbox";
 let shownMails = new Map();
+let lastInboxList = [];   // 一覧の答え (スレッドから選んだか・閉じたスレッドの中か。markSelected)
 const els = {};
 const el = () => ({ hidden: false, textContent: "", scrollTop: 0, dataset: {},
                     classList: { set: new Set(), add(c) { this.set.add(c); }, remove(c) { this.set.delete(c); },
