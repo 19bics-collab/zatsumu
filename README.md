@@ -185,6 +185,18 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   それより大きいものは「大きすぎるため保存していません」と名前だけ出る。
   サーバの空きが少ないとき・保存している添付が合わせて10GBに達したときも保存しない。
   この機能を入れた後に届いたメールから保存）。
+  返信画面の「**📎 ファイルを添付**」で、返信に**ファイルを付けて送れます**（写真・PDF・Excel・Word など。
+  iPhone では写真ライブラリ・写真を撮る・ファイルを選択から選べ、PC はファイルを返信文の欄に持ってきても
+  付けられる。選ぶとすぐサーバに送り、名前・大きさと ✕ が並ぶ（名前を押すとダウンロードして確かめられる）。
+  1通に10個・合わせて15MBまで（メールで送ると約20MB）。空のファイルは付けない。同じ名前は「名前 (2).jpg」に
+  する。アップロード中は送信できない。付けたファイルは下書きと同じで、閉じても残る。付け外しできるのは返信文を
+  直せる人と同じで（メール担当者は確認待ちの間は見るだけ。送った後は誰も変えられない）、送る前の確認に
+  「添付: 2件（見積書.pdf、写真.jpg）」と出る。送るときは画面に出ていたファイルと同じか確かめ、ほかの画面で
+  付けた・外したファイルがあれば送らずに止める（確認待ちの「承認して送信」でも、管理者が見ていないファイルは
+  送らない）。日本語の名前は Gmail・Outlook・iPhone のメールのどれでも読めるよう、RFC 2231
+  （`filename*=utf-8''…`）と `=?utf-8?b?…?=` の両方で書く。ファイルを付けない返信は今までどおり本文だけのメール。
+  送ったファイルは送信済みフォルダの控えにも入り、「この相手とのやり取り」・受信箱のプルダウン・取引先・
+  送信箱に 📎 と名前が出て、修正履歴に数と名前が残る。メールが保存日数で消えるとファイルも消える）。
   届いたメールは**問い合わせの種類**（清掃のご依頼・予約・宿泊のお問い合わせ・
   請求・お支払い・運営代行のご相談・営業・宣伝・その他）に自動で仕分け、
   種類ごとの**担当**も自動で入ります（AI を使うときは優先度と同じ1回の依頼で種類も選び、
@@ -374,9 +386,11 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
 | GET | `/api/mail` | admin・メール担当者 | 受信メール一覧（`q` で検索: 件名・本文・相手・取引先の名前・添付の名前。空白区切りは全部を含むもの・100文字・10語まで。各メールに `snippet`（本文の言葉のあたり）・`match_files`、ヘッダ `X-Search-Total`（合った数）・`X-Search-Mode`（`index` / `scan`）・古いメールを探していなければ `X-Search-Partial: 1`。既定は新しい順。`sort=priority` で優先度順。差出人の付けた日付が取り込んだ時刻より先なら取り込んだ時刻で並べる。status（`pending_approval`=確認待ち）/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分。`hide_low=1` で優先度[低]を出さず、ほかの絞り込みに合うのに出さなかった[低]の数をヘッダ `X-Hidden-Low` に入れる） |
-| GET | `/api/mail/{id}` | admin・メール担当者 | メール詳細（確認のお願い・差し戻しの中身も。本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧・この相手とのやり取り `thread`（新しい順に30件まで。送った返信付き）と全部の件数 `thread_total`。`?thread=false` でやり取りを省く） |
+| GET | `/api/mail/{id}` | admin・メール担当者 | メール詳細（確認のお願い・差し戻しの中身も。本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧・返信に付けたファイル `reply_files`（返信済みなら送ったもの）・この相手とのやり取り `thread`（新しい順に30件まで。送った返信付き）と全部の件数 `thread_total`。`?thread=false` でやり取りを省く） |
 | GET | `/api/mail/{id}/conversation` | admin・メール担当者 | 受信箱のプルダウン用。本文と、この後のやり取り `after`（このメールへの返信・後から届いた同じ相手／ヘッダでつながるメールとその返信を古い順に。届いたメールは30通まで）と件数 `after_total`。`?earlier=true` で前のやり取り `earlier` も（直前の30通を古い順に。無しなら件数 `earlier_total` だけ） |
 | GET | `/api/mail/{id}/attachments/{添付id}` | admin・メール担当者 | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
+| POST | `/api/mail/{id}/reply-files` | admin・メール担当者 | 返信に付けるファイルを受け取る（multipart/form-data。1つでもいくつでも。届いた分から少しずつ保存し、1通に10個（超えたら 400）・合わせて15MB（超えたら 413。大きさが先に分かれば読まずに断る）まで。空のファイルは 400、サーバの空きが少なければ 507。返信した後・メール担当者の確認待ちの間は 409。`seen_request` は下書きの保存と同じ。返り値 `files` はいま付いているファイル） |
+| GET/DELETE | `/api/mail/{id}/reply-files/{ファイルid}` | admin・メール担当者 | 返信に付けたファイルのダウンロード（いつも「ただのデータ」）・外す（サーバからも消す。付けるときと同じく 409 になる場合がある） |
 | POST | `/api/mail/fetch` | admin・メール担当者 | 今すぐ IMAP から新着を取り込み（受信するアドレスを順に。一部のアドレスだけ失敗したら `errors` に理由。ほかの受信の途中で、少し待っても終わらなければ 409） |
 | GET | `/api/mail/status` | admin・メール担当者 | 受信の様子（未対応・確認待ちの数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗とどのアドレスか・アドレスごとの様子 `accounts`・受信箱のタブの数 `tabs`（種類ごと・重要（高）・未分類の、未対応と確認待ちの数。`status=unhandled`/`pending_approval` を付けるとその状態だけを数え、`assignee`/`account` を付けると絞り込む。`hide_low=1` で優先度[低]を数えない。どれもタブの数だけに効く））。メール画面が 1 分ごとに呼ぶ |
 | GET/POST | `/api/mail/accounts` | admin | 受信するメールアドレスの一覧・追加（パスワードは返さず `imap_pass_set` などだけ） |
@@ -387,14 +401,14 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | POST | `/api/mail/{id}/notion` | admin | このメールを Notion のデータベースに1行で登録（本文・添付ファイル付き。登録済みなら 409、`{"again": true}` でもう1行作る） |
 | PATCH | `/api/mail/{id}` | admin・メール担当者 | 下書き保存（`draft_cc`・`draft_bcc` で書きかけの CC・BCC も。詳細の `draft_rcpt_saved` が true になる）・優先度/状態/種類（`category`）/担当（`assignee_user_id`、null で担当なし）の変更（メール担当者は状態を変えられず、確認待ちの下書きも変えられない。`seen_request` に画面を開いたときの `requested_at` を渡すと、開いた後に確認をお願いされていたら下書きを上書きせず 409） |
 | GET | `/api/mail/assignees` | admin・メール担当者 | 担当に選べる人（有効な人の番号と名前） |
-| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は相手 ― Reply-To か、HPのフォームから届いたメールは本文のお客様か、差出人。`to` で直せる（1つだけ・CC と同じように確かめる・フォームの送信元は不可・直したことを記録に残す）。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る。確認待ちのメールは `approve_request` に画面で見ていた `requested_at` を渡すと「承認して送信」になり `approved_by` を残す。null・食い違うときは 409（見ていない下書きを承認したことにしない）） |
-| POST | `/api/mail/{id}/request-approval` | admin・メール担当者 | 「確認をお願いする」（`body` `cc` `bcc` `to` `note`。宛先も残し、管理者も同じ宛先に送る。確認待ちにして Slack・通知先メールに知らせる。設定 `mail_require_approval` がオフなら 400） |
+| POST | `/api/mail/{id}/send` | admin | 返信を送信（宛先は相手 ― Reply-To か、HPのフォームから届いたメールは本文のお客様か、差出人。`to` で直せる（1つだけ・CC と同じように確かめる・フォームの送信元は不可・直したことを記録に残す）。`cc` `bcc` にアドレスの一覧を渡すと CC・BCC にも送る。確認待ちのメールは `approve_request` に画面で見ていた `requested_at` を渡すと「承認して送信」になり `approved_by` を残す。null・食い違うときは 409（見ていない下書きを承認したことにしない）。返信に付けたファイルも一緒に送る。`reply_files` に画面に出ていたファイルの番号を渡し、いま付いているものと違えば（省略は「何も付いていない」）何も送らずに 409。送れたら送った時刻を入れ、送れなかったら付けたまま） |
+| POST | `/api/mail/{id}/request-approval` | admin・メール担当者 | 「確認をお願いする」（`body` `cc` `bcc` `to` `note` `reply_files`（画面に出ていた添付。違えば 409）。宛先も残し、管理者も同じ宛先に送る。確認待ちにして Slack・通知先メールに知らせる。設定 `mail_require_approval` がオフなら 400） |
 | POST | `/api/mail/{id}/misdirect-checked` | admin・メール担当者 | 前の版で返信がHPのフォームの送信元に送られていたメールの注意を消す（お客様に連絡し直した。記録に残す） |
 | POST | `/api/mail/{id}/send-back` | admin | 確認待ちを「差し戻す」（`note` が必要。未対応に戻し、コメントをメール担当者に見せる） |
 | GET | `/api/mail/me` | admin・メール担当者 | ログインした人の役割（`admin` / `staff`）と、画面の表示に使う設定（秘密は入れない） |
 | GET | `/api/mail/sent` | admin・メール担当者 | 送信箱の一覧（新しい順。`items`・`total`・`has_more`。`offset`・`limit`（1〜200、既定50）・`account`（番号 / none）・`q`（検索。受信箱と同じ。各メールに `snippet`、答えに `search`: `terms`・`mode`・`partial`）） |
 | GET | `/api/mail/sent/{key}` | admin・メール担当者 | 送信箱の1通（`a<メール番号>` = この画面から送った返信 / `i<番号>` = 取り込んだもの。本文・宛先・CC・BCC・添付・元のメール・取引先） |
-| GET | `/api/mail/sent/{key}/attachments/{id}` | admin・メール担当者 | 取り込んだメールの添付ファイル |
+| GET | `/api/mail/sent/{key}/attachments/{id}` | admin・メール担当者 | 送信箱のメールの添付ファイル（取り込んだメールの添付と、この画面から送った返信 `a<番号>` に付けて送ったファイル） |
 | GET | `/api/mail/staff` | admin | メール担当者にできる人の一覧 |
 | PATCH | `/api/mail/staff/{id}` | admin | メール担当者にする / 外す（`{"staff": true}`） |
 | GET/POST | `/api/mail/templates` | admin | 定型文の一覧・追加 |

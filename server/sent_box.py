@@ -28,7 +28,10 @@ _KEY_RE = re.compile(r"([ai])([1-9][0-9]{0,15})")
 _APP_COLS = (
     "m.id, m.replied_at AS at, m.reply_subject, m.subject, substr(m.reply_body, 1, 600) AS head,"
     " m.reply_sent_to, m.from_addr, m.from_name, m.contact_addr, m.contact_name,"
-    " m.contact_source, m.reply_cc, m.reply_bcc, m.replied_by, m.account_id")
+    " m.contact_source, m.reply_cc, m.reply_bcc, m.replied_by, m.account_id,"
+    # 返信に付けて送ったファイルの数 (返信画面の「📎 ファイルを添付」)
+    " (SELECT COUNT(*) FROM mail_reply_files f WHERE f.mail_id = m.id"
+    " AND f.sent_at IS NOT NULL) AS attachment_count")
 # 索引 idx_mails_app_sent の条件と同じにする (違うと索引を使わない)
 _APP_WHERE = "m.replied_at IS NOT NULL AND m.reply_source = ''"
 _IMPORTED_COLS = (
@@ -147,7 +150,7 @@ def list_sent(conn, offset: int = 0, limit: int = LIST_LIMIT, account: str | Non
                 "source": "app", "source_label": mail.SENT_SOURCE_LABELS["app"],
                 "sent_by": r["replied_by"] or "",
                 "mail_id": r["id"], "mail_subject": r["subject"], "marked_replied": False,
-                "attachment_count": 0, "note": "",
+                "attachment_count": r["attachment_count"], "note": "",
             }
         else:
             to = mail._header_addrs(r["to_addr"])
@@ -229,6 +232,9 @@ def sent_detail(conn, key: str, settings: dict) -> dict:
             sent_by = f"{r['requested_by']} さんの下書きを {r['approved_by']} が確認して送信"
         elif sent_by:
             sent_by = f"{sent_by} が送信"
+        # 返信に付けて送ったファイル (種類は送った人のブラウザが知らせたものなので、縮小画像は出さない)
+        files = conn.execute("SELECT * FROM mail_reply_files WHERE mail_id = ?"
+                             " AND sent_at IS NOT NULL ORDER BY id", (num,)).fetchall()
         return {
             "key": key, "kind": "app", "sent_at": r["at"],
             "subject": r["reply_subject"] or mail.reply_subject(r["subject"]),
@@ -242,7 +248,8 @@ def sent_detail(conn, key: str, settings: dict) -> dict:
             if r["account_id"] else mail.DELETED_ACCOUNT_LABEL,
             "source": "app", "source_label": mail.SENT_SOURCE_LABELS["app"],
             "sent_by": sent_by, "folder": "", "note": "",
-            "attachments": [], "skipped_attachments": [],
+            "attachments": [{**mail.attachment_info(f), "previewable": False} for f in files],
+            "skipped_attachments": [],
             "mail": _mail_link(conn, r["id"]), "marked_replied": False, "link_kind": "",
             "client": _client_for(conn, addr, name),
         }

@@ -57,6 +57,9 @@ import threading
 import time
 import unicodedata
 from datetime import date, datetime, timedelta, timezone
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from urllib.parse import quote
@@ -1982,9 +1985,95 @@ def _from_header(sender) -> str:
     return formataddr((name, addr), charset="utf-8") if name else addr
 
 
+# 添付ファイルの付いた返信を送るときの、送信サーバとのやり取りの待ち時間 (秒)。
+# 本文だけのとき (15秒) より大きなメールを送り切れるよう、長めにする
+SMTP_ATTACHMENT_TIMEOUT = 120
+# 添付ファイルの名前を書く1行の長さの目安 (メールの1行は78文字までにする決まりがあるため、
+# 長い名前は何行かに分けて書く)
+_NAME_CHUNK_CHARS = 50
+# 「=?utf-8?b?…?=」1つに入れる名前のバイト数 (「 filename="」と一緒でも1行が78文字を超えない長さ)
+_NAME_WORD_BYTES = 39
+
+
+def _plain_attachment_name(name: str) -> bool:
+    """添付ファイルの名前を、そのまま (英数字だけで) 書いてよいか."""
+    return (name.isascii() and name.isprintable() and len(name) <= _NAME_CHUNK_CHARS
+            and not any(c in name for c in '"\\') and "=?" not in name)
+
+
+def _encoded_words(name: str) -> list[str]:
+    """名前を「=?utf-8?b?…?=」(RFC 2047) の形にする (長ければ、1行ずつに書ける短いものに分ける).
+
+    文字の途中では分けない (分けると、つないだときに文字が壊れるため)。
+    """
+    words, cur = [], ""
+    for ch in name:
+        if cur and len((cur + ch).encode("utf-8")) > _NAME_WORD_BYTES:
+            words.append(cur)
+            cur = ""
+        cur += ch
+    words.append(cur)
+    return ["=?utf-8?b?" + base64.b64encode(w.encode("utf-8")).decode("ascii") + "?="
+            for w in words]
+
+
+def _rfc2231_params(key: str, name: str) -> list[str]:
+    """名前を「filename*=utf-8''%E8%A6%8B…」(RFC 2231) の形にする.
+
+    長ければ「filename*0*=…; filename*1*=…」と何行かに分ける (1つの文字の %XX の途中では
+    分けない。分けた所ごとに文字に戻すメールソフトでも、文字が壊れないように)。
+    """
+    pieces, cur = [], "utf-8''"
+    for token in (quote(ch, safe="") for ch in name):
+        if len(cur) + len(token) > _NAME_CHUNK_CHARS:
+            pieces.append(cur)
+            cur = ""
+        cur += token
+    pieces.append(cur)
+    if len(pieces) == 1:
+        return [f"{key}*={pieces[0]}"]
+    return [f"{key}*{n}*={piece}" for n, piece in enumerate(pieces)]
+
+
+def _attachment_part(name: str, content_type: str, data: bytes) -> MIMEBase:
+    """添付ファイル1つの部品 (中身は base64).
+
+    日本語の名前は、Gmail・Outlook (Windows)・iPhone のメールのどれでも読めるよう2通りで書く。
+    決まり (RFC 2231) どおりの filename*=utf-8''… と、Outlook や古いメールソフトが読む
+    「=?utf-8?b?…?=」(RFC 2047。Gmail・Outlook が自分で送るときもこの形) の filename= と、
+    種類の欄 (Content-Type) の name= 。どれも同じ名前なので、どれを読んでも同じに見える。
+    """
+    maintype, _, subtype = content_type.partition("/")
+    plain = _plain_attachment_name(name)
+    part = MIMEBase(maintype, subtype, **({"name": name} if plain else {}))
+    del part["MIME-Version"]   # 外側のメールに1つあればよい
+    part.set_payload(data)
+    encoders.encode_base64(part)
+    if plain:
+        part.add_header("Content-Disposition", "attachment", filename=name)
+        return part
+    # 長い名前は行を分けて書く (as_string はヘッダを折り返さないので、ここで折り返しておく)
+    words = '"' + "\n ".join(_encoded_words(name)) + '"'
+    part.replace_header("Content-Type", f"{maintype}/{subtype};\n name={words}")
+    part["Content-Disposition"] = ";\n ".join(
+        ["attachment", f"filename={words}", *_rfc2231_params("filename", name)])
+    return part
+
+
+def _with_attachments(text: MIMEText, attachments) -> MIMEMultipart:
+    """本文の部品と添付ファイルを1通 (multipart/mixed) にまとめる."""
+    msg = MIMEMultipart("mixed")
+    del text["MIME-Version"]
+    msg.attach(text)
+    for name, content_type, data in attachments:
+        msg.attach(_attachment_part(name, content_type, data))
+    return msg
+
+
 def send_reply(settings: dict, to_addr: str, subject: str, body: str,
                in_reply_to: str = "", references: str = "",
-               cc=None, bcc=None, sender: str | None = None) -> bytes:
+               cc=None, bcc=None, sender: str | None = None,
+               attachments=None) -> bytes:
     """返信メールを1通送信し、送ったメールそのもの (bytes) を返す (失敗時は例外).
 
     送り先の一部だけが断られたとき (宛先は断られ CC には届いた、など) は
@@ -1996,13 +2085,17 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
     sender は差出人 (届いたアドレス。reply_sender)。省略すると共通の差出人メール
     (無ければ SMTP ユーザー)。送信のログインは settings の SMTP 設定 (smtp_settings) を使う。
     戻り値は送信済みフォルダへの保存 (save_to_sent) に使う
-    (相手に届いたものと同じなので、控えにも Cc は出て、Bcc は出ない)。
+    (相手に届いたものと同じなので、控えにも Cc は出て、Bcc は出ない。添付ファイルも入る)。
+    attachments は添付ファイルの (名前, 種類, 中身のバイト列) の一覧。あれば本文と添付を
+    multipart/mixed の1通にまとめる。無ければ今までどおり本文だけ (text/plain の1つの部品)。
     """
     to_addr = _header_text(to_addr)
     cc = [_header_text(a) for a in (cc or []) if _header_text(a)]
     bcc = [_header_text(a) for a in (bcc or []) if _header_text(a)]
     in_reply_to = _header_text(in_reply_to)
     msg = MIMEText(body, "plain", "utf-8")
+    if attachments:
+        msg = _with_attachments(msg, attachments)
     msg["Subject"] = _header_text(subject)
     sender = sender or settings.get("mail_from") or settings.get("smtp_user")
     msg["From"] = _from_header(sender)
@@ -2024,7 +2117,9 @@ def send_reply(settings: dict, to_addr: str, subject: str, body: str,
     # 接続・暗号化・ログインは通知メールと同じ1か所の処理を使う。
     # 送信サーバに伝える差出人 (MAIL FROM) はアドレスの部分だけ
     envelope = sender_address(sender) if "@" in sender_address(sender) else sender
-    refused = notify.smtp_send(settings, envelope, [to_addr, *cc, *bcc], raw)
+    # 添付ファイルがあるときは、大きなメールを送り切れるよう待ち時間を長くする
+    wait = {"timeout": SMTP_ATTACHMENT_TIMEOUT} if attachments else {}
+    refused = notify.smtp_send(settings, envelope, [to_addr, *cc, *bcc], raw, **wait)
     if refused:
         raise SomeRecipientsRefused(raw.encode("utf-8"), list(refused))
     return raw.encode("utf-8")
@@ -4574,16 +4669,22 @@ def remove_orphan_attachment_dirs(conn, attachment_dir) -> int:
 PURGE_CHUNK = 500
 
 
-def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
+def purge_old_mails(conn, days: int, attachment_dir=None, reply_dir=None) -> int:
     """保存日数を過ぎた受信メールを、添付ファイルごと削除する (days<=0 なら何もしない).
 
     received_at は差出人が付けた Date ヘッダ由来で細工され得るため、
     サーバが付与した取込時刻 (fetched_at) を基準にする。
     ファイルを先に消してから DB の行を消す (途中で止まっても、次の回にもう一度
     同じメールが対象になり、残りが消える。消えているファイルは飛ばす)。
+    reply_dir を渡すと、返信に付けたファイル (送ったもの・まだ送っていないもの) も消し、
+    持ち主のいないファイルも片付ける (reply_files.remove_orphans)。
     """
+    from . import reply_files  # 循環を避けるため遅延インポート
+
     if attachment_dir is not None:
         remove_orphan_attachment_dirs(conn, attachment_dir)
+    if reply_dir is not None:
+        reply_files.remove_orphans(conn, reply_dir)
     if days <= 0:
         return 0
     cutoff = tz.utc_iso(datetime.now(timezone.utc) - timedelta(days=days))
@@ -4606,7 +4707,11 @@ def purge_old_mails(conn, days: int, attachment_dir=None) -> int:
         if attachment_dir is not None:
             for (mail_id,) in chunk:
                 remove_attachment_files(attachment_dir, mail_id)
+        if reply_dir is not None:
+            for (mail_id,) in chunk:
+                reply_files.remove_mail_files(reply_dir, mail_id)
         conn.executemany("DELETE FROM mail_attachments WHERE mail_id = ?", chunk)
+        conn.executemany("DELETE FROM mail_reply_files WHERE mail_id = ?", chunk)
         conn.executemany("DELETE FROM mail_refs WHERE mail_id = ?", chunk)
         conn.executemany("DELETE FROM mails WHERE id = ?", chunk)
         conn.commit()
@@ -4763,6 +4868,22 @@ def _snippet(text, limit: int = THREAD_SNIPPET_CHARS) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
+def sent_reply_file_names(conn, mail_ids) -> dict:
+    """メールの番号ごとの、送った返信に付けたファイルの名前 (付けた順。やり取りの 📎 用).
+
+    返信画面の「📎 ファイルを添付」で付けて、送ったものだけ (server/reply_files.py)。
+    """
+    ids = sorted({int(i) for i in mail_ids})
+    out: dict = {}
+    for i in range(0, len(ids), _IN_MAX):
+        chunk = ids[i:i + _IN_MAX]
+        for r in conn.execute(
+                "SELECT mail_id, filename FROM mail_reply_files WHERE sent_at IS NOT NULL"
+                f" AND mail_id IN ({_marks(chunk)}) ORDER BY id", chunk):
+            out.setdefault(r[0], []).append(r[1])
+    return out
+
+
 def mail_thread(conn, row, limit: int = THREAD_MAX) -> dict:
     """同じ相手とのやり取り (返信画面の履歴)。{"thread": [...], "thread_total": 件数}.
 
@@ -4806,6 +4927,7 @@ def mail_thread(conn, row, limit: int = THREAD_MAX) -> dict:
         " contact_addr, contact_name, contact_source, contact_via_form, reply_sent_to"
         f" FROM mails WHERE id IN ({_marks(ids)})", ids).fetchall()
     rows = sorted(rows, key=lambda r: (r["received_at"], r["id"]), reverse=True)[:limit]
+    files = sent_reply_file_names(conn, [r["id"] for r in rows if r["replied_at"]])
     return {"thread": [{
         "id": r["id"],
         "from_addr": r["from_addr"],
@@ -4823,6 +4945,8 @@ def mail_thread(conn, row, limit: int = THREAD_MAX) -> dict:
         "replied_at": r["replied_at"],
         "replied_by": r["replied_by"] if r["replied_at"] else "",
         "reply_cc": split_addresses(r["reply_cc"]) if r["replied_at"] else [],
+        # 送った返信に付けたファイルの名前
+        "reply_files": files.get(r["id"], []) if r["replied_at"] else [],
     } for r in rows], "thread_total": total}
 
 
@@ -4840,8 +4964,12 @@ def _cut(text, limit: int | None = None) -> tuple[str, bool]:
     return (text, False) if len(text) <= limit else (text[:limit].rstrip(), True)
 
 
-def _convo_events(rows) -> list[dict]:
-    """メールの行を、届いたメール (in) と、こちらが送った返信 (out) の出来事にして時刻順に並べる."""
+def _convo_events(rows, files: dict | None = None) -> list[dict]:
+    """メールの行を、届いたメール (in) と、こちらが送った返信 (out) の出来事にして時刻順に並べる.
+
+    files はメールの番号ごとの、送った返信に付けたファイルの名前 (sent_reply_file_names)。
+    """
+    files = files or {}
     events = []
     for r in rows:
         name, addr = counterpart(r)
@@ -4861,6 +4989,7 @@ def _convo_events(rows) -> list[dict]:
                 "replied_by": r["replied_by"] or "",
                 "sent_to": r["reply_sent_to"] or r["from_addr"],
                 "cc": split_addresses(r["reply_cc"]),
+                "files": files.get(r["id"], []),
                 "body": body, "body_cut": cut,
             })
     # 時刻が同じなら、届いたメールを先に (返信より先に届いている)
@@ -4928,11 +5057,13 @@ def mail_conversation(conn, row, earlier: bool = False, limit: int | None = None
     before_rows = sorted(load(before_ids), key=key)[-limit:] if earlier else []
     # このメールにこちらが送った返信は、この後のやり取りの先頭のあたりに入れる
     me = dict(conn.execute(f"{cols} WHERE id = ?", (mail_id,)).fetchone())
-    mine = [e for e in _convo_events([me]) if e["kind"] == "out"]
-    after = sorted(mine + _convo_events(after_rows),
+    files = sent_reply_file_names(
+        conn, [r["id"] for r in (me, *after_rows, *before_rows) if r["replied_at"]])
+    mine = [e for e in _convo_events([me], files) if e["kind"] == "out"]
+    after = sorted(mine + _convo_events(after_rows, files),
                    key=lambda e: (e["at"] or "", e["mail_id"], e["kind"] != "in"))
     return {
         "after": after, "after_total": after_total,
-        "earlier": _convo_events(before_rows), "earlier_total": earlier_total,
+        "earlier": _convo_events(before_rows, files), "earlier_total": earlier_total,
         "shown_after": len(after_rows), "shown_earlier": len(before_rows),
     }

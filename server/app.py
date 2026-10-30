@@ -20,13 +20,15 @@ from fastapi.responses import (
 from pydantic import BaseModel
 
 from . import (address_book, clients, db, devices, imaging, mail, mail_events, mail_search,
-               notify, notion, sent_box,
+               notify, notion, reply_files, sent_box,
                reports, retention, tz)
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
 SCREENSHOT_DIR = DATA_DIR / "screenshots"
 # 受信メールの添付ファイル (<メールの番号>/<添付の番号> に保存する)
 MAIL_ATTACHMENT_DIR = DATA_DIR / "mail_attachments"
+# 返信に付けるファイル (返信画面の「📎 ファイルを添付」。<メールの番号>/<でたらめな名前> に保存する)
+MAIL_REPLY_DIR = DATA_DIR / "mail_reply_files"
 # バックグラウンド処理(キャプチャ自動削除・長時間在席チェック)の実行間隔(分)。
 # メールの定期受信の間隔は、これとは別にメール画面の設定 (mail_fetch_interval_min) で決める
 ALERT_CHECK_INTERVAL_MIN = float(os.environ.get("ZATSUMU_CHECK_INTERVAL_MIN", "10"))
@@ -109,7 +111,7 @@ def _mail_tick() -> None:
         try:
             mail.check_mail(conn, attachment_dir=MAIL_ATTACHMENT_DIR)
             mail.purge_old_mails(conn, db.get_settings(conn)["mail_retention_days"],
-                                 MAIL_ATTACHMENT_DIR)
+                                 MAIL_ATTACHMENT_DIR, MAIL_REPLY_DIR)
         finally:
             # 受信に失敗しても (受信サーバの不調など)、届いているメールのお知らせは続ける。
             # お知らせの失敗はここでログに出して止め、受信の失敗 (ループのログに出る) を隠さない
@@ -611,6 +613,9 @@ class MailSendBody(BaseModel):
     # null なら自分の返信として送る (確認待ちのメールなら 409。見ていない下書きを承認したことにしない)。
     # 項目ごと無い (この項目を知らない、更新前に開いた画面) ときは確かめない (今までどおり)
     approve_request: str | None = None
+    # 画面に出ていた添付ファイル (返信に付けたもの) の番号。いま付いているものと違えば 409
+    # (見ていないファイルを送らない)。省略 (添付を知らない古い画面) は「何も付いていない」とみなす
+    reply_files: list[int] | None = None
 
 
 class MailApprovalBody(BaseModel):
@@ -620,6 +625,7 @@ class MailApprovalBody(BaseModel):
     bcc: list[str] | None = None
     to: str | None = None        # 宛先 (画面で直したとき。管理者もこの宛先に送る)
     note: str = ""               # 管理者へのひとこと (任意。例:「料金のところを見てください」)
+    reply_files: list[int] | None = None   # 画面に出ていた添付ファイルの番号 (MailSendBody と同じ)
 
 
 class MailSendBackBody(BaseModel):
@@ -2661,6 +2667,50 @@ DRAFT_RCPT_MAX_CHARS = 8000
 # メール担当者が、確認待ちのメールの返信文を変えようとしたとき (管理者が見ている文を変えない)
 PENDING_LOCKED = ("確認待ちの間は、返信文を変えられません"
                   "（直したいときは、管理者に「差し戻す」を頼んでください）")
+# 返信に付けるファイル (返信画面の「📎 ファイルを添付」) を変えられないとき
+REPLY_FILES_LOCKED = ("確認待ちの間は、添付ファイルを変えられません"
+                      "（直したいときは、管理者に「差し戻す」を頼んでください）")
+REPLY_FILES_SENT = "このメールには返信済みです（送った後は、添付ファイルを変えられません）"
+# 画面を開いた後に、ほかの画面で添付ファイルを付けた・外したとき (見ていないファイルを送らない)
+REPLY_FILES_CHANGED = ("添付ファイルが、この画面を開いた後にほかの画面で変わりました。"
+                       "閉じて開き直し、添付ファイルを確かめてください")
+
+
+def _check_reply_files_editable(r, staff: bool, seen_request: str | None) -> None:
+    """返信に付けるファイルを変えてよいか (返信文の下書きと同じ決まり。だめなら 409).
+
+    返信した後は誰も変えられない。メール担当者は確認待ちの間は変えられない (管理者が見ている
+    ものを変えない)。画面を開いた後に確認をお願いされていたら変えない (seen_request)。
+    """
+    if r["status"] == "replied":
+        raise HTTPException(409, REPLY_FILES_SENT)
+    if staff and r["status"] == "pending_approval":
+        raise HTTPException(409, REPLY_FILES_LOCKED)
+    _check_seen_request(r, seen_request)
+
+
+def _check_reply_files(conn, mail_id: int, seen: list[int]) -> list:
+    """画面に出ていた添付ファイル (seen) が、いま付いているものと同じか確かめる (違えば 409).
+
+    返信を送る・確認をお願いするときに、画面を開いた後にほかの画面で付けた (見ていない) ファイルを
+    送らないように。いま付いているファイルの行を返す。
+    """
+    rows = reply_files.staged_rows(conn, mail_id)
+    if sorted(r["id"] for r in rows) != seen:
+        raise HTTPException(409, REPLY_FILES_CHANGED)
+    return rows
+
+
+def _reply_files_sql(mail_id: int, seen: list[int]) -> tuple[str, tuple]:
+    """_check_reply_files と同じことを、書き込みの中で確かめる条件 (確かめた後の変更に備える)."""
+    sql = (" AND (SELECT COUNT(*) FROM mail_reply_files WHERE mail_id = ?"
+           " AND sent_at IS NULL) = ?")
+    params: tuple = (mail_id, len(seen))
+    if seen:
+        sql += (" AND NOT EXISTS (SELECT 1 FROM mail_reply_files WHERE mail_id = ?"
+                f" AND sent_at IS NULL AND id NOT IN ({','.join('?' * len(seen))}))")
+        params += (mail_id, *seen)
+    return sql, params
 
 
 def _clean_note(text: str | None, label: str) -> str:
@@ -3693,13 +3743,19 @@ def sent_mail_attachment(
     key: str, att_id: int, inline: bool = False,
     _user=Depends(require_mail_user), conn=Depends(get_conn),
 ):
-    """送信箱に取り込んだメールの添付ファイルの中身 (そのメールの添付でなければ 404)."""
+    """送信箱のメールの添付ファイルの中身 (そのメールの添付でなければ 404).
+
+    この画面から送った返信 (a<メールの番号>) は、返信に付けて送ったファイル (いつも
+    「ただのデータ」のダウンロード)。
+    """
     try:
         kind, num = sent_box.parse_key(key)
     except sent_box.SentNotFound:
         raise HTTPException(404, "添付ファイルが見つかりません")
+    if kind == "a":
+        return _reply_file_response(conn, num, att_id, sent=True)
     row = conn.execute("SELECT * FROM sent_mail_attachments WHERE id = ? AND sent_id = ?",
-                       (att_id, num)).fetchone() if kind == "i" else None
+                       (att_id, num)).fetchone()
     if not row or row["skip_reason"]:
         raise HTTPException(404, "添付ファイルが見つかりません")
     path = mail.attachment_file(MAIL_ATTACHMENT_DIR, row["path"])
@@ -3836,6 +3892,11 @@ def mail_detail(
         "attachments": [mail.attachment_info(a) for a in atts if not a["skip_reason"]],
         "skipped_attachments": [mail.skipped_attachment_info(a)
                                 for a in atts if a["skip_reason"]],
+        # 返信に付けるファイル (返信画面の「📎 ファイルを添付」)。返信済みなら送ったもの、
+        # まだなら付けてあるもの (送るときに、画面に出ていたものと同じか確かめる)
+        "reply_files": [reply_files.file_info(f) for f in (
+            reply_files.sent_rows(conn, mail_id) if r["status"] == "replied"
+            else reply_files.staged_rows(conn, mail_id))],
         # Notion に登録したページ (空=まだ) と、登録した時刻・人
         "notion_page_url": r["notion_page_url"],
         "notion_registered_at": r["notion_registered_at"],
@@ -3892,6 +3953,144 @@ def mail_attachment(
             "Content-Disposition": mail.content_disposition(kind, row["filename"]),
             "X-Content-Type-Options": "nosniff",
             # お客様のファイルなので、ブラウザや途中のサーバに残さない
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+# ----- 返信に付けるファイル (返信画面の「📎 ファイルを添付」。server/reply_files.py) -----
+# 付けられるのは、返信文の下書きを変えられる人と同じ (管理者は返信するまで、メール担当者は
+# 確認待ちの間を除く)。付けたファイルは返信を送るときに一緒に送る (POST /api/mail/{id}/send)
+
+@app.post("/api/mail/{mail_id}/reply-files")
+async def mail_reply_files_upload(
+    mail_id: int, request: Request, seen_request: str | None = None,
+    user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """返信に付けるファイルを受け取る (multipart/form-data。1つでもいくつでも).
+
+    返信した後・メール担当者の確認待ちの間は 409。seen_request は下書きの保存と同じ
+    (画面を開いた後に確認をお願いされていたら 409)。1通の返信に reply_files.MAX_COUNT 個まで
+    (超えたら 400)・合わせて reply_files.TOTAL_MAX_BYTES まで (超えたら 413。大きすぎるものは
+    受け取りの途中でやめる)。中身の空のファイルは 400、サーバの空きが少なければ 507。
+    同じ名前のファイルがもう付いていれば「名前 (2).jpg」にする。
+    返り値は、いま付いているファイルの一覧 (files)。
+    """
+    r = _mail_or_404(conn, mail_id)
+    staff = _is_mail_staff(user)
+    _check_reply_files_editable(r, staff, seen_request)
+    rows = reply_files.staged_rows(conn, mail_id)
+    if len(rows) >= reply_files.MAX_COUNT:
+        raise HTTPException(400, reply_files.TOO_MANY)
+    room = reply_files.TOTAL_MAX_BYTES - sum(f["size"] for f in rows)
+    # 大きさが先に分かるときは、受け取る前に断る (スマホで大きな動画を送り続けさせない)
+    length = request.headers.get("content-length", "")
+    size = int(length) if length.isdigit() else room
+    if size > room + reply_files.REQUEST_OVERHEAD:
+        raise HTTPException(413, reply_files.TOO_LARGE)
+    try:
+        MAIL_REPLY_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"返信の添付ファイルの保存先を作れませんでした: {e}")
+        raise HTTPException(507, reply_files.SAVE_FAILED)
+    if not reply_files.space_ok(MAIL_REPLY_DIR, min(size, room)):
+        raise HTTPException(507, reply_files.DISK_LOW)
+    try:
+        items = await reply_files.receive(
+            request.headers, request.stream(), reply_files.mail_folder(MAIL_REPLY_DIR, mail_id),
+            reply_files.MAX_COUNT - len(rows), room)
+    except reply_files.UploadError as e:
+        raise HTTPException(e.status, str(e))
+    # 受け取っている間に、ほかの画面で付けた・送った・確認をお願いしたかもしれないので、
+    # 書き込みのロックを取ってから確かめ直す (だめなら受け取ったファイルは消す)
+    try:
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        _check_reply_files_editable(_mail_or_404(conn, mail_id), staff, seen_request)
+        rows = reply_files.staged_rows(conn, mail_id)
+        if len(rows) + len(items) > reply_files.MAX_COUNT:
+            raise HTTPException(400, reply_files.TOO_MANY)
+        if sum(f["size"] for f in [*rows, *items]) > reply_files.TOTAL_MAX_BYTES:
+            raise HTTPException(413, reply_files.TOO_LARGE)
+        taken = {f["filename"].lower() for f in rows}
+        now = now_iso()
+        for item in items:
+            conn.execute(
+                "INSERT INTO mail_reply_files (mail_id, filename, content_type, size, path,"
+                " uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (mail_id, reply_files.unique_name(item["filename"], taken), item["content_type"],
+                 item["size"], f"{mail_id}/{item['token']}", user["name"], now))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        reply_files.remove_files(item["path"] for item in items)
+        raise
+    return {"files": [reply_files.file_info(f) for f in reply_files.staged_rows(conn, mail_id)]}
+
+
+@app.delete("/api/mail/{mail_id}/reply-files/{file_id}")
+def mail_reply_file_delete(
+    mail_id: int, file_id: int, seen_request: str | None = None,
+    user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """返信に付けたファイルを外す (サーバからも消す).
+
+    変えてよいかは付けるときと同じ (返信した後・メール担当者の確認待ちの間は 409)。
+    送った返信のファイルは外せない (409)。返り値は、いま付いているファイルの一覧 (files)。
+    """
+    r = _mail_or_404(conn, mail_id)
+    staff = _is_mail_staff(user)
+    row = conn.execute("SELECT * FROM mail_reply_files WHERE id = ? AND mail_id = ?",
+                       (file_id, mail_id)).fetchone()
+    if not row:
+        raise HTTPException(404, "添付ファイルが見つかりません（もう外してあります）")
+    _check_reply_files_editable(r, staff, seen_request)
+    if row["sent_at"]:
+        raise HTTPException(409, REPLY_FILES_SENT)
+    # 確かめた後に、ほかの画面が送った・確認をお願いしたときは消さない (書き込みの中でもう一度確かめる)
+    sql, params = _seen_request_sql(seen_request)
+    cur = conn.execute(
+        "DELETE FROM mail_reply_files WHERE id = ? AND mail_id = ? AND sent_at IS NULL"
+        " AND EXISTS (SELECT 1 FROM mails m WHERE m.id = ? AND m.status != 'replied'"
+        + (" AND m.status != 'pending_approval'" if staff else "") + sql + ")",
+        (file_id, mail_id, mail_id, *params))
+    if not cur.rowcount:
+        _check_reply_files_editable(_mail_or_404(conn, mail_id), staff, seen_request)
+        raise HTTPException(404, "添付ファイルが見つかりません（もう外してあります）")
+    conn.commit()
+    path = reply_files.file_path(MAIL_REPLY_DIR, row["path"])
+    if path is not None:
+        reply_files.remove_files([path])
+    return {"files": [reply_files.file_info(f) for f in reply_files.staged_rows(conn, mail_id)]}
+
+
+@app.get("/api/mail/{mail_id}/reply-files/{file_id}")
+def mail_reply_file(
+    mail_id: int, file_id: int, _user=Depends(require_mail_user), conn=Depends(get_conn),
+):
+    """返信に付けたファイルの中身 (送る前に確かめる用・送った後も。そのメールのファイルでなければ 404)."""
+    return _reply_file_response(conn, mail_id, file_id)
+
+
+def _reply_file_response(conn, mail_id: int, file_id: int, sent: bool = False):
+    """返信に付けたファイルのダウンロード (sent=True なら送ったものだけ).
+
+    種類は付けた人のブラウザが知らせたものなので、画面の中では開かず、必ず「ただのデータ」の
+    ダウンロードにする (nosniff も付ける)。
+    """
+    row = conn.execute("SELECT * FROM mail_reply_files WHERE id = ? AND mail_id = ?"
+                       + (" AND sent_at IS NOT NULL" if sent else ""),
+                       (file_id, mail_id)).fetchone()
+    path = reply_files.file_path(MAIL_REPLY_DIR, row["path"]) if row else None
+    if path is None or not path.is_file():
+        raise HTTPException(404, "添付ファイルが見つかりません（外したか、削除された可能性があります）")
+    return FileResponse(
+        path,
+        media_type=mail.OCTET_STREAM,
+        headers={
+            "Content-Disposition": mail.content_disposition("attachment", row["filename"]),
+            "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, no-store",
         },
     )
@@ -4350,6 +4549,9 @@ def mail_send(
     承認するときは、画面で見ていた確認のお願いの時刻を approve_request で渡す (承認でなければ null)。
     画面を開いた後に確認をお願いされた (下書きを見ていない)・差し戻されて頼み直された、などで
     食い違えば 409。approve_request の項目ごと無い古い画面は確かめない。
+    返信に付けたファイル (返信画面の「📎 ファイルを添付」) も一緒に送る。画面に出ていたファイルの
+    番号を reply_files で渡し、いま付いているものと違えば (開いた後にほかの画面で付けた・外した)
+    何も送らずに 409。送れたらファイルに送った時刻を入れ、送れなかったら付けたまま残す。
     """
     r = _mail_or_404(conn, mail_id)
     if r["status"] == "replied":
@@ -4367,9 +4569,24 @@ def mail_send(
         cc, bcc = mail.check_reply_recipients(to, body.cc, body.bcc)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    file_ids = sorted(set(body.reply_files or []))
+    files = _check_reply_files(conn, mail_id, file_ids)
     s = db.get_settings(conn)
     if not s.get("smtp_host"):
         raise HTTPException(400, "SMTPが未設定です。設定画面で送信サーバを保存してください")
+    # 付けたファイルの中身を読んでおく (見つからなければ何も変えずに 409)。付けた後のファイルは
+    # 変わらず、外すと行が消えるので、下の書き込みで番号が同じと確かめれば、読んだものを送ってよい
+    attachments = []
+    for f in files:
+        path = reply_files.file_path(MAIL_REPLY_DIR, f["path"])
+        try:
+            data = path.read_bytes() if path is not None else None
+        except OSError:
+            data = None
+        if data is None:
+            raise HTTPException(409, f"添付ファイル「{f['filename']}」がサーバに見つかりませんでした。"
+                                     "✕ で外してから、もう一度付けてください")
+        attachments.append((f["filename"], f["content_type"], data))
     # 届いたアドレス (削除したアドレスなら None。差出人は共通の設定、控えは残さない)
     acc = mail.get_account(conn, r["account_id"])
     send_settings = mail.smtp_settings(s, acc)
@@ -4382,7 +4599,9 @@ def mail_send(
     # CC・BCC も実際に送ったものとして一緒に残す
     # 確認待ちだったら「承認して送信」として、送った管理者の名前を残す。承認するのは、画面で
     # 見ていた確認のお願いのときだけ (同じ書き込みの中で確かめるので、確かめた後に確認を
-    # お願いされた・差し戻されたときは書き込まない。下の 409)
+    # お願いされた・差し戻されたときは書き込まない。下の 409)。付いているファイルも、
+    # 画面に出ていたものと同じときだけ (確かめた後にほかの画面で付けたものを送らない)
+    files_sql, files_params = _reply_files_sql(mail_id, file_ids)
     cur = conn.execute(
         "UPDATE mails SET status = 'replied', reply_subject = ?, reply_body = ?,"
         " reply_cc = ?, reply_bcc = ?, replied_at = ?, replied_by = ?, reply_sent_to = ?,"
@@ -4390,15 +4609,18 @@ def mail_send(
         " approved_by = CASE WHEN status = 'pending_approval' THEN ? ELSE '' END"
         " WHERE id = ? AND status != 'replied' AND (? OR CASE WHEN ? IS NULL"
         " THEN status != 'pending_approval'"
-        " ELSE status = 'pending_approval' AND COALESCE(requested_at, '') = ? END)",
+        " ELSE status = 'pending_approval' AND COALESCE(requested_at, '') = ? END)" + files_sql,
         (subject, text, ", ".join(cc), ", ".join(bcc), now_iso(), admin["name"], to,
-         admin["name"], mail_id, int(not check), body.approve_request, body.approve_request),
+         admin["name"], mail_id, int(not check), body.approve_request, body.approve_request,
+         *files_params),
     )
     if not cur.rowcount:
         now_row = _mail_or_404(conn, mail_id)
-        if now_row["status"] == "replied" or not check:
+        if now_row["status"] == "replied":
             raise HTTPException(409, "このメールには返信済みです")
-        _check_send_approval(now_row, body.approve_request)
+        _check_reply_files(conn, mail_id, file_ids)
+        if check:
+            _check_send_approval(now_row, body.approve_request)
         raise HTTPException(409, "このメールは、ほかの画面で変わったところです（閉じて開き直してください）")
     approval = conn.execute("SELECT approved_by, requested_by FROM mails WHERE id = ?",
                             (mail_id,)).fetchone()
@@ -4419,7 +4641,7 @@ def mail_send(
         raw = mail.send_reply(
             send_settings, to, subject, text,
             in_reply_to=r["message_id"], references=r["references_hdr"],
-            cc=cc, bcc=bcc, sender=sender,
+            cc=cc, bcc=bcc, sender=sender, attachments=attachments,
         )
     except mail.SomeRecipientsRefused as e:
         # 一部の送り先だけ送信サーバに断られた (ほかの人には届いている)
@@ -4461,7 +4683,8 @@ def mail_send(
                detail=f"to={to} refused={','.join(refused)}"
                       f" delivered={','.join(delivered)}"
                       + (f" msgid={refused_id}" if refused_id else "")
-                      + f" subject={subject}{saved}")
+                      + f" subject={subject}{saved}"
+                      + (f" attachments={reply_files.describe(files)}" if files else ""))
         conn.commit()
         raise HTTPException(
             502, f"送信できませんでした: 宛先（{to}）は相手のメールサーバに"
@@ -4481,7 +4704,11 @@ def mail_send(
     reply_id = mail.sent_message_id(raw)
     if reply_id:
         conn.execute("UPDATE mails SET reply_message_id = ? WHERE id = ?", (reply_id, mail_id))
-        conn.commit()
+    # 一緒に送ったファイルには送った時刻を入れる (やり取り・送信箱に 📎 で出す。もう外せない)
+    if files:
+        conn.executemany("UPDATE mail_reply_files SET sent_at = ? WHERE id = ? AND sent_at IS NULL",
+                         [(now_iso(), f["id"]) for f in files])
+    conn.commit()
     # 控えを送信済みフォルダへ保存する (Webメールの「送信済み」にも出るように)。
     # 相手には届いているので、ここで失敗しても送信は成功として扱う
     # (失敗扱いにすると画面から再送され、相手に二重に届いてしまう)
@@ -4501,6 +4728,9 @@ def mail_send(
     if refused:
         detail += f" refused={','.join(refused)}"
     detail += f" recipients={1 + len(cc) + len(bcc)} subject={subject}"
+    if files:
+        # 付けて送ったファイルの数と名前
+        detail += f" attachments={reply_files.describe(files)}"
     if approval and approval["approved_by"]:
         # メール担当者の下書きを確認して送った (誰の下書きか)
         detail += f" approved_draft_by={approval['requested_by']}"
@@ -4511,6 +4741,7 @@ def mail_send(
     _audit(conn, admin, "mail_send", detail=detail)
     return {"sent": to, "cc": cc, "bcc": bcc, "refused": refused,
             "subject": subject, "from": sender,
+            "reply_files": [reply_files.file_info(f) for f in reply_files.sent_rows(conn, mail_id)],
             "saved_to_sent": bool(sent_folder), "sent_folder": sent_folder,
             "sent_save_error": save_error,
             "approved_by": approval["approved_by"] if approval else ""}
@@ -4570,17 +4801,24 @@ def mail_request_approval(
         raise HTTPException(409, "このメールには返信済みです")
     if r["status"] == "pending_approval":
         raise HTTPException(409, "このメールは、もう確認をお願いしています（管理者の確認を待っています）")
+    # 付けたファイルも、画面に出ていたものと同じときだけ頼む (管理者には、頼んだ人が見ていた
+    # ファイルが出る。送るときにも、管理者の画面に出ていたものと同じか確かめる)
+    file_ids = sorted(set(body.reply_files or []))
+    files = _check_reply_files(conn, mail_id, file_ids)
     now = now_iso()
     # 前の差し戻しのコメントは消す (直して頼み直した)。確かめた後に、ほかの画面が送った・
-    # 確認をお願いしたときは書き込まない (409)。宛先も残す (管理者も同じ宛先に送る)
+    # 確認をお願いした・ファイルを付けた・外したときは書き込まない (409)。宛先も残す (管理者も同じ宛先に送る)
+    files_sql, files_params = _reply_files_sql(mail_id, file_ids)
     cur = conn.execute(
         "UPDATE mails SET status = 'pending_approval', draft_reply = ?, draft_cc = ?,"
         " draft_bcc = ?, draft_to = ?, requested_by = ?, requested_at = ?, approval_note = ?,"
         " approved_by = '', returned_by = '', returned_at = NULL, return_note = ''"
-        " WHERE id = ? AND status IN ('unhandled', 'archived')",
-        (text, ", ".join(cc), ", ".join(bcc), to, user["name"], now, note, mail_id),
+        " WHERE id = ? AND status IN ('unhandled', 'archived')" + files_sql,
+        (text, ", ".join(cc), ", ".join(bcc), to, user["name"], now, note, mail_id,
+         *files_params),
     )
     if not cur.rowcount:
+        _check_reply_files(conn, mail_id, file_ids)
         raise HTTPException(409, "このメールは、ほかの画面で返信したか、確認をお願いしたところです"
                                  "（閉じて開き直してください）")
     detail = f"mail={mail_id} to={to}{_to_changed(to, default_to)}"
@@ -4588,6 +4826,8 @@ def mail_request_approval(
         detail += f" cc={','.join(cc)}"
     if bcc:
         detail += f" bcc={','.join(bcc)}"
+    if files:
+        detail += f" attachments={reply_files.describe(files)}"
     if note:
         detail += f" note={_audit_note(note)}"
     _audit(conn, user, "mail_approval_request", detail=detail)

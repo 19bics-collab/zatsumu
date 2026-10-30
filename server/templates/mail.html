@@ -485,6 +485,42 @@
   .att-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .att-name small { color: #6b7280; }
   .att button { padding: .4rem .7rem; flex-shrink: 0; }
+  /* 返信に付けるファイル (返信文の下の「📎 ファイルを添付」)。ファイルを選ぶ欄は見えなくして、
+     ボタンの形の label を押すと開く (iPhone では「写真ライブラリ・写真を撮る・ファイルを選択」が出る) */
+  .rf { margin-top: .5rem; display: flex; flex-direction: column; gap: .4rem;
+        font-size: .88rem; color: #374151; position: relative; }
+  .rf[hidden], .rf-bar[hidden], #m-rf-title[hidden], #m-rf-err[hidden] { display: none; }
+  .rf-list:empty { display: none; }
+  .rf-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .7rem; }
+  .rf-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden;
+              clip: rect(0 0 0 0); }
+  .rf-add { display: inline-flex; align-items: center; min-height: 40px; box-sizing: border-box;
+            padding: .45rem .9rem; border-radius: 6px; background: #e5e7eb; color: #374151;
+            font-size: .9rem; cursor: pointer; white-space: nowrap;
+            -webkit-tap-highlight-color: rgba(0,0,0,.06); }
+  .rf-input:focus-visible + .rf-add { outline: 2px solid #2563eb; outline-offset: 2px; }
+  .rf-input:disabled + .rf-add { opacity: .55; cursor: default; }
+  .rf-hint { flex: 1 1 14rem; min-width: 0; font-size: .8rem; color: #6b7280; overflow-wrap: anywhere; }
+  /* 「PC はここに持ってきても付けられます」は、マウスの使える画面だけ */
+  @media (hover: none) { .rf-drop-hint { display: none; } }
+  #m-rf-title { color: #6b7280; }
+  .rf-list { display: flex; flex-direction: column; gap: .35rem; }
+  .rf-item { display: flex; align-items: center; gap: .5rem; border: 1px solid var(--line);
+             border-radius: 6px; padding: .2rem .3rem .2rem .6rem; background: #fff; }
+  .rf-item.up { background: #f9fafb; color: #6b7280; }
+  .rf-icon { flex: 0 0 1.5em; text-align: center; font-size: 1.15rem; }
+  .rf-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+  /* 名前を押すとダウンロードして中身を確かめられる (長い名前も折り返す) */
+  .rf-name { display: block; width: 100%; min-height: 40px; padding: .3rem 0; border-radius: 4px;
+             background: none; color: #1d4ed8; text-align: left; text-decoration: underline;
+             font-size: .9rem; overflow-wrap: anywhere; word-break: break-word; }
+  .rf-item.up .rf-name { color: #374151; text-decoration: none; min-height: 0; }
+  .rf-size { font-size: .78rem; color: #6b7280; padding-bottom: .2rem; }
+  .rf-del { flex: 0 0 auto; min-width: 40px; min-height: 40px; padding: 0; font-size: 1rem; }
+  .rf-err { font-size: .82rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* PC でファイルを返信画面に持ってきたとき、返信文と添付の欄に枠を出す (ここに落とせば付く) */
+  #mail-modal.rf-over #m-draft, #mail-modal.rf-over #m-rf {
+    outline: 2px dashed #16a34a; outline-offset: 3px; background-color: #f0fdf4; }
   /* この相手とのやり取り (返信モーダル)。開け閉めは details/summary (iPhone でも動く) */
   .thread { margin-top: .7rem; border: 1px solid var(--line); border-radius: 6px;
             background: #fff; font-size: .88rem; color: #374151; }
@@ -878,6 +914,9 @@
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
+  返信画面の「📎 ファイルを添付」で、写真・PDF・Excel・Word などを返信に付けて送れます
+  （1通に10個・合わせて15MBまで。iPhone は写真を選ぶか、その場で撮れます。PC はファイルを返信文の欄に持ってきても付けられます。
+  付けたファイルは閉じても残り、送ると「この相手とのやり取り」と送信箱に 📎 で出ます）。
   本文の下に続く前のやり取りの引用（「&gt;」で始まる行や「-----Original Message-----」から下など）は畳んでいます。
   見たいときは「引用を表示 ▼」を押してください（転送のメール・HPフォームから届いたメールは、畳まずに全部出します）。
   問い合わせの種類（清掃のご依頼など）と担当は自動で入り、返信画面で変えられます。
@@ -1557,6 +1596,18 @@
       <select id="m-tpl" aria-label="定型文を入れる"><option value="">定型文を入れる…</option></select>
     </div>
     <textarea id="m-draft" placeholder="「返信文を生成」を押すと下書きが入ります"></textarea>
+    <!-- 返信に付けるファイル。選んだらすぐサーバに送って下に並べ、返信を送るときに一緒に送る。
+         ファイル名は esc() か textContent で入れる -->
+    <div class="rf" id="m-rf" hidden>
+      <div class="rf-bar" id="m-rf-bar">
+        <input type="file" id="m-rf-input" class="rf-input" multiple>
+        <label for="m-rf-input" class="rf-add" id="m-rf-add">📎 ファイルを添付</label>
+        <span class="rf-hint">写真・PDF・Excel・Word など（1通に10個・合わせて15MBまで。名前を押すと中身を確かめられます<span class="rf-drop-hint">。PC はファイルをここに持ってきても付けられます</span>）</span>
+      </div>
+      <small id="m-rf-title" hidden></small>
+      <div class="rf-list" id="m-rf-list"></div>
+      <div class="error rf-err" id="m-rf-err" role="alert" hidden></div>
+    </div>
     <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem;flex-wrap:wrap">
       <input type="text" id="m-inst" placeholder="生成の方針（任意。例：金曜までに対応すると伝える）">
       <button id="m-gen" class="ghost">返信文を生成</button>
@@ -2399,6 +2450,7 @@ function pkEvent(e) {
     return `<div class="pk-ev out">
       <div class="pk-head"><span class="pk-kind">↩ こちらの返信</span> ・ ${at}${e.replied_by ? " ・ " + esc(e.replied_by) + " が送信" : ""}</div>
       <small>宛先: ${esc(e.sent_to)}${(e.cc || []).length ? "・CC: " + esc(e.cc.join(", ")) : ""}</small>
+      ${(e.files || []).length ? `<small>📎 添付: ${esc(e.files.join("、"))}</small>` : ""}
       <div class="mail-body">${bodyHtml(e.body, { key: "pko:" + Number(e.mail_id) })}</div>${pkCut(e)}</div>`;
   }
   return `<div class="pk-ev in">
@@ -3039,6 +3091,9 @@ async function openMail(id) {
   $("m-req-note").value = "";
   $("m-return-note").value = "";
   $("m-gen").textContent = "返信文を生成";   // 前のメールで生成中のまま開いたときも戻す
+  // 返信に付けたファイル (送った後は、送ったもの)
+  rfList = m.reply_files || [];
+  rfShowErrors([]);
   renderControls(m);
   $("m-back").hidden = !modalHistory.length;
   $("mail-modal").hidden = false;
@@ -3176,11 +3231,12 @@ function renderControls(m) {
   $("m-req-row").hidden = !canRequest || pending;
   $("m-staff-help").hidden = admin || replied;
   $("m-staff-help").textContent = pending
-    ? "管理者の確認を待っています。確認待ちの間は、返信文を変えられません（直したいときは、管理者に「差し戻す」を頼んでください）。"
+    ? "管理者の確認を待っています。確認待ちの間は、返信文と添付ファイルを変えられません（直したいときは、管理者に「差し戻す」を頼んでください）。"
     : me.require_approval
       ? "送信は管理者だけができます。返信文ができたら「確認をお願いする」を押してください（管理者が確かめて送ります）。"
       : "送信は管理者だけができます。返信文は閉じると下書きに残るので、管理者に送信を頼んでください。";
   renderApprovalBox(m);
+  renderReplyFiles();
 }
 
 // 確認のお願い (確認待ち) と差し戻しの知らせ。名前・ひとこと・コメントは textContent で入れる
@@ -3196,7 +3252,7 @@ function renderApprovalBox(m) {
     head = `📝 ${m.requested_by || "メール担当者"} さんが確認をお願いしています` +
       (m.requested_at ? `（${fmtDate(m.requested_at)}）` : "");
     note = m.approval_note ? "ひとこと: " + m.approval_note : "";
-    help = admin ? "宛先・返信文・CC・BCC を確かめて（直してもかまいません）「承認して送信」を押してください。" +
+    help = admin ? "宛先・返信文・CC・BCC・添付ファイルを確かめて（直してもかまいません）「承認して送信」を押してください。" +
       "直してほしいところがあるときは、下にコメントを書いて「差し戻す」を押してください。" : "";
   } else if (returned) {
     head = "↩ 差し戻されました" +
@@ -3569,6 +3625,7 @@ function dedupeRcpts(to, cc, bcc) {
 $("m-send").onclick = async () => {
   const text = $("m-draft").value.trim();
   if (!text) { alert("返信本文を入力するか「返信文を生成」を押してください"); return; }
+  if (rfBusy()) { alert("ファイルをアップロードしています。終わってから送ってください"); return; }
   const to = toValue();
   if (!to) return;
   const [cc, bcc] = dedupeRcpts(to, splitAddrs($("m-cc").value), splitAddrs($("m-bcc").value));
@@ -3581,24 +3638,31 @@ $("m-send").onclick = async () => {
       "宛先: " + to + toChangedText(to) +
       (cc.length ? "\nCC: " + cc.join(", ") : "") +
       (bcc.length ? "\nBCC: " + bcc.join(", ") : "") +
+      rfConfirmText() +
       (cc.length || bcc.length
         ? "\n\n※CC・BCC の人にも同じ文が届きます。知らないアドレスが無いか確かめてください" : ""))) return;
   const b = $("m-send");
   // 送っている間に別のメールを開いたら、そのメールを「返信済み」の表示にしない
   const id = modal.id;
   b.disabled = true; b.textContent = "送信中…";
+  // 送っている間は、ファイルを付け外ししない。送るのは画面に出ているファイル (違えばサーバが止める)
+  rfSending = id;
+  renderReplyFiles();
   try {
     const r = await apiJson(`/api/mail/${id}/send`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body: text, cc, bcc, to,
+      body: JSON.stringify({ body: text, cc, bcc, to, reply_files: rfList.map(f => f.id),
                              approve_request: approving ? (modal.mail.requested_at || "") : null }),
     });
+    rfSending = 0;
     if (modal.id !== id) { inboxChanged(); return; }
     modal.savedDraft = text;
     const sentCc = r.cc || [], sentBcc = r.bcc || [];
+    rfList = r.reply_files || [];
     // 0件の方は書かない (CC だけ送ったのに「BCC 0件」と出ると、文が長く分かりにくい)
     const counts = [sentCc.length ? `CC ${sentCc.length}件` : "",
-                    sentBcc.length ? `BCC ${sentBcc.length}件` : ""].filter(Boolean);
+                    sentBcc.length ? `BCC ${sentBcc.length}件` : "",
+                    rfList.length ? `添付 ${rfList.length}件` : ""].filter(Boolean);
     $("m-status").textContent = `${r.sent} へ送信しました ✓` +
       (counts.length ? `（${counts.join("・")}）` : "") +
       (r.approved_by ? "（確認待ちの下書きを承認しました）" : "");
@@ -3613,8 +3677,10 @@ $("m-send").onclick = async () => {
     b.textContent = "返信済み";
     if (modal.mail) {
       modal.mail.status = "replied";
+      modal.mail.reply_files = rfList;
       renderApprovalBox(modal.mail);   // 確認のお願い・差し戻すの欄を閉じる
     }
+    renderReplyFiles();                // 付けたファイルは「送った添付ファイル」として出す
     // 送信後は編集・再生成・対応不要化を止める (二重対応の防止)。
     // CC・BCC の欄は実際に送ったもの (重複を除いた後) にする
     $("m-draft").readOnly = true;
@@ -3630,7 +3696,11 @@ $("m-send").onclick = async () => {
     $("m-cc-all").disabled = true;
     inboxChanged();
   } catch {
-    if (modal.id === id) { b.disabled = false; b.textContent = approving ? "承認して送信" : "返信を送信"; }
+    rfSending = 0;
+    if (modal.id === id) {
+      b.disabled = false; b.textContent = approving ? "承認して送信" : "返信を送信";
+      renderReplyFiles();
+    }
   }
 };
 
@@ -3655,6 +3725,7 @@ $("m-archive").onclick = async () => {
 $("m-request").onclick = async () => {
   const text = $("m-draft").value.trim();
   if (!text) { alert("返信文を入力するか「返信文を生成」を押してください"); return; }
+  if (rfBusy()) { alert("ファイルをアップロードしています。終わってから確認をお願いしてください"); return; }
   const to = toValue();
   if (!to) return;
   const [cc, bcc] = dedupeRcpts(to, splitAddrs($("m-cc").value), splitAddrs($("m-bcc").value));
@@ -3662,14 +3733,19 @@ $("m-request").onclick = async () => {
       "宛先: " + to + toChangedText(to) +
       (cc.length ? "\nCC: " + cc.join(", ") : "") +
       (bcc.length ? "\nBCC: " + bcc.join(", ") : "") +
-      "\n\n管理者が確かめてから送ります。確認待ちの間は、返信文を変えられません。")) return;
+      rfConfirmText() +
+      "\n\n管理者が確かめてから送ります。確認待ちの間は、返信文と添付ファイルを変えられません。")) return;
   const id = modal.id, b = $("m-request");
   b.disabled = true; b.textContent = "お願いしています…";
+  rfSending = id;
+  renderReplyFiles();
   try {
     const r = await apiJson(`/api/mail/${id}/request-approval`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body: text, cc, bcc, to, note: $("m-req-note").value }),
+      body: JSON.stringify({ body: text, cc, bcc, to, note: $("m-req-note").value,
+                             reply_files: rfList.map(f => f.id) }),
     });
+    rfSending = 0;
     if (modal.id !== id) { inboxChanged(); return; }
     modal.savedDraft = text;
     // CC・BCC の欄も、頼んだもの (宛先と同じ人を除いたもの) にする
@@ -3686,6 +3762,7 @@ $("m-request").onclick = async () => {
       ((r.notified || []).length ? "" : "（お知らせの送り先が未設定のため、管理者に一声かけてください）");
     inboxChanged();
   } catch {
+    rfSending = 0;
     if (modal.id === id) renderControls(modal.mail);   // ボタンを元に戻す
   }
 };
@@ -3757,6 +3834,7 @@ async function closeModal(opts = {}) {
   clearThread();
   clearCalendar();
   ntnSeq++;
+  rfList = [];         // アップロードの途中のファイルは、閉じても送り続ける (そのメールに残る)
   $("mail-modal").hidden = true;
   // 履歴に「このメールを開いていた」と残していたら消す (戻る・進むで開き直さないように)
   if (!opts.keepHistory && history.state && history.state.mail) {
@@ -3809,12 +3887,13 @@ function renderThread(m) {
         <span class="thr-line thr-subj">${esc(t.subject) || "（件名なし）"}</span>
         <span class="thr-line">📩 ${esc(t.snippet) || "（本文なし）"}</span>
         ${t.replied_at ? `<span class="thr-line thr-reply">↩ 返信: ${esc(snip(t.reply_body))}</span>` : ""}
+        ${(t.reply_files || []).length ? `<span class="thr-line thr-reply">📎 ${esc(t.reply_files.join("、"))}</span>` : ""}
       </summary>
       <div class="thr-full">
         <small>届いたメール（${esc(who)}）</small>
         <div class="mail-body thr-body">読み込み中…</div>
         ${t.replied_at ? `
-        <small>送った返信（${esc(fmtDate(t.replied_at))}${t.replied_by ? "・" + esc(t.replied_by) : ""}）${(t.reply_cc || []).length ? "<br>CC: " + esc(t.reply_cc.join(", ")) : ""}</small>
+        <small>送った返信（${esc(fmtDate(t.replied_at))}${t.replied_by ? "・" + esc(t.replied_by) : ""}）${(t.reply_cc || []).length ? "<br>CC: " + esc(t.reply_cc.join(", ")) : ""}${(t.reply_files || []).length ? "<br>📎 添付: " + esc(t.reply_files.join("、")) : ""}</small>
         <div class="mail-body">${bodyHtml(t.reply_body)}</div>` : ""}
         <button class="ghost" data-thr-open="${Number(t.id)}">このメールを開く</button>
       </div>
@@ -3982,6 +4061,211 @@ function closeViewer() {
   $("att-viewer-img").removeAttribute("src");
 }
 $("att-viewer").onclick = () => closeViewer();
+
+/* ---------- 返信に付けるファイル (返信文の下の「📎 ファイルを添付」) ----------
+   選んだファイルは1つずつすぐサーバへ送り (アップロード)、返信を送るときに一緒に送る
+   (返信文の下書きと同じで、閉じて開き直しても残る)。付けたり外したりできるのは、返信文を
+   直せる人と同じ (送った後と、メール担当者の確認待ちの間は見るだけ)。送るとき・確認を
+   お願いするときは、画面に出ているファイルの番号をサーバに渡す (ほかの画面で付けた・外した
+   ファイルがあれば、サーバが止める)。ファイル名は外から来た文字と同じに扱い、esc() を通す */
+// 1通の返信に付けられる数と、合わせた大きさ (サーバ server/reply_files.py と同じ。サーバも確かめる)
+const RF_MAX_COUNT = 10, RF_MAX_MB = 15;
+let rfList = [];        // 開いているメールに付けてあるファイル (サーバにあるもの。付けた順)
+let rfQueue = [];       // アップロードを待っている・している最中のファイル ({ mailId, file, seen })
+let rfRunning = false;  // アップロードの処理が動いているか (1つずつ順に送る)
+let rfSending = 0;      // 送信・確認のお願いをしているメールの番号 (その間はファイルを付け外ししない)
+
+// いま付け外しできないか (送った後・メール担当者の確認待ちの間)
+const rfLocked = () => {
+  const m = modal.mail;
+  return !m || m.status === "replied" || (!isAdmin() && m.status === "pending_approval");
+};
+const rfCanEdit = () => !!modal.id && !rfLocked() && rfSending !== modal.id;
+// 開いているメールのファイルを、アップロードしている最中か (その間は送らない)
+const rfBusy = () => rfQueue.some(q => q.mailId === modal.id);
+const rfIcon = type => String(type || "").startsWith("image/") ? "🖼" : "📄";
+
+function renderReplyFiles() {
+  const m = modal.mail, locked = rfLocked(), edit = rfCanEdit();
+  const waiting = rfQueue.filter(q => q.mailId === modal.id);
+  // 付けられないメールで、付いているものも無ければ欄ごと出さない (Webメールから返信したメールなど)
+  $("m-rf").hidden = !m || (locked && !rfList.length);
+  $("m-rf-bar").hidden = locked;
+  $("m-rf-input").disabled = !edit;
+  $("m-rf-title").hidden = !locked || !rfList.length;
+  $("m-rf-title").textContent = m && m.status === "replied"
+    ? `📎 送った添付ファイル（${rfList.length}）` : `📎 添付ファイル（${rfList.length}）`;
+  $("m-rf-list").innerHTML = rfList.map(f => `
+    <div class="rf-item">
+      <span class="rf-icon" aria-hidden="true">${rfIcon(f.content_type)}</span>
+      <div class="rf-main">
+        <button type="button" class="rf-name" data-rf-dl="${Number(f.id)}">${esc(f.filename)}</button>
+        <span class="rf-size">${esc(fmtSize(f.size))}</span>
+      </div>
+      ${edit ? `<button type="button" class="ghost rf-del" data-rf-del="${Number(f.id)}" aria-label="${esc(f.filename)} を外す">✕</button>` : ""}
+    </div>`).join("") + waiting.map(q => `
+    <div class="rf-item up">
+      <span class="rf-icon" aria-hidden="true">⏳</span>
+      <div class="rf-main">
+        <span class="rf-name">${esc(q.file.name)}</span>
+        <span class="rf-size">${esc(fmtSize(q.file.size))}・アップロード中…</span>
+      </div>
+    </div>`).join("");
+  rfSyncButtons();
+}
+
+// アップロードの最中は「返信を送信」「確認をお願いする」を押せなくする (終わったら元に戻す)
+function rfSyncButtons() {
+  const m = modal.mail;
+  if (!m || rfSending === modal.id) return;
+  $("m-send").disabled = m.status === "replied" || rfBusy();
+  $("m-request").disabled = m.status === "pending_approval" || rfBusy();
+}
+
+// 付けられなかったわけ (文はそのまま出す。add なら前の分に足す)
+function rfShowErrors(list, add) {
+  const el = $("m-rf-err");
+  const text = [...(add && !el.hidden ? [el.textContent] : []), ...list].join("\n");
+  el.textContent = text;
+  el.hidden = !text;
+}
+
+// 選んだ・持ってきたファイルを付ける。数と大きさの上限は先にここで確かめて、超える分は知らせて付けない
+function addReplyFiles(fileList) {
+  const files = [...(fileList || [])];
+  if (!files.length || !rfCanEdit()) return;
+  const id = modal.id, seen = seenRequest();
+  const mine = rfQueue.filter(q => q.mailId === id);
+  let count = rfList.length + mine.length;
+  let total = rfList.reduce((n, f) => n + Number(f.size || 0), 0) + mine.reduce((n, q) => n + q.file.size, 0);
+  const errs = [], over = [];
+  for (const file of files) {
+    if (!file.size) {
+      errs.push(`「${file.name}」は中身が空（0バイト）のため付けられません`);
+    } else if (count >= RF_MAX_COUNT) {
+      over.push(file.name);
+    } else if (total + file.size > RF_MAX_MB * 1024 * 1024) {
+      errs.push(`「${file.name}」（${fmtSize(file.size)}）は付けられません。添付ファイルは、1通の返信で合わせて${RF_MAX_MB}MBまでです` +
+                "（大きい写真は枚数を減らすか、小さくしてから付けてください）");
+    } else {
+      count++;
+      total += file.size;
+      rfQueue.push({ mailId: id, file, seen });
+    }
+  }
+  if (over.length) {
+    errs.push(`添付できるファイルは、1通の返信に${RF_MAX_COUNT}個までです（付けなかったファイル: ${over.join("、")}）`);
+  }
+  rfShowErrors(errs);
+  renderReplyFiles();
+  rfRun();
+}
+
+// 待っているファイルを1つずつアップロードする。返信画面を閉じても、ほかのメールを開いても続ける
+// (付けたファイルはそのメールに残る。画面を描き直すのは、そのメールを開いているときだけ)
+async function rfRun() {
+  if (rfRunning) return;
+  rfRunning = true;
+  while (rfQueue.length) {
+    const q = rfQueue[0];
+    let err = "";
+    try {
+      const fd = new FormData();
+      fd.append("files", q.file, q.file.name);
+      const r = await api(`/api/mail/${q.mailId}/reply-files` +
+        (q.seen !== null ? "?seen_request=" + encodeURIComponent(q.seen) : ""), { method: "POST", body: fd });
+      const e = await r.json().catch(() => ({}));
+      if (r.ok) {
+        if (modal.id === q.mailId) rfList = e.files || [];
+      } else {
+        err = e.detail || (r.status === 413 ? `ファイルが大きすぎます（1通の返信で合わせて${RF_MAX_MB}MBまで）`
+                                             : "サーバに送れませんでした。もう一度選んでください");
+      }
+    } catch (e) {
+      if (e.message === "auth") { rfQueue = []; break; }   // ログインし直す画面になった
+      err = "通信に失敗しました。電波の良い所で、もう一度選んでください";
+    }
+    rfQueue.shift();
+    if (modal.id === q.mailId) {
+      if (err) rfShowErrors([`「${q.file.name}」を付けられませんでした: ${err}`], true);
+      renderReplyFiles();
+    }
+  }
+  rfRunning = false;
+  if (modal.id) renderReplyFiles();
+}
+
+$("m-rf-input").addEventListener("change", e => {
+  addReplyFiles(e.target.files);
+  e.target.value = "";   // 同じファイルをもう一度選んでも付けられるように
+});
+
+// ✕ で外す (サーバからも消す)。名前を押すとダウンロードして中身を確かめられる
+$("m-rf-list").onclick = async e => {
+  const del = e.target.closest("button[data-rf-del]");
+  const dl = e.target.closest("button[data-rf-dl]");
+  const id = modal.id;
+  if (del && rfCanEdit()) {
+    del.disabled = true;
+    const seen = seenRequest();
+    try {
+      const r = await apiJson(`/api/mail/${id}/reply-files/${Number(del.dataset.rfDel)}` +
+        (seen !== null ? "?seen_request=" + encodeURIComponent(seen) : ""), { method: "DELETE" });
+      if (modal.id !== id) return;
+      rfList = r.files || [];
+      rfShowErrors([]);
+    } catch {}
+    if (modal.id === id) renderReplyFiles();
+  } else if (dl) {
+    const f = rfList.find(x => x.id === Number(dl.dataset.rfDl));
+    if (!f || !id) return;
+    dl.disabled = true;
+    try {
+      const r = await api(`/api/mail/${id}/reply-files/${Number(f.id)}`);
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "添付ファイルを受け取れませんでした");
+      // 中身は「ただのデータ」として保存する (この画面の中で開かない)
+      const url = URL.createObjectURL(new Blob([await r.arrayBuffer()], { type: "application/octet-stream" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = f.filename || "添付ファイル";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      if (err.message !== "auth") alert(err.message);
+    }
+    dl.disabled = false;
+  }
+};
+
+// PC: ファイルを返信画面に持ってくると、返信文と添付の欄に枠を出し、落とすと付ける。
+// 付けられないとき (送った後・確認待ちのメール担当者) も、ブラウザがファイルを開いて
+// 書きかけの返信文が消えないよう、落としたものは受け取って何もしない
+const rfDragged = e => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes("Files");
+let rfOverTimer = 0;
+$("mail-modal").addEventListener("dragover", e => {
+  if (!rfDragged(e)) return;
+  e.preventDefault();
+  const ok = rfCanEdit();
+  e.dataTransfer.dropEffect = ok ? "copy" : "none";
+  $("mail-modal").classList.toggle("rf-over", ok);
+  clearTimeout(rfOverTimer);   // 持ってきている間は dragover が続けて来る。来なくなったら枠を消す
+  rfOverTimer = setTimeout(() => $("mail-modal").classList.remove("rf-over"), 250);
+});
+$("mail-modal").addEventListener("drop", e => {
+  if (!rfDragged(e)) return;
+  e.preventDefault();
+  $("mail-modal").classList.remove("rf-over");
+  if (rfCanEdit()) addReplyFiles(e.dataTransfer.files);
+});
+
+// 送る前の確認に添える、付けたファイルの数と名前 (3つまで)
+function rfConfirmText() {
+  if (!rfList.length) return "";
+  const names = rfList.slice(0, 3).map(f => f.filename).join("、");
+  return `\n添付: ${rfList.length}件（${names}${rfList.length > 3 ? " ほか" : ""}）`;
+}
 
 /* ---------- カレンダーに登録 (メールの日付から予定を作る) ----------
    サーバがメールから予定の候補 (日付・時刻・場所など) を探し、ここで直してから
@@ -5599,6 +5883,7 @@ function renderTimeline() {
         ${incoming && d && d.address_count > 1 ? `<span class="tl-line tl-head">${esc(contactLine(t))}</span>` : ""}
         <span class="tl-line tl-subj">${esc(t.subject) || "（件名なし）"}</span>
         <span class="tl-line">${esc(t.snippet) || "（本文なし）"}</span>
+        ${!incoming && (t.files || []).length ? `<span class="tl-line">📎 ${esc(t.files.join("、"))}</span>` : ""}
       </summary>
       <div class="tl-full">
         <small>${esc(who)}</small>

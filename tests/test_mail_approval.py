@@ -118,6 +118,10 @@ MATRIX = [
     ("PATCH", "/api/mail/{mid}", {"priority": 1}, True),
     ("POST", "/api/mail/{mid}/request-approval", {"body": "本文"}, True),
     ("POST", "/api/mail/{mid}/misdirect-checked", None, True),
+    # 返信に付けるファイル (付ける・確かめる・外す。返信文の下書きと同じ人が使える)
+    ("POST", "/api/mail/{mid}/reply-files", None, True),
+    ("GET", "/api/mail/{mid}/reply-files/{rf}", None, True),
+    ("DELETE", "/api/mail/{mid}/reply-files/{rf}", None, True),
     # 取引先は見るだけ (変えるのは管理者だけ)
     ("GET", "/api/mail/clients", None, True),
     ("GET", "/api/mail/clients/{ckey}", None, True),
@@ -199,8 +203,14 @@ def _matrix_ids(tmp_path, staff):
             {"filename": "b.txt", "content_type": "text/plain", "size": 2, "data": b"hi",
              "skip": ""}], "2026-10-22T00:00:00+00:00", sent=True)
         satt = conn.execute("SELECT id FROM sent_mail_attachments").fetchone()[0]
+        # 返信に付けたファイル (中身はディスクに無くてよい。無ければ 404)
+        rf = conn.execute(
+            "INSERT INTO mail_reply_files (mail_id, filename, size, path, created_at)"
+            " VALUES (?, 'c.txt', 2, ?, '2026-10-22T00:00:00+00:00')",
+            (mid, f"{mid}/{'0' * 32}")).lastrowid
     return {"mid": mid, "att": att, "tid": tid, "acc": acc, "staff": staff["id"], "dev": dev,
-            "ckey": f"c:{cl}", "rule": rule, "ab": ab, "skey": f"i{sid}", "satt": satt}
+            "ckey": f"c:{cl}", "rule": rule, "ab": ab, "skey": f"i{sid}", "satt": satt,
+            "rf": rf}
 
 
 def test_every_mail_and_settings_api_is_in_the_matrix(client):
