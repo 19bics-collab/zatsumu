@@ -2158,6 +2158,28 @@ def sender_refused(e: BaseException) -> bool:
     return False
 
 
+# 送信サーバが「メールが大きすぎる」と断ったときの返事 (拡張コードの 5.3.4 は「大きすぎる」、
+# 5.2.3 は「決まった大きさを超えた」。Postfix の「Message size exceeds fixed limit」、
+# Gmail の「exceeded Google's message size limits」など)
+_TOO_LARGE_RE = re.compile(r"\b5\.(?:3\.4|2\.3)\b|size|too (?:big|large)", re.IGNORECASE)
+
+
+def message_too_large(e: BaseException) -> bool:
+    """送信サーバに、メールが大きすぎると断られた失敗か (付けたファイルが大きいとき).
+
+    大きさを先に知らせるサーバ (SIZE) は、差出人 (MAIL FROM) への返事で 552 を返す。
+    本文を送った後に断るサーバもある。送り先ごとの返事 (SMTPRecipientsRefused) の 552 は
+    「相手のメールボックスがいっぱい」のこともあるので含めない。
+    """
+    import smtplib
+
+    if not isinstance(e, smtplib.SMTPResponseException) or e.smtp_code < 500:
+        return False
+    if isinstance(e, smtplib.SMTPSenderRefused) and e.smtp_code == 552:
+        return True
+    return bool(_TOO_LARGE_RE.search(_smtp_reply_text(e.smtp_error)))
+
+
 def sender_refused_text(e: BaseException, settings: dict, account: dict | None) -> str:
     """差出人を断られたときの、次に何をすればよいか分かる説明 (差出人の問題でなければ "").
 

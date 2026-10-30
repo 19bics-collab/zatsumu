@@ -2,6 +2,7 @@
 import asyncio
 import os
 import re
+import shutil
 import sqlite3
 import time
 import threading
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -3973,6 +3975,7 @@ async def mail_reply_files_upload(
     (画面を開いた後に確認をお願いされていたら 409)。1通の返信に reply_files.MAX_COUNT 個まで
     (超えたら 400)・合わせて reply_files.TOTAL_MAX_BYTES まで (超えたら 413。大きすぎるものは
     受け取りの途中でやめる)。中身の空のファイルは 400、サーバの空きが少なければ 507。
+    ほかの書き込みが長く続いて DB に入れられなければ 503 (受け取ったファイルは消す)。
     同じ名前のファイルがもう付いていれば「名前 (2).jpg」にする。
     返り値は、いま付いているファイルの一覧 (files)。
     """
@@ -4001,8 +4004,26 @@ async def mail_reply_files_upload(
             reply_files.MAX_COUNT - len(rows), room)
     except reply_files.UploadError as e:
         raise HTTPException(e.status, str(e))
-    # 受け取っている間に、ほかの画面で付けた・送った・確認をお願いしたかもしれないので、
-    # 書き込みのロックを取ってから確かめ直す (だめなら受け取ったファイルは消す)
+    # DB に入れるときは書き込みのロックを待つことがあるので、別のスレッドで書く
+    # (この関数は async なので、ここで待つと、その間ほかの人の画面までサーバ全体が止まる)
+    try:
+        files = await run_in_threadpool(
+            _save_reply_files, conn, mail_id, user, staff, seen_request, items)
+    except sqlite3.OperationalError as e:
+        # ほかの書き込みが長く続いて、待ちきれなかった (受け取ったファイルは消してある)
+        print(f"返信の添付ファイルを DB に入れられませんでした (メール {mail_id}): {e}")
+        raise HTTPException(503, reply_files.DB_BUSY)
+    return {"files": files}
+
+
+def _save_reply_files(conn, mail_id: int, user, staff: bool, seen_request: str | None,
+                      items: list) -> list:
+    """受け取ったファイルを DB に入れて、いま付いているファイルの一覧を返す.
+
+    受け取っている間に、ほかの画面で付けた・送った・確認をお願いしたかもしれないので、
+    書き込みのロックを取ってから確かめ直す。だめなとき・DB に入れられなかったときは、
+    受け取ったファイルを消してから例外をそのまま出す。
+    """
     try:
         if conn.in_transaction:
             conn.commit()
@@ -4026,7 +4047,7 @@ async def mail_reply_files_upload(
         conn.rollback()
         reply_files.remove_files(item["path"] for item in items)
         raise
-    return {"files": [reply_files.file_info(f) for f in reply_files.staged_rows(conn, mail_id)]}
+    return [reply_files.file_info(f) for f in reply_files.staged_rows(conn, mail_id)]
 
 
 @app.delete("/api/mail/{mail_id}/reply-files/{file_id}")
@@ -4500,27 +4521,53 @@ def _reply_to(r, requested: str | None) -> tuple[str, str]:
 
 
 def _remember_refused_send(conn, r, acc, raw: bytes, sender: str, to: str, cc: list,
-                           subject: str, text: str) -> None:
+                           subject: str, text: str, with_files: bool = False) -> None:
     """宛先に届かなかった (CC・BCC の人には届いた) 返信を、送信箱に「この画面」の分として残す.
 
     メールは未対応に戻すので、送った文がどこにも残らなくなるのを防ぐ。送信済みフォルダに控えを
     残すと、取り込んだときに「Webメールなどから返信した」と見なして返信済みにしてしまうので、
     同じ Message-ID をここで入れておく (取り込みは同じ Message-ID を入れない)。
     控えの保存 (IMAP) の前にすぐ確定する (ロックを持ったまま待たない)。
+    with_files なら、一緒に送った添付ファイルも送信箱の分として残す (送信済みフォルダから
+    取り込んだメールと同じ置き場所)。控えは取り込まないので、ここで残さないと、CC・BCC の人に
+    どのファイルが届いたかが送信箱に出ない。中身は DB に書く前に一時フォルダへ書いておく。
     """
     msg_id = mail.sent_message_id(raw)
     if not msg_id:
         return
-    conn.execute(
-        "INSERT OR IGNORE INTO sent_mails (account_id, message_id, folder, from_addr, to_addr,"
-        " cc_addr, to_key, subject, body, sent_at, fetched_at, in_reply_to, source, note,"
-        " linked_mail_id, link_kind) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'app', ?, ?,"
-        " 'header')",
-        (acc["id"] if acc else None, msg_id, mail.sender_address(sender), to, ", ".join(cc), to.lower(), subject, text,
-         now_iso(), now_iso(), r["message_id"],
-         f"宛先（{to}）には届きませんでした（CC・BCC の人には届いています。メールは未対応に戻しました）",
-         r["id"]))
-    conn.commit()
+    items, staging = [], None
+    if with_files:
+        try:
+            items = mail.extract_attachments(raw)
+        except Exception as e:  # noqa: BLE001  添付を残せなくても、送った文は残す
+            print(f"届かなかった返信の添付を取り出せませんでした (メール {r['id']}): {e}")
+        if items:
+            staging = mail.make_staging_dir(MAIL_ATTACHMENT_DIR)
+            mail.stage_attachments(MAIL_ATTACHMENT_DIR, staging, "r", items,
+                                   mail.stored_attachment_bytes(conn))
+    sent_id = None
+    try:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO sent_mails (account_id, message_id, folder, from_addr, to_addr,"
+            " cc_addr, to_key, subject, body, sent_at, fetched_at, in_reply_to, source, note,"
+            " linked_mail_id, link_kind) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'app', ?, ?,"
+            " 'header')",
+            (acc["id"] if acc else None, msg_id, mail.sender_address(sender), to, ", ".join(cc),
+             to.lower(), subject, text, now_iso(), now_iso(), r["message_id"],
+             f"宛先（{to}）には届きませんでした（CC・BCC の人には届いています。メールは未対応に戻しました）",
+             r["id"]))
+        if cur.rowcount and items:
+            sent_id = cur.lastrowid
+            mail.save_attachments(conn, MAIL_ATTACHMENT_DIR, sent_id, items, now_iso(), sent=True)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        if sent_id:
+            mail.remove_attachment_files(MAIL_ATTACHMENT_DIR, sent_id, sent=True)
+        raise
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _to_changed(to: str, default: str) -> str:
@@ -4650,9 +4697,12 @@ def mail_send(
         back_to_unhandled()
         conn.commit()
         reason = notify.safe_error(e, send_settings, secrets)
-        # 送信サーバに差出人 (共通のユーザーで kurosu@ から送るなど) を断られたときは、
-        # 何をすればよいかを先に書く (サーバの返事はその後ろに添える)
+        # 送信サーバに差出人 (共通のユーザーで kurosu@ から送るなど) を断られたとき・
+        # 付けたファイルでメールが大きすぎて断られたときは、何をすればよいかを先に書く
+        # (サーバの返事は英語のことが多いので、その後ろに添える)
         hint = mail.sender_refused_text(e, s, acc)
+        if not hint and files and mail.message_too_large(e):
+            hint = reply_files.SEND_TOO_LARGE
         if hint:
             reason = f"{hint}（送信サーバの返事: {reason}）"
         raise HTTPException(502, f"送信に失敗しました: {reason}")
@@ -4664,7 +4714,8 @@ def mail_send(
         if delivered and raw:
             # CC・BCC の人に届いたものは送信箱に残す。送信済みフォルダの控えを取り込んだときに
             # 「Webメールから返信した」と見なして返信済みにしないよう、Message-ID もここで覚える
-            _remember_refused_send(conn, r, acc, raw, sender, to, cc, subject, text)
+            _remember_refused_send(conn, r, acc, raw, sender, to, cc, subject, text,
+                                   with_files=bool(files))
         # CC・BCC の人には届いているので、何を送ったかが分かるよう控えは残す
         # (未対応に戻すと返信文は消え、宛先は画面で直せないので、送り直さずに
         # 閉じたときに、届いた文がどこにも残らなくなる)。

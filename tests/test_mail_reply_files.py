@@ -3,13 +3,14 @@
 - 付ける (アップロード)・一覧・確かめる (ダウンロード)・外す。保存先のパスに元の名前を使わない
 - 付けられる人: 管理者・メール担当者 (返信文の下書きと同じ。一般メンバーは 403、ほかのメールの
   ファイルは 404)。返信した後と、メール担当者の確認待ちの間は 409
-- 上限: 1通に10個・合わせて15MB・中身の空のファイル。大きなファイルは受け取りの途中でやめる
-  (丸ごとメモリに読まない)
+- 上限: 1通に10個・合わせて13MB (メールで送っても 20MB に収まる)・中身の空のファイル。大きなファイルは
+  受け取りの途中でやめる (丸ごとメモリに読まない)。DB に入れるときにロックを待っても、ほかの画面を止めない
 - ファイル名を整える (フォルダの部分・制御文字・文字の向きを変える記号・Windows で使えない文字。日本語はそのまま)
 - 確認待ち: 画面を開いた後に添付が変わっていたら「承認して送信」も 409 (見ていないファイルを送らない)
 - 送信: 本文 + 添付の multipart/mixed。日本語の名前は RFC 2231 と =?utf-8?b?…?= の両方で書く。
   本文だけの返信は今までどおり text/plain の1つの部品。控え (送信済みフォルダ) も同じもの。
-  送れたら送った時刻を入れ、送れなかったら付けたまま
+  送れたら送った時刻を入れ、送れなかったら付けたまま。送信サーバに大きすぎると断られたら日本語で知らせる。
+  宛先に届かず CC にだけ届いたときは、届いたファイルを送信箱に残す
 - 保存日数でメールを消すとファイルも消える・持ち主のいないファイルの片付け・DB の作り直し
 - 画面 (ボタン・名前は esc()・送る前の確認・やり取りの 📎)
 
@@ -259,12 +260,12 @@ def test_total_size_limit(client, users, tmp_path):
     from server import reply_files
     _, _, admin, _ = users
     mid = _add_mail(tmp_path)
-    assert reply_files.TOTAL_MAX_BYTES == 15 * 1024 * 1024
+    assert reply_files.TOTAL_MAX_BYTES == 13 * 1024 * 1024
     big = b"a" * (10 * 1024 * 1024)
     assert _upload(client, admin, mid, ("1.bin", big, "application/octet-stream")).status_code == 200
-    r = _upload(client, admin, mid, ("2.bin", b"b" * (6 * 1024 * 1024), "application/octet-stream"))
+    r = _upload(client, admin, mid, ("2.bin", b"b" * (4 * 1024 * 1024), "application/octet-stream"))
     assert r.status_code == 413
-    assert "15MBまで" in r.json()["detail"] and "小さくして" in r.json()["detail"]
+    assert "13MBまで" in r.json()["detail"] and "小さくして" in r.json()["detail"]
     assert len(_files(tmp_path, mid)) == 1 and len(_on_disk(tmp_path)) == 1
     # ちょうど残りの分までは付けられる
     rest = reply_files.TOTAL_MAX_BYTES - len(big)
@@ -277,7 +278,7 @@ def test_huge_upload_is_refused_before_reading(client, users, tmp_path):
     _, _, admin, _ = users
     mid = _add_mail(tmp_path)
     r = _upload(client, admin, mid, ("動画.mov", b"v" * (20 * 1024 * 1024), "video/quicktime"))
-    assert r.status_code == 413 and "15MB" in r.json()["detail"]
+    assert r.status_code == 413 and "13MB" in r.json()["detail"]
     assert _on_disk(tmp_path) == []
 
 
@@ -348,6 +349,108 @@ def test_broken_upload_leaves_nothing(tmp_path):
                                         cut(), folder, 10, 1024))
     assert e.value.status == 400
     assert not folder.exists() or list(folder.iterdir()) == []
+
+
+def _hold_db_lock(db_path):
+    """ほかの書き込みのふり (書き込みのロックを取ったまま、release が来るまで離さない)."""
+    import threading
+    locked, release = threading.Event(), threading.Event()
+
+    def hold():
+        other = sqlite3.connect(db_path)
+        other.execute("BEGIN IMMEDIATE")
+        locked.set()
+        release.wait(30)
+        other.rollback()
+        other.close()
+
+    t = threading.Thread(target=hold, daemon=True)
+    t.start()
+    assert locked.wait(5)
+    return release, t
+
+
+def test_waiting_for_the_db_lock_does_not_stop_the_server(client, users, tmp_path, monkeypatch):
+    """受け取ったファイルを DB に入れるとき、ほかの書き込みのロックを待っても、その間ほかの画面
+    (ほかの要求) は止めない (待つのは別のスレッド)。ロックが空いたら付けられる."""
+    import httpx
+    from server import app as app_module, reply_files
+    _, _, admin, _ = users
+    mid = _add_mail(tmp_path)
+    held = {}
+    real_receive = reply_files.receive
+
+    async def receive_then_lock(*a, **kw):
+        items = await real_receive(*a, **kw)
+        # 受け取った後、DB に入れる前に、ほかの書き込みが始まった
+        held["release"], held["thread"] = _hold_db_lock(tmp_path / "zatsumu.db")
+        return items
+
+    monkeypatch.setattr(reply_files, "receive", receive_then_lock)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app_module.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            up = asyncio.create_task(ac.post(
+                f"/api/mail/{mid}/reply-files", headers=auth(admin),
+                files=[("files", ("a.pdf", PDF, "application/pdf"))]))
+            while "release" not in held:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.3)        # 付ける方は、いまロックを待っている
+            health = await asyncio.wait_for(ac.get("/healthz"), 3)
+            waiting = not up.done()
+            held["release"].set()
+            return health, waiting, await asyncio.wait_for(up, 10)
+
+    try:
+        health, waiting, r = asyncio.run(scenario())
+    finally:
+        if "release" in held:
+            held["release"].set()
+            held["thread"].join(5)
+    assert health.status_code == 200
+    # ほかの要求に答えたとき、付ける方はまだロックを待っていた (サーバ全体を止めていない)
+    assert waiting
+    assert r.status_code == 200, r.text
+    assert [f["filename"] for f in r.json()["files"]] == ["a.pdf"]
+    assert len(_files(tmp_path, mid)) == 1 and len(_on_disk(tmp_path, mid)) == 1
+
+
+def test_db_stays_locked_gives_503_and_removes_the_file(client, users, tmp_path, monkeypatch):
+    """ほかの書き込みが長く続いて DB に入れられないときは、日本語の 503 (もう一度付けてもらう)。
+    受け取ったファイルは残さない."""
+    from server import db, reply_files
+    _, _, admin, _ = users
+    mid = _add_mail(tmp_path)
+    held = {}
+    real_receive, real_connect = reply_files.receive, db.connect
+
+    async def receive_then_lock(*a, **kw):
+        items = await real_receive(*a, **kw)
+        held["release"], held["thread"] = _hold_db_lock(tmp_path / "zatsumu.db")
+        return items
+
+    def quick_connect(*a, **kw):
+        # ロックを待つ時間 (ふだんは5秒) をテストでは短くする
+        conn = real_connect(*a, **kw)
+        conn.execute("PRAGMA busy_timeout = 200")
+        return conn
+
+    monkeypatch.setattr(reply_files, "receive", receive_then_lock)
+    monkeypatch.setattr(db, "connect", quick_connect)
+    try:
+        r = _upload(client, admin, mid, ("見積書.pdf", PDF, "application/pdf"))
+    finally:
+        if "release" in held:
+            held["release"].set()
+            held["thread"].join(5)
+    assert r.status_code == 503
+    assert r.json()["detail"] == reply_files.DB_BUSY and "もう一度付けて" in r.json()["detail"]
+    assert _files(tmp_path, mid) == [] and _on_disk(tmp_path) == []
+    # ロックが空けば、もう一度付けられる
+    monkeypatch.setattr(reply_files, "receive", real_receive)
+    r = _upload(client, admin, mid, ("見積書.pdf", PDF, "application/pdf"))
+    assert r.status_code == 200 and len(_on_disk(tmp_path, mid)) == 1
 
 
 # ---------- 付けられる人 ----------
@@ -546,20 +649,118 @@ def test_failed_send_keeps_files_attached(client, users, tmp_path, smtp):
 
 
 def test_refused_recipient_keeps_files_attached(client, users, tmp_path, smtp, monkeypatch):
-    """宛先に届かなかった (CC には届いた) ときも未対応に戻し、ファイルは付けたまま."""
-    from server import notify
+    """宛先に届かなかった (CC には届いた) ときも未対応に戻し、ファイルは付けたまま.
+
+    CC の人に届いたファイルは、送信箱のその1通にも出る (📎 の数・名前・ダウンロード)。
+    返信画面でファイルを外しても、送信箱の分は残る。
+    """
+    from server import mail, notify
     _, _, admin, _ = users
     mid = _add_mail(tmp_path)
-    ids = [f["id"] for f in _upload(client, admin, mid, ("a.pdf", PDF, "application/pdf")).json()["files"]]
-    monkeypatch.setattr(notify, "smtp_send",
-                        lambda s, sender, rcpts, message, **kw: {"taro@example.com": (550, b"no")})
+    ids = [f["id"] for f in _upload(client, admin, mid, ("見積書.pdf", PDF, "application/pdf"),
+                                    ("写真.jpg", JPG, "image/jpeg")).json()["files"]]
+    sent = []
+    monkeypatch.setattr(notify, "smtp_send", lambda s, sender, rcpts, message, **kw:
+                        sent.append(message) or {"taro@example.com": (550, b"no")})
     r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
                     json={"body": "本文", "cc": ["sato@x.com"], "reply_files": ids})
     assert r.status_code == 502
-    assert _files(tmp_path, mid)[0]["sent_at"] is None
+    assert [f["sent_at"] for f in _files(tmp_path, mid)] == [None, None]
     assert _detail(client, admin, mid)["status"] == "unhandled"
     (detail,) = _audits(tmp_path, "mail_send_refused")
-    assert "attachments=1(a.pdf)" in detail
+    assert "attachments=2(見積書.pdf, 写真.jpg)" in detail
+    # 送信箱: CC の人に届いた1通に、届いたファイルが出る
+    (row,) = [i for i in client.get("/api/mail/sent", headers=auth(admin)).json()["items"]
+              if i["key"].startswith("i")]
+    assert row["attachment_count"] == 2
+    sd = client.get(f"/api/mail/sent/{row['key']}", headers=auth(admin)).json()
+    assert "届きませんでした" in sd["note"]
+    assert [a["filename"] for a in sd["attachments"]] == ["見積書.pdf", "写真.jpg"]
+    assert sd["skipped_attachments"] == []
+    # 返信画面で外しても、送信箱の分は残る (ダウンロードできる)
+    assert client.delete(f"/api/mail/{mid}/reply-files/{ids[0]}",
+                         headers=auth(admin)).status_code == 200
+    dl = client.get(f"/api/mail/sent/{row['key']}/attachments/{sd['attachments'][0]['id']}",
+                    headers=auth(admin))
+    assert dl.status_code == 200 and dl.content == PDF
+    # 書きかけの一時フォルダは残さない
+    assert sorted(p.name for p in (tmp_path / "mail_attachments").iterdir()) == ["sent"]
+    # 送信済みフォルダの控えを後から取り込んでも、同じ1通を2つにしない
+    # (取り込みは、送信箱にある Message-ID を入れない)
+    with _db(tmp_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sent_mails").fetchone()[0] == 1
+        assert conn.execute("SELECT 1 FROM sent_mails WHERE message_id = ?",
+                            (mail.sent_message_id(sent[0].encode()),)).fetchone()
+
+
+def test_too_large_mail_is_explained_in_japanese(client, users, tmp_path, smtp, monkeypatch):
+    """送信サーバに「メールが大きすぎる」と断られたら、何をすればよいかを日本語で先に出す
+    (サーバの英語の返事は後ろに添える)。ファイルは付けたままで、減らして送り直せる."""
+    import smtplib
+    from server import notify, reply_files
+    _, _, admin, _ = users
+    mid = _add_mail(tmp_path)
+    ids = [f["id"] for f in _upload(client, admin, mid, ("見積書.pdf", PDF, "application/pdf")).json()["files"]]
+    for err in (
+            # 大きさを先に知らせたとき (MAIL FROM への返事)
+            smtplib.SMTPSenderRefused(552, b"5.3.4 Message size exceeds fixed limit",
+                                      "info@bics.example"),
+            # 本文を送った後に断られたとき
+            smtplib.SMTPDataError(552, b"5.3.4 Your message exceeded Google's message size limits")):
+        def refuse(s, sender, rcpts, message, err=err, **kw):
+            raise err
+        monkeypatch.setattr(notify, "smtp_send", refuse)
+        r = client.post(f"/api/mail/{mid}/send", headers=auth(admin),
+                        json={"body": "本文", "reply_files": ids})
+        assert r.status_code == 502
+        detail = r.json()["detail"]
+        assert detail.startswith(f"送信に失敗しました: {reply_files.SEND_TOO_LARGE}（送信サーバの返事: ")
+        assert "5.3.4" in detail
+        assert _detail(client, admin, mid)["status"] == "unhandled"
+        assert _files(tmp_path, mid)[0]["sent_at"] is None
+    # ファイルを付けていない返信には、添付の話を出さない
+    other = _add_mail(tmp_path, n=2)
+    r = client.post(f"/api/mail/{other}/send", headers=auth(admin), json={"body": "本文"})
+    assert r.status_code == 502 and "添付ファイル" not in r.json()["detail"]
+
+
+def test_message_too_large():
+    import smtplib
+    from server import mail
+    for e in (smtplib.SMTPSenderRefused(552, b"5.3.4 Message size exceeds fixed limit", "a@x.com"),
+              smtplib.SMTPSenderRefused(552, b"Requested mail action aborted", "a@x.com"),
+              smtplib.SMTPDataError(552, b"5.3.4 Your message exceeded Google's message size limits"),
+              smtplib.SMTPDataError(554, b"5.3.4 Message too big for system"),
+              smtplib.SMTPDataError(550, b"5.2.3 Message length exceeds administrative limit")):
+        assert mail.message_too_large(e), e
+    for e in (smtplib.SMTPSenderRefused(550, b"5.7.1 Sender address rejected: not owned", "a@x.com"),
+              smtplib.SMTPSenderRefused(452, b"4.3.1 Insufficient system storage", "a@x.com"),
+              smtplib.SMTPDataError(550, b"5.7.1 Message rejected as spam"),
+              # 送り先ごとの 552 は「相手のメールボックスがいっぱい」のこともある
+              smtplib.SMTPRecipientsRefused({"a@x.com": (552, b"5.2.2 Mailbox full")}),
+              OSError("smtp down")):
+        assert not mail.message_too_large(e), e
+
+
+def test_largest_reply_fits_in_20mb_on_the_wire(monkeypatch):
+    """上限いっぱい (10個・合わせて13MB) 付けても、送るメールは 20MB (20,000,000 バイト) に収まる.
+
+    多くの送信サーバの1通の上限は 20〜25MB。中身は base64 と改行で 1.37 倍ほどになる。
+    """
+    from server import mail, notify, reply_files
+    out = []
+    monkeypatch.setattr(notify, "smtp_send",
+                        lambda s, sender, rcpts, message, **kw: out.append(message) or {})
+    sizes = [reply_files.TOTAL_MAX_BYTES // reply_files.MAX_COUNT] * reply_files.MAX_COUNT
+    sizes[0] += reply_files.TOTAL_MAX_BYTES - sum(sizes)
+    files = [(f"清掃後の写真_{n:02d}_" + "お部屋" * 20 + ".jpg", "image/jpeg", os.urandom(size))
+             for n, size in enumerate(sizes)]
+    mail.send_reply({"smtp_host": "x", "mail_from": "info@bics.example"}, "a@example.com",
+                    "清掃のご報告", "いつもお世話になっております。\n" * 500, cc=["b@example.com"],
+                    attachments=files)
+    # 送信サーバに送る形 (改行は CRLF)
+    wire = out[0].replace("\r\n", "\n").replace("\n", "\r\n").encode("ascii")
+    assert len(wire) < 20_000_000, len(wire)
 
 
 def test_send_refuses_files_not_on_screen(client, users, tmp_path, smtp):
@@ -760,8 +961,8 @@ def test_mail_page_has_reply_file_ui(client):
     # ボタン (iPhone では写真ライブラリ・写真を撮る・ファイルを選択が出る。種類を絞らない)
     assert '<input type="file" id="m-rf-input" class="rf-input" multiple>' in page
     assert '<label for="m-rf-input" class="rf-add" id="m-rf-add">📎 ファイルを添付</label>' in page
-    assert "1通に10個・合わせて15MBまで" in page
-    assert "const RF_MAX_COUNT = 10, RF_MAX_MB = 15;" in page
+    assert "1通に10個・合わせて13MBまで" in page and "15MB" not in page
+    assert "const RF_MAX_COUNT = 10, RF_MAX_MB = 13;" in page
     # ファイル名は外から来た文字なので esc() を通す
     for marker in ("${esc(f.filename)}</button>", "${esc(q.file.name)}",
                    'aria-label="${esc(f.filename)} を外す"',
@@ -780,6 +981,13 @@ def test_mail_page_has_reply_file_ui(client):
     assert "$(\"m-send\").disabled = m.status === \"replied\" || rfBusy();" in page
     # ダウンロードはトークンを付けて受け取り、「ただのデータ」として保存する
     assert "await api(`/api/mail/${id}/reply-files/${Number(f.id)}`)" in page
+    # 送れた・確認をお願いできた後は、前の「付けられません」の赤い知らせを消す
+    send = page[page.index('$("m-send").onclick'):]
+    send = send[:send.index("\n};\n")]
+    assert "rfList = r.reply_files || [];\n    rfShowErrors([]);" in send
+    req = page[page.index('$("m-request").onclick'):]
+    req = req[:req.index("\n};\n")]
+    assert -1 < req.index("rfShowErrors([]);") < req.index("renderControls(modal.mail);")
     # PC はファイルを持ってきても付けられる (ブラウザがファイルを開かないように止める)
     assert '$("mail-modal").addEventListener("drop"' in page
     # 使い方

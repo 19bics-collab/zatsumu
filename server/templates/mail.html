@@ -915,7 +915,7 @@
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
   返信画面の「📎 ファイルを添付」で、写真・PDF・Excel・Word などを返信に付けて送れます
-  （1通に10個・合わせて15MBまで。iPhone は写真を選ぶか、その場で撮れます。PC はファイルを返信文の欄に持ってきても付けられます。
+  （1通に10個・合わせて13MBまで。iPhone は写真を選ぶか、その場で撮れます。PC はファイルを返信文の欄に持ってきても付けられます。
   付けたファイルは閉じても残り、送ると「この相手とのやり取り」と送信箱に 📎 で出ます）。
   本文の下に続く前のやり取りの引用（「&gt;」で始まる行や「-----Original Message-----」から下など）は畳んでいます。
   見たいときは「引用を表示 ▼」を押してください（転送のメール・HPフォームから届いたメールは、畳まずに全部出します）。
@@ -1602,7 +1602,7 @@
       <div class="rf-bar" id="m-rf-bar">
         <input type="file" id="m-rf-input" class="rf-input" multiple>
         <label for="m-rf-input" class="rf-add" id="m-rf-add">📎 ファイルを添付</label>
-        <span class="rf-hint">写真・PDF・Excel・Word など（1通に10個・合わせて15MBまで。名前を押すと中身を確かめられます<span class="rf-drop-hint">。PC はファイルをここに持ってきても付けられます</span>）</span>
+        <span class="rf-hint">写真・PDF・Excel・Word など（1通に10個・合わせて13MBまで。名前を押すと中身を確かめられます<span class="rf-drop-hint">。PC はファイルをここに持ってきても付けられます</span>）</span>
       </div>
       <small id="m-rf-title" hidden></small>
       <div class="rf-list" id="m-rf-list"></div>
@@ -3659,6 +3659,7 @@ $("m-send").onclick = async () => {
     modal.savedDraft = text;
     const sentCc = r.cc || [], sentBcc = r.bcc || [];
     rfList = r.reply_files || [];
+    rfShowErrors([]);   // 前に付けられなかったファイルの赤い知らせは、送れた後は消す
     // 0件の方は書かない (CC だけ送ったのに「BCC 0件」と出ると、文が長く分かりにくい)
     const counts = [sentCc.length ? `CC ${sentCc.length}件` : "",
                     sentBcc.length ? `BCC ${sentBcc.length}件` : "",
@@ -3756,6 +3757,7 @@ $("m-request").onclick = async () => {
                                 requested_at: r.requested_at, approval_note: $("m-req-note").value.trim(),
                                 draft_cc: cc, draft_bcc: bcc, draft_to: to, return_note: "" });
     modal.defaultTo = to;
+    rfShowErrors([]);   // 前に付けられなかったファイルの赤い知らせは、お願いできた後は消す
     renderControls(modal.mail);
     renderToNote(modal.mail);   // 宛先の注意も、直した宛先のことに変える
     $("m-status").textContent = "確認をお願いしました ✓（管理者が確かめて送ります）" +
@@ -4069,7 +4071,7 @@ $("att-viewer").onclick = () => closeViewer();
    お願いするときは、画面に出ているファイルの番号をサーバに渡す (ほかの画面で付けた・外した
    ファイルがあれば、サーバが止める)。ファイル名は外から来た文字と同じに扱い、esc() を通す */
 // 1通の返信に付けられる数と、合わせた大きさ (サーバ server/reply_files.py と同じ。サーバも確かめる)
-const RF_MAX_COUNT = 10, RF_MAX_MB = 15;
+const RF_MAX_COUNT = 10, RF_MAX_MB = 13;
 let rfList = [];        // 開いているメールに付けてあるファイル (サーバにあるもの。付けた順)
 let rfQueue = [];       // アップロードを待っている・している最中のファイル ({ mailId, file, seen })
 let rfRunning = false;  // アップロードの処理が動いているか (1つずつ順に送る)
