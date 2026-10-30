@@ -2197,7 +2197,7 @@ def test_mail_send_flow(client, users, tmp_path, monkeypatch):
     monkeypatch.setattr(
         app_module.mail, "send_reply",
         lambda s, to, subject, body, in_reply_to="", references="", cc=None, bcc=None,
-        sender=None: sent.append((to, subject, body, in_reply_to, references)))
+        sender=None, attachments=None: sent.append((to, subject, body, in_reply_to, references)))
     # 本文が空なら 400
     assert client.post(f"/api/mail/{mid}/send", headers=auth(admin),
                        json={"body": "  "}).status_code == 400

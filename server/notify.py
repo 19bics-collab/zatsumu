@@ -63,11 +63,12 @@ def send_slack(url: str, text: str) -> None:
 
 
 def smtp_send(settings: dict, sender: str, recipients: list[str],
-              message: str) -> dict:
+              message: str, timeout: float = 15) -> dict:
     """SMTP で1通送る (失敗時は例外を送出).
 
     送り先の一部だけがサーバに断られたときは例外にならず (全員に断られたときだけ例外)、
     断られた送り先を {アドレス: (コード, 応答)} で返す。全員に送れたら空の dict。
+    timeout はサーバとのやり取りの待ち時間 (秒。添付ファイルの付いた大きなメールは長めにする)。
 
     - サーバ証明書を検証する (Python の既定の starttls() は検証しないため
       ssl.create_default_context() を明示的に渡す)
@@ -82,9 +83,9 @@ def smtp_send(settings: dict, sender: str, recipients: list[str],
     user = settings.get("smtp_user")
     ctx = ssl.create_default_context()
     if port == SMTPS_PORT:
-        conn = smtplib.SMTP_SSL(host, port, timeout=15, context=ctx)
+        conn = smtplib.SMTP_SSL(host, port, timeout=timeout, context=ctx)
     else:
-        conn = smtplib.SMTP(host, port, timeout=15)
+        conn = smtplib.SMTP(host, port, timeout=timeout)
     with conn as s:
         if port != SMTPS_PORT:
             s.ehlo()

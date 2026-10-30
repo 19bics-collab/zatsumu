@@ -318,6 +318,22 @@ CREATE TABLE IF NOT EXISTS sent_mail_attachments (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sent_mail_attachments_sent ON sent_mail_attachments(sent_id);
+-- 返信に付けるファイル (返信画面の「📎 ファイルを添付」。server/reply_files.py)。中身はデータフォルダの
+-- mail_reply_files/<mail_id>/<でたらめな英数字の名前> に置く (元のファイル名は保存先のパスに使わない)。
+-- sent_at が NULL のものは、まだ送っていない (返信の下書きに付けてあるもの)。送ったら送った時刻を入れる。
+-- メールの行が消えたら (前の版の保存日数の削除でも) 一緒に消える (ファイルは定期受信の片付けで消す)
+CREATE TABLE IF NOT EXISTS mail_reply_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mail_id INTEGER NOT NULL REFERENCES mails(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL DEFAULT '',      -- 相手に見える名前 (整えたもの)
+    content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+    size INTEGER NOT NULL DEFAULT 0,        -- バイト数
+    path TEXT NOT NULL DEFAULT '',          -- 保存先 (mail_reply_files からの相対。「<mail_id>/<名前>」)
+    uploaded_by TEXT NOT NULL DEFAULT '',   -- 付けた人の名前
+    created_at TEXT NOT NULL,
+    sent_at TEXT                            -- 送った時刻 (NULL=まだ送っていない)
+);
+CREATE INDEX IF NOT EXISTS idx_mail_reply_files_mail ON mail_reply_files(mail_id, sent_at);
 -- よく使う返信文 (定型文)。返信画面で選んで本文に入れる。
 -- {相手の名前} などの差し込みは、入れるときにそのメールの内容へ置き換える (server/mail.py)
 CREATE TABLE IF NOT EXISTS mail_templates (

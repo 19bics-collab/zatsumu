@@ -578,6 +578,8 @@ def timeline(conn, where: str, params: list, offset: int, limit: int) -> list[di
             " reply_subject, substr(reply_body, 1, 600) AS reply_head, replied_at, replied_by,"
             " reply_sent_to, reply_cc"
             f" FROM mails WHERE id IN ({_marks(ids)})", ids)}
+    # 送った返信に付けたファイルの名前 (📎 で出す)
+    files = mail.sent_reply_file_names(conn, [e["id"] for e in events if e["kind"] == "out"])
     out = []
     for e in events:
         r = rows.get(e["id"])
@@ -596,6 +598,7 @@ def timeline(conn, where: str, params: list, offset: int, limit: int) -> list[di
                         "snippet": _snippet(r["reply_head"]), "replied_by": r["replied_by"],
                         "sent_to": r["reply_sent_to"] or r["from_addr"],
                         "cc": mail.split_addresses(r["reply_cc"]),
+                        "files": files.get(r["id"], []),
                         "contact_name": name, "contact_addr": addr})
     return out
 
