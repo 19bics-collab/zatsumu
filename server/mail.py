@@ -2894,7 +2894,7 @@ def should_save_sent(settings: dict) -> bool:
 
 
 def fetch_new_mail(conn, settings: dict, attachment_dir=None,
-                   account: dict | None = None) -> list[dict]:
+                   account: dict | None = None, thread_ctx=None) -> list[dict]:
     """IMAP から新着メールを取り込み、追加した行 (分類済み) を返す.
 
     UIDVALIDITY と最終取得 UID を記録して差分だけ読む。account (受信するメールアドレス) を
@@ -2905,6 +2905,8 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None,
     届いた同じメールは、先に受信したアドレスの1通だけになる)。
     受信箱は変更しない (readonly・既読フラグも付けない)。
     attachment_dir を渡すと、新しく入れたメールの添付ファイルをそこに保存する。
+    thread_ctx はスレッドを決める決まり (server/mail_threads.py の Ctx。受信の1回で1つ作って
+    使い回す)。渡さなければ、DB の設定からここで作る。
     """
     folder = settings.get("imap_folder") or "INBOX"
     if account is not None:
@@ -3043,8 +3045,11 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None,
                     items = []
                 stored = stage_attachments(attachment_dir, staging, str(i), items, stored)
                 attachments.append(items)
+        if rows and thread_ctx is None:
+            thread_ctx = thread_context(conn)
         _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
-                      added, written, account["id"] if account is not None else None)
+                      added, written, account["id"] if account is not None else None,
+                      thread_ctx=thread_ctx)
         # 送信箱に、このメールへの返信がもうあれば (前の回に取り込んだ送信済みフォルダ)、返信済みにする
         link_new_mails_to_sent(conn, added, settings)
         # 取得に成功した UID までだけ進める (途中で break した分は次回再試行)
@@ -3079,36 +3084,69 @@ def fetch_new_mail(conn, settings: dict, attachment_dir=None,
     return added
 
 
+def thread_context(conn, settings: dict | None = None):
+    """スレッドを決める決まり (server/mail_threads.py の Ctx)。作れなければ None.
+
+    作れなくても受信は続ける (そのときのメールは、後で mail_threads.process_pending がまとめる)。
+    """
+    from . import mail_threads  # 循環を避けるため遅延インポート
+    try:
+        return mail_threads.Ctx(conn, settings)
+    except Exception as e:  # noqa: BLE001
+        print(f"スレッドを決められませんでした (後でまとめます): {e}")
+        return None
+
+
 def _insert_mails(conn, rows, attachments, assignees, attachment_dir, now,
-                  added: list, written: list, account_id: int | None = None) -> None:
+                  added: list, written: list, account_id: int | None = None,
+                  thread_ctx=None) -> None:
     """分類済みのメールを DB に入れ、一時フォルダの添付ファイルを保存先へ移す.
 
     コミットは呼び出し側。added には入れたメール、written には添付を移したメールの
     番号を足していく (失敗したときに呼び出し側で元に戻せるように)。
     account_id は届いたアドレス (旧設定のまま受信したときは None)。
+    thread_ctx (server/mail_threads.py の Ctx) を渡すと、入れる前にスレッドを決めて INSERT に
+    入れる (入れた行をもう一度書き換えない)。渡さなければ決めずに入れる (次の定期受信の回などに
+    mail_threads.process_pending が決める)。
     """
+    from . import mail_threads  # 循環を避けるため遅延インポート
+
     for i, (uid, p, _raw, prio, reason, source, category, draft, draft_source,
             drafted_at) in enumerate(rows):
         assignee = assignees.get(category)
+        # スレッド (同じお客様との返信どうしのまとまり)。決められなくても受信は続ける
+        target, keys = None, set()
+        if thread_ctx is not None:
+            try:
+                target, keys = mail_threads.plan(
+                    conn, thread_ctx, {**p, "id": None, "thread_id": None, "reply_message_id": ""},
+                    thread_refs(p.get("in_reply_to", ""), p["references_hdr"]))
+            except Exception as e:  # noqa: BLE001
+                print(f"スレッドを決められませんでした (後でまとめます): {e}")
+                target, keys = None, set()
         cur = conn.execute(
             "INSERT OR IGNORE INTO mails (message_id, imap_uid, from_addr,"
             " from_name, to_addr, cc_addr, subject, body, received_at, fetched_at,"
             " priority, priority_reason, priority_source, category,"
             " assignee_user_id, draft_reply, draft_source, draft_generated_at,"
             " references_hdr, account_id, reply_to, contact_addr, contact_name,"
-            " contact_source, contact_via_form, contact_company, list_mail)"
+            " contact_source, contact_via_form, contact_company, list_mail, thread_id)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-            " ?, ?, ?, ?, ?, ?, ?)",
+            " ?, ?, ?, ?, ?, ?, ?, ?)",
             (p["message_id"], uid, p["from_addr"], p["from_name"], p["to_addr"],
              p["cc_addr"], p["subject"], p["body"], p["received_at"], now, prio,
              reason, source, category, assignee, draft, draft_source, drafted_at,
              p["references_hdr"], account_id, p.get("reply_to_addr", ""),
              p.get("contact_addr", p["from_addr"]), p.get("contact_name", p["from_name"]),
              p.get("contact_source", "from"), p.get("contact_via_form", 0),
-             p.get("contact_company", ""), p.get("list_mail", 0)),
+             p.get("contact_company", ""), p.get("list_mail", 0), target),
         )
         if not cur.rowcount:
             continue  # 同じメールが既にある (添付も保存しない)
+        if target is not None:
+            # 前からあるメール (1通だけのもの・別のスレッド) を、このメールのスレッドにつなぐ
+            # (このメールが2つのスレッドをつないだ・返事の方が先に届いていた ときだけ)
+            mail_threads.apply(conn, target, keys)
         # どのメールへの返事か (返信画面の「この相手とのやり取り」で使う)
         save_refs(conn, cur.lastrowid, p.get("in_reply_to", ""), p["references_hdr"])
         items = attachments[i] if attachment_dir is not None else []
@@ -3868,7 +3906,7 @@ def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
     おくと、その返信で返信済みにできる)。送信済みの取り込みの失敗はアドレスごとに別に記録し、
     受信箱の受信の結果は変えない (送信済みだけ取り込むアドレスは、それがそのアドレスの受信の結果)。
     """
-    from . import notify  # 循環を避けるため遅延インポート
+    from . import mail_threads, notify  # 循環を避けるため遅延インポート
 
     if not _fetch_lock.acquire(timeout=max(wait, 0)):
         raise FetchBusy()
@@ -3878,6 +3916,8 @@ def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
         added: list[dict] = []
         errors: list[Exception] = []
         tried = 0
+        # スレッドを決める決まり (全社の設定から、この受信で1回だけ作る)
+        thread_ctx = thread_context(conn, settings)
         for acc in accounts:
             if not receives_inbox(acc):
                 continue
@@ -3885,7 +3925,7 @@ def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
             acc_settings = account_settings(settings, acc)
             try:
                 got = fetch_new_mail(conn, acc_settings, attachment_dir=attachment_dir,
-                                     account=acc)
+                                     account=acc, thread_ctx=thread_ctx)
             except Exception as e:  # noqa: BLE001  ほかのアドレスの受信は続ける
                 conn.rollback()
                 if get_account(conn, acc["id"]) is None:
@@ -3927,6 +3967,9 @@ def fetch_mail_locked(conn, settings: dict, attachment_dir=None,
             _record_sent_fetch(conn, acc["id"])
         if errors and len(errors) == tried:
             raise errors[0]
+        # 送信済みフォルダを取り込んでつながった返事 (トリガーが入れたもの) も、すぐスレッドにまとめる
+        # (「今すぐ受信」の後の一覧で、もうまとまっているように。失敗しても受信の結果は変えない)
+        mail_threads.process_pending(conn, settings)
         return added
     finally:
         _fetch_lock.release()

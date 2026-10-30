@@ -22,7 +22,7 @@ from fastapi.responses import (
 from pydantic import BaseModel
 
 from . import (address_book, clients, db, devices, imaging, mail, mail_events, mail_search,
-               notify, notion, reply_files, sent_box,
+               mail_threads, notify, notion, reply_files, sent_box,
                reports, retention, tz)
 
 DATA_DIR = Path(os.environ.get("ZATSUMU_DATA_DIR", db.DB_PATH.parent))
@@ -130,6 +130,14 @@ def _mail_tick() -> None:
             except Exception as e:  # noqa: BLE001
                 conn.rollback()
                 print(f"週ごとのまとめでエラー: {e}")
+            # 受信箱のスレッド (自動受信がオフでも)。決まりが変わっていれば数え直し、前の版が入れた
+            # メール・相手が変わったメールなどをまとめる。失敗してもほかの処理は止めない
+            try:
+                conn.rollback()
+                mail_threads.maintain(conn, db.get_settings(conn))
+            except Exception as e:  # noqa: BLE001
+                conn.rollback()
+                print(f"スレッドをまとめられませんでした: {e}")
     finally:
         conn.close()
 
@@ -567,6 +575,7 @@ class SettingsPatch(BaseModel):
     notion_ai_fill: bool | None = None
     mail_require_approval: bool | None = None
     mail_reply_all_default: bool | None = None
+    mail_thread_mode: bool | None = None
     mail_form_senders: str | None = None
     mail_client_personal_domains: str | None = None
 
@@ -1168,6 +1177,7 @@ def patch_settings(
         "notion_ai_fill": (0, 1),
         "mail_require_approval": (0, 1),
         "mail_reply_all_default": (0, 1),
+        "mail_thread_mode": (0, 1),
     }
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
     if not changes:
@@ -2647,6 +2657,9 @@ def _mail_summary(r, thread_count: int | None = None) -> dict:
         "reply_source": r["reply_source"] if r["replied_at"] else "",
         "archived_at": r["archived_at"] if r["status"] == "archived" else None,
         "archived_by": r["archived_by"] if r["status"] == "archived" else "",
+        # スレッド (返信どうしでつながったメールのまとまり) の印。1通だけのメールは自分の番号
+        # (一覧では、ほかの th_* と一緒に list_mail が入れ直す)
+        "th_key": r["thread_id"] or r["id"],
     }
 
 
@@ -2851,6 +2864,11 @@ def list_mail(
     差し戻したメールも[低]でも出す (メール担当者が直して頼み直す)。★フラグを付けたメールも
     [低]でも出す (目立たせたくて付けた印)。
     そのときは、ほかの絞り込みに合うのに出さなかった[低]のメールの数をヘッダ X-Hidden-Low に入れる。
+    各メールには、スレッド (返信どうしでつながった、同じ相手のメール。server/mail_threads.py) の
+    印 th_key・通数 th_size・未対応と確認待ちの数 th_open・★の数 th_flagged・一番新しい番号
+    th_newest_id・最初のメールの日時 th_first_at も付ける (画面がまとめて出す。出すメール・数は変えない)。
+    探しているとき・設定でスレッドを止めているときは、どのメールも1通だけのスレッドにし、
+    ヘッダ X-Thread-Mode を 0 にする (まとめるときは 1)。
     """
     order = MAIL_SORTS.get(sort or "date")
     if order is None:
@@ -2900,7 +2918,6 @@ def list_mail(
                + _OPEN_FIRST + order.removeprefix(" ORDER BY") + f" LIMIT {MAIL_LIST_LIMIT})"
                + order)
     rows = conn.execute(sql, params).fetchall()
-    counts = _thread_counts(conn, rows)
     files: dict[int, list[str]] = {}
     if search:
         total = len(rows)
@@ -2918,6 +2935,36 @@ def list_mail(
             for a in conn.execute("SELECT mail_id, filename FROM mail_attachments WHERE mail_id IN ("
                                   + ",".join("?" * len(part)) + ") ORDER BY id", part):
                 files.setdefault(a[0], []).append(a[1])
+    out = _list_items(conn, rows, g, search, files)
+    # スレッド (返信どうしでつながったメールのまとまり)。出すメールは変えず、それぞれにスレッドの
+    # 通数などを付けるだけ (画面がまとめて出す)。探している間・設定でオフにしているときはまとめない
+    # (どのメールも1通だけのスレッドにする)。タブの数・X-Search-Total・X-Hidden-Low はメールの数のまま
+    thread_on = bool(db.get_settings(conn)["mail_thread_mode"]) and not terms
+    agg = mail_threads.aggregate(conn, {r["thread_id"] for r in rows if r["thread_id"]}) \
+        if thread_on else {}
+    for r, item in zip(rows, out):
+        a = agg.get(r["thread_id"]) if r["thread_id"] else None
+        if a and a["size"] > 1:
+            item.update(th_key=r["thread_id"], th_size=a["size"], th_open=a["open"],
+                        th_flagged=a["flagged"], th_newest_id=a["newest_id"],
+                        th_first_at=a["first_at"])
+        else:
+            item.update(th_key=r["id"], th_size=1,
+                        th_open=int(r["status"] in _OPEN_STATUSES),
+                        th_flagged=int(r["flagged_at"] is not None), th_newest_id=r["id"],
+                        th_first_at=r["received_at"])
+    if response is not None:
+        response.headers["X-Thread-Mode"] = "1" if thread_on else "0"
+    return out
+
+
+def _list_items(conn, rows, g, search=None, files: dict | None = None) -> list[dict]:
+    """一覧の行 (_MAIL_LIST_SELECT で取った行) を、画面に出す項目にする.
+
+    「やり取り N件」(同じ相手のメールの数) と、名前を付けた取引先を付ける。探したときは、
+    本文の抜き出しと名前の合った添付ファイルも付ける。受信箱の一覧とスレッドのメールで使う。
+    """
+    counts = _thread_counts(conn, rows)
     named: dict[str, dict | None] = {}
     out = []
     for r in rows:
@@ -2932,9 +2979,64 @@ def list_mail(
         item["client_kind"] = c["kind"] if c else ""
         if search:
             item["snippet"] = search.snippet(r["body"])
-            item["match_files"] = search.matching_names(files.get(r["id"], []))
+            item["match_files"] = search.matching_names((files or {}).get(r["id"], []))
         out.append(item)
     return out
+
+
+# ----- スレッド (返信どうしでつながったメールのまとまり。server/mail_threads.py) -----
+# /api/mail/threads... は /api/mail/{mail_id} より先に宣言する
+# (後にすると "threads-check" が mail_id として読まれ、422 になる)
+
+@app.get("/api/mail/threads-check")
+def mail_threads_check(_admin=Depends(require_admin), conn=Depends(get_conn)):
+    """スレッドの様子 (管理者の確かめ用。何も書き換えない).
+
+    スレッドの数・まとまっているメールの数・一番大きいスレッド・作り直しを待っているメールの数・
+    決まりの印、相手がそろっていないスレッド (violations。あれば次の起動の後にばらす) と、
+    件名で補う決まり (v2) ならまとまったはずのメール (v2_candidates。使うかを決める材料)。
+    """
+    return mail_threads.report(conn, mail_threads.Ctx(conn))
+
+
+@app.get("/api/mail/threads/{key}")
+def mail_thread_members(key: int, _user=Depends(require_mail_user), conn=Depends(get_conn)):
+    """スレッドのメール (一覧の「▶ 5通」・右の本文の「このスレッド」用).
+
+    返信のつながりの木の順 (最初のメールから、枝ごとに古い順) に、一覧と同じ項目と、深さ (depth)・
+    返事の元 (parent_id) を付けて返す。多いときは最初のメールと新しい方から MEMBERS_MAX 通まで
+    (total は全部の数、shown は返した数)。key が1通だけのメールの番号ならそのメールだけ。
+    """
+    ids = conn.execute(f"SELECT m.id, {_MAIL_SORT_TIME} FROM mails m WHERE m.thread_id = ?",
+                       (key,)).fetchall()
+    if not ids:
+        row = conn.execute("SELECT id, thread_id FROM mails WHERE id = ?", (key,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Not found")
+        if row["thread_id"]:
+            # まとめ直して印が変わった (一覧を取り直す前に押した)。今のスレッドを返す
+            key = row["thread_id"]
+            ids = conn.execute(f"SELECT m.id, {_MAIL_SORT_TIME} FROM mails m WHERE m.thread_id = ?",
+                               (key,)).fetchall()
+        else:
+            ids = [(row["id"], 0)]
+    order = sorted(((t or 0, i) for i, t in ids))
+    total = len(order)
+    if total > mail_threads.MEMBERS_MAX:
+        order = order[:1] + order[-(mail_threads.MEMBERS_MAX - 1):]
+    want = [i for _t, i in order]
+    sort_t = {i: t for t, i in order}
+    rows = conn.execute(_MAIL_LIST_SELECT + f" WHERE m.id IN ({','.join('?' * len(want))})",
+                        want).fetchall()
+    by_id = {r["id"]: r for r in rows}
+    walk = mail_threads.tree(conn, [{"id": r["id"], "message_id": r["message_id"],
+                                     "reply_message_id": r["reply_message_id"],
+                                     "sort_t": sort_t[r["id"]]} for r in rows])
+    ordered = [by_id[m["id"]] for m, _d, _p in walk]
+    items = _list_items(conn, ordered, clients.Grouping(conn))
+    for item, (_m, depth, parent) in zip(items, walk):
+        item.update(depth=depth, parent_id=parent, th_key=key, th_size=total)
+    return {"key": key, "total": total, "shown": len(items), "items": items}
 
 
 @app.post("/api/mail/fetch")
@@ -3079,6 +3181,8 @@ def mail_status(
         "imap_set": imap_set,
         "auto_fetch": imap_set and bool(s["mail_fetch_enabled"]),
         "interval_min": s["mail_fetch_interval_min"],
+        # 受信箱でスレッドにまとめるか (設定。オフなら画面の「スレッド」の切り替えも出さない)
+        "thread_mode": bool(s["mail_thread_mode"]),
     }
 
 
@@ -3321,6 +3425,8 @@ def mail_me(user=Depends(require_mail_user), conn=Depends(get_conn)):
         "company_name": s["company_name"],
         "timezone": s["timezone"],
         "mail_category_list": mail.category_list(s),
+        # 受信箱でスレッドにまとめるか (設定)
+        "thread_mode": bool(s["mail_thread_mode"]),
     }
 
 

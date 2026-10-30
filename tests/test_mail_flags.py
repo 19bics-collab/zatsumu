@@ -444,7 +444,8 @@ def test_migration_adds_columns_and_index_once(tmp_path):
     conn.execute("INSERT INTO mails (message_id, received_at, fetched_at, status, archived_at)"
                  " VALUES ('<a@x>', '2026-10-01T00:00:00+00:00', '2026-10-01T00:00:00+00:00',"
                  " 'archived', '2026-10-02T00:00:00+00:00')")
-    # 前の版の形にする (索引と列を消す)
+    # 前の版の形にする (索引と列を消す。スレッドの索引 (後の版) も★の列を使うので先に消す)
+    conn.execute("DROP INDEX idx_mails_thread")
     conn.execute("DROP INDEX idx_mails_flagged")
     for col in ("flagged_at", "flagged_by", "archived_by"):
         conn.execute(f"ALTER TABLE mails DROP COLUMN {col}")

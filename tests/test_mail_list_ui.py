@@ -252,6 +252,7 @@ const modal = { id: null, mail: null };
 const renderModalFlag = () => {};
 const pv = { id: null, mail: null };
 const pvMailChanged = () => {};
+const keepShown = new Set();   // 閉じたスレッドでも出しておくメール (★を付け外ししたメール)
 const starText = m => ({ on: !!m.flagged, label: "", title: "" });
 const me = { name: "boss" };
 let inboxStale = false;

@@ -835,7 +835,8 @@
                             gap: 1rem; align-items: start; }
   .list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .8rem; }
   .list-count { font-size: .8rem; color: #6b7280; margin: 0 0 .4rem; }
-  .list-count[hidden], #inbox:not(.pane-mode) .list-count { display: none; }
+  /* 出している通数は、右に本文を出しているとき (一覧の見出しが無い) と、スレッドにまとめているときだけ出す */
+  .list-count[hidden], #inbox:not(.pane-mode) .list-count:not(.grouped) { display: none; }
   .list-head #pane-tg { margin-bottom: .4rem; }
   /* 右の本文の中を終わりまで進めたら、続けて画面も進める (overscroll-behavior を contain にしない)。
      ページの一番上では右の本文の下の方が画面の外にあるので、止めると添付・下の「↩ 返信する」が見えない */
@@ -934,6 +935,59 @@
                                   border-radius: 0; box-shadow: -4px 0 16px rgba(0,0,0,.18); }
   /* 画面の下の知らせは一覧の上に出す (右上の「↩ 返信する」などを隠さない) */
   html.pane-on #toasts { left: 1.5rem; transform: none; width: min(30rem, var(--list-w)); }
+  /* スレッド (返信どうしでつながった、同じお客様との同じ話のメール)。行は一番新しいメールで、件名の前の
+     「▶ 5通」を押すと、同じスレッドのほかのメールをその下に古い順に出す (返事のつながりの深さで
+     少しずつ右へ。下げるのは決まった段まで)。未対応・確認待ち・★のメールは、閉じていても出す */
+  .th-tg { background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; border-radius: 99px;
+           padding: .1rem .55rem; font-size: .78rem; min-height: 28px; margin-right: .35rem;
+           white-space: nowrap; font-weight: 600; vertical-align: 1px; }
+  .th-tg:hover { background: #e2e8f0; }
+  .th-tg[aria-expanded="true"] { background: #e2e8f0; border-color: #94a3b8; }
+  .th-tg:focus-visible { outline: 2px solid #14532d; outline-offset: 2px; }
+  .th-tg .th-more, .th-n .th-more { color: #c2410c; font-weight: 700; }
+  .th-new { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #ca8a04;
+            margin-left: .3rem; vertical-align: middle; }
+  .th-att { margin-left: .2rem; }
+  .th-n { color: #475569; font-size: .78rem; margin-right: .35rem; white-space: nowrap; }
+  @media (pointer: coarse) { .th-tg { min-height: 40px; padding: .45rem .8rem; } }
+  /* 表: 続きの行は差出人を下げて ↳ を付ける (スマホのカードは、欄の名前「差出人」をそのまま出し、カードごと右へ) */
+  @media (min-width: 641px) {
+    .mail-row.th-child td.c-from { padding-left: calc(.6rem + min(var(--ind, 1), 4) * .7rem); }
+    .mail-row.th-child td.c-from::before { content: "↳"; color: #9ca3af; margin-right: .3rem; }
+  }
+  .mail-row.th-child { background: #fbfcfe; }
+  /* 上の絞り込みには合わないが、同じスレッドなので出しているメール */
+  .mail-row.off { opacity: .8; }
+  .off-tag { display: inline-block; font-size: .72rem; line-height: 1.5; border: 1px dashed #cbd5e1;
+             border-radius: 99px; padding: 0 .45rem; color: #6b7280; margin-right: .3rem;
+             white-space: nowrap; font-weight: normal; vertical-align: 1px; }
+  /* 右に出しているメールが、閉じたスレッドの中にある (「このスレッド」から選んだ) ときの先頭の行 */
+  #mail-table .mail-row.sel-in, #mail-table .mail-row.sel-in td.act { background: #eff6ff; }
+  .th-note td { color: #6b7280; background: #fbfcfe; padding-left: 3rem; }
+  /* 右に本文: 続きの行は段を下げ、左に細い線 */
+  #inbox.pane-mode tr.mail-row.th-child { background-image: linear-gradient(#cbd5e1, #cbd5e1);
+    background-size: 2px 100%; background-repeat: no-repeat;
+    background-position: calc(.4rem + (var(--ind, 1) - 1) * 14px) 0; }
+  #inbox.pane-mode #mail-table tr.th-note { display: block; }
+  #inbox.pane-mode #mail-table tr.th-note > td { display: block; padding: .3rem .8rem .3rem 2.6rem;
+                                                 border-bottom: 1px solid var(--line); }
+  /* 右の本文の「このスレッド」(同じスレッドのメールを古い順に。押すとそのメールを右に出す) */
+  .pv-conv { margin: .8rem 0 0; border: 1px solid var(--line); border-radius: 8px; padding: .5rem .6rem;
+             background: #f8fafc; }
+  .pv-conv h3 { margin: 0 0 .4rem; font-size: .88rem; color: #374151; }
+  .pv-conv ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .25rem; }
+  .pv-conv li { margin-left: calc(var(--depth, 0) * .8rem); min-width: 0; }
+  .pv-conv li > button { display: flex; flex-direction: column; align-items: flex-start; gap: .1rem; width: 100%;
+                         min-height: 44px; box-sizing: border-box; text-align: left; background: #fff;
+                         color: #111827; border: 1px solid #e5e7eb; border-radius: 6px; padding: .35rem .6rem;
+                         font-size: .84rem; font-weight: normal; }
+  .pv-conv li > button:hover { background: #f0fdf4; }
+  .pv-conv li > button[aria-current="true"] { background: #dbeafe; border-color: #2563eb; }
+  .pv-conv .st-sub { display: none; }
+  .pvc-line { color: #4b5563; font-size: .78rem; }
+  .pvc-subj { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pvc-star { color: #a16207; }
+  .pv-conv > small { display: block; color: #6b7280; margin-top: .3rem; }
   @media (max-width: 720px) {
     html { font-size: 15px; }
     main { padding: .8rem; }
@@ -992,6 +1046,15 @@
                               background: #f8fafc; }
     .table-wrap tr.peek-row > td { padding: .3rem 0 0; border: none; background: transparent; }
     .peek { max-width: none; position: static; }
+  }
+  /* スマホのカード: スレッドの続きのカードは少し右へ (列の中に収める。ページは横にずらさない)。
+     「▶ 5通」は件名の欄の先頭で、押しやすい大きさ */
+  @media (max-width: 640px) {
+    .table-wrap tr.mail-row.th-child { margin-left: calc(min(var(--ind, 1), 3) * .6rem);
+                                       border-top-style: dashed; }
+    .th-tg { min-height: 40px; padding: .45rem .8rem; margin-bottom: .2rem; }
+    .table-wrap tr.th-note { padding: .2rem .8rem; margin-top: -.3rem; }
+    .table-wrap tr.th-note > td { padding: .3rem 0; border: none; background: transparent; }
   }
 </style>
 </head>
@@ -1092,6 +1155,15 @@
   （返信画面が右側に重なって開きます。閉じると、元の一覧と本文に戻ります）。
   右に出さないときは、一覧の上の「表示」で「一覧だけ」を押してください（このブラウザに覚えておきます）。
   スマホでは今までどおり、押すと返信画面が開きます。
+  返信どうしでつながったメール（同じお客様との同じ話）は、1つの「スレッド」にまとめます。一番上には一番新しいメールを出し、
+  件名の前の「▶ 5通」を押すと、同じスレッドのほかのメールが古い順に下に出ます（もう一度押すと閉じます）。
+  未対応・確認待ち・★のメールは、閉じていても必ず出します。右に本文を出しているときは、本文の上の「このスレッド」から、
+  同じスレッドのメールを順に見られます。
+  まとめるのは、メールの返信の印（ヘッダ）でつながっていて、相手のアドレスが同じメールだけです。
+  件名が同じだけのメールや、HPフォームから届いた別々のお客様のメールはまとめません。
+  1通ずつ見たいときは、一覧の上の「スレッド」で「1通ずつ」を押してください。探している間は、まとめずに1通ずつ出します。
+  タブの数・未対応の数は、スレッドの数ではなくメールの数です。差出人の横の「やり取り N件」は、同じ相手から届いたメール全部の数です
+  （スレッドより広く、別の話のメールも入ります）。
   返信画面の「📎 ファイルを添付」で、写真・PDF・Excel・Word などを返信に付けて送れます
   （1通に10個・合わせて13MBまで。iPhone は写真を選ぶか、その場で撮れます。PC はファイルを返信文の欄に持ってきても付けられます。
   付けたファイルは閉じても残り、送ると「この相手とのやり取り」と送信箱に 📎 で出ます）。
@@ -1134,6 +1206,12 @@
       <button type="button" id="low-hide" data-low="hide" aria-pressed="true">高・中</button>
       <button type="button" id="low-show" data-low="show" aria-pressed="false">すべて</button>
     </div>
+    <!-- 返信どうしでつながったメールを1つのスレッドにまとめるか (このブラウザに覚えておく。
+         設定でスレッドを止めているときは出さない) -->
+    <div class="sort-tg" id="thr-tg" role="group" aria-label="スレッド" hidden>スレッド
+      <button type="button" data-thr-mode="on" aria-pressed="true">まとめる</button>
+      <button type="button" data-thr-mode="off" aria-pressed="false">1通ずつ</button>
+    </div>
   </div>
   <p id="low-note" class="low-note" role="status" hidden></p>
   <!-- 一覧のすぐ上の行: 出している通数 (右に本文を出しているとき) と、右に本文を出すか (広い画面だけ。
@@ -1161,6 +1239,7 @@
       <p id="pv-err" class="pv-note warn" role="alert" hidden></p>
       <div id="pv-main" hidden>
         <div class="pv-top">
+          <button type="button" id="pv-back" class="ghost" hidden>← 前のメールに戻る</button>
           <div class="pv-act">
             <button type="button" id="pv-flag" class="ghost m-flag" aria-pressed="false" hidden><span class="m-flag-ic" aria-hidden="true">☆</span><span class="m-flag-txt"> フラグ</span></button>
             <button type="button" id="pv-archive" class="m-archive" title="返信しなくてよい印を付けます（メールは受信箱に残ります）" hidden>✓ 対応不要にする</button>
@@ -1177,8 +1256,8 @@
         </div>
         <div id="pv-misdir" class="misdir" hidden></div>
         <div id="pv-appr" class="appr" hidden></div>
-        <!-- 同じスレッドのメールを並べる所 (次の段階のスレッドで使う。今は出さない) -->
-        <section id="pv-conv" class="pv-conv" hidden></section>
+        <!-- 同じスレッドのメール (古い順。押すとそのメールを右に出す)。2通以上のスレッドのときだけ -->
+        <section id="pv-conv" class="pv-conv" aria-label="このスレッド" hidden></section>
         <div id="pv-body" class="mail-body"></div>
         <div id="pv-atts" class="atts" hidden></div>
         <details id="pv-reply-sent" class="thread pv-sent" hidden><summary></summary>
@@ -1431,6 +1510,11 @@
       それでも差出人のまま出てしまうフォームがあれば、その差出人のアドレスを書いてください
       （「@example.co.jp」と書くと、そのドメインから届いたメール全部）。保存すると、届いていたメールも直します。</small></p>
       <div id="form-misdir" class="error" hidden></div>
+      <label class="set-row" style="margin-top:.8rem"><span>受信箱で、同じ話のメール（返信どうし）を1つにまとめる（スレッド）</span>
+        <input type="checkbox" id="set-mail-threads"></label>
+      <p class="set-help"><small>まとめるのは、返信の印（ヘッダ）でつながっていて、相手のアドレスが同じメールだけです。
+      件名が同じだけのメールや、HPフォームから届いた別々のお客様のメールはまとめません。
+      オフにすると1通ずつ出します（★や右の本文はそのまま使えます）。</small></p>
     </div>
     <div class="set-card" id="client-card">
       <h3>取引先の分け方</h3>
@@ -2337,7 +2421,8 @@ async function checkStatus() {
   const changed = !!mailStatus &&
     (s.newest_id !== mailStatus.newest_id || s.unhandled !== mailStatus.unhandled ||
      s.pending_approval !== mailStatus.pending_approval || acctSig(s) !== acctSig(mailStatus) ||
-     JSON.stringify(s.tabs || {}) !== JSON.stringify(mailStatus.tabs || {}));
+     JSON.stringify(s.tabs || {}) !== JSON.stringify(mailStatus.tabs || {}) ||
+     !!s.thread_mode !== !!mailStatus.thread_mode);
   // 送信箱が変わった (送った・取り込んだ) ら、送信箱を見ているときに取り直す
   if (mailStatus && s.sent_mark !== mailStatus.sent_mark) sentStale = true;
   mailStatus = s;
@@ -2412,6 +2497,7 @@ function renderStatus() {
   $("fetch-error").hidden = !err;
   renderAccountFilter();
   renderTabs();
+  renderThrToggle();
 }
 
 /* ---------- 受信箱 ---------- */
@@ -2556,6 +2642,143 @@ function nextRowId(ids, cur, step, last = -1) {
 }
 // 一覧の行: ここまで
 
+// スレッド: ここから
+// 受信箱のスレッド (返信どうしでつながった、同じお客様との同じ話のメール) を一覧の行の並びにする・
+// 「▶ 5通」と、右の本文の「このスレッド」を作る。使うのは esc・ST・fmtDateLong・fmtListDate・
+// statusMark・contactLabel だけ (node のテストで、この間だけを動かす)。外から来た文字 (件名・名前) は esc() を通す
+const TH_OPEN = ["unhandled", "pending_approval"];
+// スレッドの印と通数 (前の版のサーバは送ってこないので、1通だけのスレッドとみなす)
+const thKey = m => Number(m.th_key ?? m.id);
+const thSize = m => Math.max(1, Number(m.th_size ?? 1) || 1);
+// スレッドの様子 (これが変わったら、読んであるスレッドのメールを読み直す)
+const thrSig = m => [thSize(m), Number(m.th_open) || 0, Number(m.th_flagged) || 0,
+                     Number(m.th_newest_id ?? m.id)].join("|");
+// 古い順 (届いた日時、同じなら番号)
+const thrTime = m => { const t = Date.parse(m.received_at); return isNaN(t) ? 0 : t; };
+const thrOldFirst = (a, b) => thrTime(a) - thrTime(b) || Number(a.id) - Number(b.id);
+
+// 一覧のメール (サーバの並び順のまま) を、出す行の並びにする。o.on が偽なら1通ずつ (そのまま)。
+// まとめるときは、スレッドの最初に出てくるメール (新しい順なら一番新しい、重要度順なら一番重要なメール) を
+// 先頭の行にし、その場所にスレッドを置く。閉じているスレッドでは、未対応・確認待ち・★・この画面で触った
+// (o.keep)・右に出している (o.sel) メールだけを、先頭の行の下に古い順に出す (閉じていても、対応の要る
+// メールを隠さない)。開いているスレッド (o.expanded) は、読んだスレッドのメール (o.cache の items。つながりの
+// 木の順と深さ) を全部出し、一覧に無いものには off (条件外) を付ける。段は深さで下げ、o.cards (スマホ) なら
+// 2段・ほかは3段まで。返すのは { m, key, ind, head, child, off, pill } と、読み込み中・失敗の { note, key }。
+// pill は先頭の行の「▶ 5通」(畳んでいる数・一覧に出ていない未対応・★の数・畳んだ中の新着・添付)
+function groupThreads(list, o = {}) {
+  const expanded = o.expanded || new Set(), keep = o.keep || new Set(), cache = o.cache || new Map();
+  const cap = o.cards ? 2 : 3, isNew = o.isNew || (() => false);
+  const sel = o.sel == null ? null : Number(o.sel);
+  if (!o.on) return list.map(m => ({ m, key: Number(m.id), ind: 0, head: true, pill: null }));
+  const blocks = new Map(), order = [];
+  for (const m of list) {
+    const k = thKey(m), b = blocks.get(k);
+    if (b) b.cands.push(m);
+    else { const nb = { key: k, head: m, cands: [] }; blocks.set(k, nb); order.push(nb); }
+  }
+  const pinned = m => TH_OPEN.includes(m.status) || !!m.flagged || keep.has(Number(m.id)) ||
+    Number(m.id) === sel;
+  const rows = [];
+  for (const b of order) {
+    const h = b.head, size = thSize(h);
+    const head = { m: h, key: b.key, ind: 0, head: true, pill: null };
+    rows.push(head);
+    if (size <= 1 && !b.cands.length) continue;
+    const open = size > 1 && expanded.has(b.key);
+    // 通数が一覧に出ている数より少ない (数えている間に消えた など) ときは、畳まずに全部出す (迷うときは隠さない)
+    const all = size < 1 + b.cands.length;
+    const c = cache.get(b.key);
+    let kids = [], note = "";
+    if (open && c && c.items) {
+      const inList = new Map(b.cands.map(m => [Number(m.id), m]));
+      const seen = new Set([Number(h.id)]);
+      for (const x of c.items) {
+        const id = Number(x.id);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const m = inList.get(id);
+        kids.push({ m: m || x, off: !m, ind: 1 + Math.min(Math.max(Number(x.depth) || 0, 0), cap) });
+      }
+      // 読んだ後に届いた (一覧にはあるが、読んだスレッドに無い) メールは最後に
+      for (const m of b.cands.slice().sort(thrOldFirst)) {
+        if (!seen.has(Number(m.id))) kids.push({ m, off: false, ind: 1 });
+      }
+    } else {
+      kids = b.cands.filter(m => open || all || pinned(m)).sort(thrOldFirst)
+        .map(m => ({ m, off: false, ind: 1 }));
+      if (open) note = c && c.error ? "error" : "loading";
+      else if (c && c.error && c.opened && !c.items) note = "error";
+    }
+    for (const k of kids) rows.push({ ...k, key: b.key, head: false, child: true, pill: null });
+    if (note) rows.push({ note, key: b.key });
+    if (size <= 1) continue;
+    const shown = [h, ...kids.map(k => k.m)];
+    const shownIds = new Set(shown.map(m => Number(m.id)));
+    const hidden = b.cands.filter(m => !shownIds.has(Number(m.id)));
+    const rest = Math.max(0, size - shown.length);
+    const visOpen = shown.filter(m => TH_OPEN.includes(m.status)).length;
+    const visFlag = shown.filter(m => m.flagged).length;
+    head.pill = {
+      size, open, rest, button: rest > 0 || open,
+      // 一覧に出ていない (上の絞り込みに合わない) 未対応・確認待ち。「返信済み」「対応不要」だけを出して
+      // いるときは、ほかの状態のメールが出ていないのは当たり前なので数えない
+      openHidden: o.status === "replied" || o.status === "archived" ? 0
+        : Math.max(0, (Number(h.th_open) || 0) - visOpen),
+      flagHidden: Math.max(0, (Number(h.th_flagged) || 0) - visFlag),
+      newFolded: hidden.some(m => isNew(m)),
+      attFolded: hidden.some(m => Number(m.attachment_count) > 0),
+      firstAt: h.th_first_at || "",
+    };
+  }
+  return rows;
+}
+// 先頭の行の「▶ 5通」(畳んでいるメールがあるか開いているときはボタン。全部出ているときは「5通」だけ)
+function thrPillHtml(p, key) {
+  if (!p) return "";
+  const more = [p.openHidden ? `未対応${Number(p.openHidden)}` : "", p.flagHidden ? `★${Number(p.flagHidden)}` : ""]
+    .filter(Boolean).map(s => "・" + s).join("");
+  const extra = (more ? `<span class="th-more">${more}</span>` : "") +
+    (p.newFolded ? '<span class="th-new"></span>' : "") +
+    (p.attFolded ? '<span class="th-att" aria-hidden="true">📎</span>' : "");
+  const first = p.firstAt ? `。最初のメール: ${fmtDateLong(p.firstAt)}` : "";
+  const title = `同じ話のメール（返信どうしでつながったメール）${Number(p.size)}通${first}`;
+  if (!p.button) return `<span class="th-n" title="${esc(title)}">${Number(p.size)}通${extra}</span>`;
+  const label = `このスレッドのメール${Number(p.size)}通を${p.open ? "閉じる" : "開く"}` +
+    (p.openHidden ? `（ほかに未対応・確認待ちが${Number(p.openHidden)}通）` : "") +
+    (p.flagHidden ? `（ほかに★が${Number(p.flagHidden)}通）` : "") +
+    (p.newFolded ? "（まだ開いていないメールがあります）" : "");
+  return `<button type="button" class="th-tg" data-thr-tg="${Number(key)}" aria-expanded="${!!p.open}"
+             aria-label="${esc(label)}" title="${esc(title)}">${p.open ? "▼" : "▶"} ${Number(p.size)}通${extra}</button>`;
+}
+// 件名の欄の先頭: 先頭の行は「▶ 5通」、続きの行は読み上げ用の「スレッドの続き」と、条件外の印
+function thrSubjHead(r) {
+  if (r.pill) return thrPillHtml(r.pill, r.key);
+  if (!r.child) return "";
+  return '<span class="sr-only">スレッドの続き: </span>' + (r.off
+    ? '<span class="off-tag" title="上の絞り込み（状態・タブ・重要度など）には合いませんが、同じスレッドなので出しています">条件外</span>'
+    : "");
+}
+// スレッドの読み込み中・読めなかったときの行
+function thrNoteRow(r) {
+  const text = r.note === "error" ? "読み込めませんでした（▶ をもう一度押すと読み直します）" : "読み込み中…";
+  return `<tr class="th-note" data-th="${Number(r.key)}"><td colspan="8"><small>${text}</small></td></tr>`;
+}
+// 右の本文の「このスレッド」(つながりの木の順。深さで少しずつ右へ)。cur は右に出しているメール
+function pvConvHtml(items, cur, total) {
+  const n = Math.max(Number(total) || 0, items.length);
+  const li = items.map(x => {
+    const id = Number(x.id), here = id === Number(cur);
+    const head = [fmtListDate(x.received_at), contactLabel(x)].filter(Boolean).map(esc).join(" ・ ");
+    return `<li style="--depth:${Math.min(Math.max(Number(x.depth) || 0, 0), 3)}"><button type="button" data-pv-open="${id}" aria-current="${here}">
+      <span class="pvc-line">${head} ・ ${statusMark(x)}${x.flagged ? ' <span class="pvc-star" title="★フラグ">★</span>' : ""}${Number(x.attachment_count) ? ' <span title="添付ファイルあり">📎</span>' : ""}</span>
+      <span class="pvc-subj">${esc(x.subject) || "（件名なし）"}${here ? " <small>（いま見ているメール）</small>" : ""}</span></button></li>`;
+  }).join("");
+  const rest = n - items.length;
+  return `<h3>このスレッド（メール ${n}通・古い順）</h3><ol>${li}</ol>` + (rest > 0
+    ? `<small>古いメールが、ほかに ${rest} 通あります（返信画面の「この相手とのやり取り」で見られます）</small>` : "");
+}
+// スレッド: ここまで
+
 let inboxSeq = 0;        // 受信箱を取り直した回数 (前の取り直しの結果で上書きしない用)
 let inboxStale = false;  // 返信画面・設定を開いている間に受信箱が変わった (戻ったときに取り直す)
 
@@ -2590,7 +2813,7 @@ async function showInbox(opts = {}) {
   else if (!showLow) q.set("hide_low", "1");
   const path = "/api/mail?" + q;
   const askedAt = Date.now();   // この後に付けた・外した★は、答えが古いことがある (applyLocalFlags)
-  let list, found = null, hiddenLow = 0;
+  let list, found = null, hiddenLow = 0, threads = false;
   if (opts.auto) {
     try {
       const r = await api(path);
@@ -2598,6 +2821,7 @@ async function showInbox(opts = {}) {
       list = await r.json();
       found = searchMeta(r, word);
       hiddenLow = Number(r.headers.get("X-Hidden-Low")) || 0;
+      threads = r.headers.get("X-Thread-Mode") === "1";
     } catch (e) {
       // 次の確認のときにもう一度取り直す (アラートは出さない)
       if (e.message !== "auth" && seq === inboxSeq) { inboxStale = true; connLost = true; renderStatus(); }
@@ -2613,10 +2837,13 @@ async function showInbox(opts = {}) {
     list = await r.json();
     found = searchMeta(r, word);
     hiddenLow = Number(r.headers.get("X-Hidden-Low")) || 0;
+    threads = r.headers.get("X-Thread-Mode") === "1";
   }
   if (seq !== inboxSeq) return;        // 待っている間に、もう一度取り直し始めた
   inboxFound = found;
   inboxHiddenLow = hiddenLow;
+  // スレッドの数を付けて返したか (前の版のサーバ・探しているとき・設定で止めているときは1通ずつ)
+  thrServer = threads;
   applyLocalFlags(list, askedAt);
   renderInbox(list, opts.auto);
   refreshAiStatus();   // 自動受信の判定などで AI が失敗した・直ったかを、開くたびに出し直す
@@ -2649,16 +2876,22 @@ function rememberShown(list) {
   saveSeen(shownMax);
 }
 
-function renderInbox(list, keepPlace) {
+// 受信箱の行を描く。keepPlace: 見ていた場所を動かさない (自動で取り直したとき・スレッドを開け閉めしたとき)。
+// opts.userToggle: スレッドを開け閉めした (押した人が動かしたので、押し間違いの対策の間 (ROW_QUIET_MS) にしない)。
+// opts.anchorId: 描き直した後も同じ位置に見せる行 (開け閉めしたスレッドの先頭の行)
+function renderInbox(list, keepPlace, opts = {}) {
+  lastInboxList = list;
   const tbody = document.querySelector("#mail-table tbody");
   const wrap = document.querySelector("#inbox .table-wrap");
   const left = wrap.scrollLeft;
   // 自動で取り直したときは、見ていた場所を動かさない (一番上に見えていた行が、
   // 描き直した後も同じ位置に見えるようにする)。一番上にいるときは、上に増えた新着を見せる
-  // (開いているプルダウンの中を読んでいるときは、そのプルダウンの位置を動かさない)
-  const anchor = keepPlace && window.scrollY > 0
+  // (開いているプルダウンの中を読んでいるときは、そのプルダウンの位置を動かさない)。
+  // スレッドを開け閉めしたときは、押した行 (スレッドの先頭の行) を動かさない
+  const pinRow = opts.anchorId ? mailRowOf(opts.anchorId) : null;
+  const anchor = pinRow || (keepPlace && window.scrollY > 0
     ? [...tbody.querySelectorAll(".mail-row, .peek-row")].find(tr => tr.getBoundingClientRect().bottom > 0)
-    : null;
+    : null);
   const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
   const anchorSel = !anchor ? ""
     : anchor.classList.contains("peek-row") ? `.peek-row[data-peek-row="${Number(anchor.dataset.peekRow)}"]`
@@ -2689,31 +2922,23 @@ function renderInbox(list, keepPlace) {
   // 探しているときは、探した言葉に印を付けて、本文の言葉のあたりを件名の下に出す
   const T = inboxFound ? hlTerms(inboxFound.q) : null;
   shownMails = new Map(list.map(m => [Number(m.id), m]));
+  // スレッドにまとめる (探しているとき・「1通ずつ」・設定でオフのときは、そのまま1通ずつ)
+  const rows = groupThreads(list, {
+    on: thrOn(), expanded: thrExpanded, keep: keepShown, sel: paneOn() ? selectedId : null,
+    cache: thrCache, cards: CARD_MQ.matches, status: $("filter").value,
+    isNew: m => Number(m.id) > seenId && !openedIds.has(Number(m.id)) });
+  // 開いたスレッドで出した、一覧に無い (上の絞り込みに合わない) メールも、出しているメールに入れる
+  for (const r of rows) if (r.off && !shownMails.has(Number(r.m.id))) shownMails.set(Number(r.m.id), r.m);
   // 自動で取り直して行が増えた・減ったときは、少しの間「対応不要」などの行のボタン・行を押せないようにする
-  // (押そうとした指の下に、別のメールのボタン・行が来ることがあるため)
-  if (keepPlace) {
+  // (押そうとした指の下に、別のメールのボタン・行が来ることがあるため)。比べるのは出す行の並び
+  // (スレッドの続きの行も入れる)。スレッドを開け閉めした (押した人が動かした) ときは比べない
+  const drawn = rows.filter(r => r.m).map(r => String(Number(r.m.id))).join();
+  if (keepPlace && !opts.userToggle) {
     const before = [...tbody.querySelectorAll(".mail-row")].map(tr => tr.dataset.id).join();
-    if (before && before !== list.map(m => String(Number(m.id))).join()) rowsMovedAt = Date.now();
+    if (before && before !== drawn) rowsMovedAt = Date.now();
   }
-  tbody.innerHTML = list.map(m => {
-    const id = Number(m.id);
-    const isNew = id > seenId && !openedIds.has(id);
-    const canArchive = admin && m.status === "unhandled";
-    const peeking = peekOpen.has(id);
-    // 欄の c-… は、右に本文を出しているときの2行の一覧で使う (表・スマホのカードと同じ行)。
-    // 件名の前の小さい重要度 (prb-in) も、その2行の一覧だけで出す
-    return `
-    <tr class="mail-row p${Number(m.priority)}${["unhandled", "pending_approval"].includes(m.status) ? "" : " done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}${m.flagged ? " flagged" : ""}" data-id="${id}" tabindex="-1">
-      <td class="c-pr" data-label="優先度"><span class="prb pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span></td>
-      <td class="c-from" data-label="差出人">${starButton(m)}<strong>${hl(contactLabel(m), T)}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m, T)}</td>
-      <td class="c-subj" data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}<span class="prb prb-in pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span>${repliedIcon(m)}${hl(m.subject, T) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}${T ? hitSnip(m, T) : ""}</td>
-      <td class="c-date" data-label="受信日時">${listTime(m.received_at)}</td>
-      <td class="c-st" data-label="状態">${statusMark(m)}</td>
-      <td class="c-asg" data-label="担当">${esc(m.assignee_name) || "—"}</td>
-      <td class="c-draft" data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
-      <td class="act">${peekButton(m, peeking)}${canArchive ? archiveButton(m) : ""}</td>
-    </tr>${peeking ? peekRowHtml(id) : ""}`;
-  }).join("") ||
+  const env = { admin, T };
+  tbody.innerHTML = rows.map(r => r.note ? thrNoteRow(r) : mailRowHtml(r.m, r, env)).join("") ||
     (inboxFound
       ? `<tr><td colspan="8"><small>「${esc(inboxFound.q)}」に合うメールはありません（言葉を短くするか、言葉を減らしてください${narrowed ? `。上の${narrowed}を「すべて」に戻すと、ほかのメールからも探します` : ""}）</small></td></tr>`
       : activeTab === TAB_FLAG
@@ -2729,6 +2954,9 @@ function renderInbox(list, keepPlace) {
       const f = e.target.closest("button.row-flag");
       const p = e.target.closest("button.row-peek"), b = e.target.closest("button.row-archive");
       if (f || p || b) e.stopPropagation();
+      // スレッドの「▶ 5通」も、返信画面を開かない (同じスレッドのメールを、この行の下に出す・畳む)
+      const g = e.target.closest("button.th-tg");
+      if (g) e.stopPropagation();
       // 行が消えて下の行が上がってきた・対応不要にして行の「対応不要」が消えた直後は、
       // 同じ所をもう一度押しても何もしない (2回押したつもりで、次のメールまで対応不要にしたり、
       // その場所に来た「本文 ▼」や行を押して、プルダウン・返信画面を開いたりしないように)
@@ -2736,6 +2964,7 @@ function renderInbox(list, keepPlace) {
       // ☆ は★フラグを付ける・外す。「本文 ▼」は、その行の下に本文とやり取りを出す (返信画面は開かない)。
       // 行は、右に本文を出しているときは右に出し、そうでなければ返信画面を開く
       if (f) toggleFlag(Number(f.dataset.flag), f.getAttribute("aria-pressed") !== "true");
+      else if (g) thrToggle(Number(g.dataset.thrTg));
       else if (p) togglePeek(Number(p.dataset.peek));
       else if (b) archiveFromRow(b, tr);
       else if (paneOn()) selectRow(+tr.dataset.id, { now: true });
@@ -2748,20 +2977,55 @@ function renderInbox(list, keepPlace) {
   refocus(focus);
   // 開いているプルダウンは、まだ読んでいない・メールが変わった (返信した・続きが届いた) ときだけ
   // 読み直す (読み直す間も、前に読んだものを出したままにする)。右に本文を出している間は
-  // プルダウンを出さないので読まない (一覧だけに戻したときに、次の取り直しで読む)
-  for (const m of list) {
+  // プルダウンを出さないので読まない (一覧だけに戻したときに、次の取り直しで読む)。
+  // 畳んだスレッドの中のメールは、行が無いので読まない (開いたときに読む)
+  for (const r of rows) {
+    const m = r.m;
+    if (!m) continue;
     const id = Number(m.id), c = peekCache.get(id);
     if (!paneOn() && peekOpen.has(id) && !peekLoading.has(id) &&
         (!c || !c.data || c.sig !== peekSig(m))) loadPeek(id);
   }
-  // 出している通数 (右に本文を出しているときだけ。一覧の見出しを出さないので)。探しているときは上の知らせに出る
+  // 出している通数 (右に本文を出しているとき (一覧の見出しを出さないので) と、スレッドにまとめているとき)。
+  // 探しているときは上の知らせに出る
+  const heads = rows.filter(r => r.head).length, grouped = rows.some(r => r.pill);
   $("list-count").hidden = !list.length || !!inboxFound;
-  $("list-count").textContent = `${list.length}通を出しています`;
+  $("list-count").classList.toggle("grouped", grouped);
+  $("list-count").textContent = (grouped ? `スレッド ${heads}件（メール ${list.length}通）を出しています`
+    : `${list.length}通を出しています`) +
+    (list.length >= MAIL_LIST_MAX ? `（多いので、新しい方から${MAIL_LIST_MAX}通まで。検索すると古いメールも探せます）` : "");
+  thrAfterRender(list);
   pvAfterRender();
   renderSearchInfo(list);
   renderLowNote();
   rememberShown(list);
 }
+// 一覧の行の形: ここから
+// 受信箱の1行 (表・右に本文を出しているときの2行の一覧・スマホのカードで同じ行)。r は groupThreads の1行
+// (スレッドの「▶ 5通」・続きの行の段)、env はこの描き直しで共通のもの (管理者か・探した言葉)。
+// 欄の c-… は、右に本文を出しているときの2行の一覧で使う。件名の前の小さい重要度 (prb-in) も、その2行の
+// 一覧だけで出す。外から来た文字 (件名・名前・本文の抜き出し) は esc()・hl() を通す
+function mailRowHtml(m, r, env) {
+  const id = Number(m.id), T = env.T, admin = env.admin;
+  // 「新着」の印 (前に見た後に届いて、まだ開いていないメール)
+  const isNew = id > seenId && !openedIds.has(id);
+  const canArchive = admin && m.status === "unhandled";
+  const peeking = peekOpen.has(id);
+  const thr = (r.pill ? " th-head" : "") + (r.child ? " th-child" : "") + (r.off ? " off" : "");
+  const ind = r.ind ? ` style="--ind:${Number(r.ind)}"` : "";
+  return `
+    <tr class="mail-row p${Number(m.priority)}${["unhandled", "pending_approval"].includes(m.status) ? "" : " done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}${m.flagged ? " flagged" : ""}${thr}" data-th="${Number(r.key)}"${ind} data-id="${id}" tabindex="-1">
+      <td class="c-pr" data-label="優先度"><span class="prb pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span></td>
+      <td class="c-from" data-label="差出人">${starButton(m)}<strong>${hl(contactLabel(m), T)}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m, T)}</td>
+      <td class="c-subj" data-label="件名">${thrSubjHead(r)}${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}<span class="prb prb-in pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span>${repliedIcon(m)}${hl(m.subject, T) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}${T ? hitSnip(m, T) : ""}</td>
+      <td class="c-date" data-label="受信日時">${listTime(m.received_at)}</td>
+      <td class="c-st" data-label="状態">${statusMark(m)}</td>
+      <td class="c-asg" data-label="担当">${esc(m.assignee_name) || "—"}</td>
+      <td class="c-draft" data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
+      <td class="act">${peekButton(m, peeking)}${canArchive ? archiveButton(m) : ""}</td>
+    </tr>${peeking ? peekRowHtml(id) : ""}`;
+}
+// 一覧の行の形: ここまで
 // 出していない重要度[低]のメールの数 (「高・中」を選んでいるとき)
 function renderLowNote() {
   const box = $("low-note");
@@ -2813,7 +3077,9 @@ function renderSearchInfo(list) {
   note.textContent = "　" + [
     st ? `状態「${ST[st] || st}」の中から探しています` : "返信済み・対応不要のメールからも探しています",
     activeTab !== TAB_ALL ? "選んでいるタブの中だけです" : "",
-    f.partial ? "とても古いメールは探していません" : ""].filter(Boolean).join("・");
+    f.partial ? "とても古いメールは探していません" : "",
+    thrWanted && mailStatus && mailStatus.thread_mode ? "探している間は、スレッドにまとめずに1通ずつ出します" : ""]
+    .filter(Boolean).join("・");
   box.appendChild(note);
 }
 // 検索欄の言葉に合わせて「状態」を変える (探し始めたら「すべて」、やめたら前の状態)
@@ -2882,7 +3148,7 @@ const subjLabel = m => esc(snip(m.subject, 30)) || "件名なし";
 // 描き直した後も同じボタンに戻す。そのボタンが無くなった (対応不要にした など)・押せないときは、
 // 行なら「本文 ▼」、プルダウンなら「閉じる」に移る (画面は動かさない)。
 // ボタンはどれも data-… にメールの番号を持つので、どの行・プルダウンの、どのボタンかで探す
-const ROW_BTN_KEYS = ["data-peek", "data-archive", "data-flag", "data-pk-open", "data-pk-close", "data-pk-earlier", "data-pk-retry"];
+const ROW_BTN_KEYS = ["data-peek", "data-archive", "data-flag", "data-thr-tg", "data-pk-open", "data-pk-close", "data-pk-earlier", "data-pk-retry"];
 function focusedRowButton(box) {
   const b = document.activeElement;
   // 行そのもの (右に本文を出しているときに、↑↓ で選んだ行) にいたときは、同じメールの行に戻す
@@ -3099,6 +3365,142 @@ document.querySelector("#mail-table tbody").addEventListener("click", e => {
   }
 });
 
+/* ---------- スレッド (返信どうしでつながった、同じお客様との同じ話のメール) ----------
+   一覧はサーバが返すメール (今までどおり。タブの数・未対応の数もメールの数) を、画面でスレッドにまとめる
+   (groupThreads)。行は一番新しいメールで、「▶ 5通」を押すとスレッドのメールを読み込み (/api/mail/threads/…)、
+   その下に古い順に出す。開いたスレッドは、自動の取り直し・タブの切り替えでも開いたまま (読み込み直すまで)。
+   未対応・確認待ち・★・この画面で触った (keepShown) メールは、閉じていても出す。探している間・「1通ずつ」・
+   設定でスレッドを止めているときは、今までどおり1通ずつ */
+const THR_KEY = "zatsumu_mail_threads";   // "on" (既定) | "off"
+let thrWanted = loadPref(THR_KEY) !== "off";
+let thrServer = false;                    // 一覧の答えのヘッダ X-Thread-Mode (サーバがスレッドの数を付けた)
+const thrOn = () => thrServer && thrWanted && !inboxFound;
+const thrExpanded = new Set();            // 開いているスレッド (th_key)。この画面を開いている間だけ覚える
+const thrCache = new Map();               // th_key → { items, total, sig, loading, error } (読んだスレッドのメール)
+const THR_CACHE_MAX = 60;
+// この画面で対応不要にした・★を付け外しした・送った・確認をお願いした・差し戻したメール。閉じたスレッドでも
+// 出しておく (触ったとたんに行が畳まれて消えないように)。スレッドを閉じるボタンで、そのスレッドの分は消す
+const keepShown = new Set();
+let lastInboxList = [];                   // 一覧の答え (スレッドを開け閉めしたときに、取り直さずに描き直す)
+const CARD_MQ = matchMedia("(max-width: 640px)");   // スマホのカード (続きの段は浅く)
+const MAIL_LIST_MAX = 500;                // サーバが一覧に出す数の上限 (server/app.py の MAIL_LIST_LIMIT)
+
+// 一覧のスレッドの先頭のメール (無ければ null)
+const thrHeadItem = key => lastInboxList.find(m => thKey(m) === Number(key)) || null;
+// スレッドの今の様子 (一覧に無ければ null。読み直すかを比べる用)
+const thrListSig = key => { const h = thrHeadItem(key); return h ? thrSig(h) : null; };
+// スレッドのメール (一覧にあるものと、読んだもの)
+function thrMembers(key) {
+  key = Number(key);
+  const c = thrCache.get(key);
+  return [...lastInboxList.filter(m => thKey(m) === key), ...((c && c.items) || [])];
+}
+
+// スレッドを開く・閉じる (open を省くと、今と反対)。描き直しても、押した行は同じ位置に見せる
+function thrToggle(key, open) {
+  key = Number(key);
+  if (open === undefined) open = !thrExpanded.has(key);
+  const head = thrHeadItem(key);
+  if (open) {
+    thrExpanded.add(key);
+    const c = thrCache.get(key);
+    if (c && c.error && !c.items) thrCache.delete(key);   // 読めなかったものは読み直す
+  } else {
+    thrExpanded.delete(key);
+    // 閉じたら、この画面で触ったので出しておいたメールも畳む (済んだものとして)
+    for (const m of thrMembers(key)) keepShown.delete(Number(m.id));
+  }
+  renderInbox(lastInboxList, true, { userToggle: true, anchorId: head ? head.id : null });
+  if (open) thrLoad(key);
+}
+
+// スレッドのメールを読む (読んだものが今の様子と同じなら読まない)。読み終えたら、開いていれば描き直し、
+// 右の本文の「このスレッド」も出し直す。読めなかったら、前に読んだものを出したままにする
+// (無ければ閉じて「読めませんでした」を出す。▶ をもう一度押すと読み直す)
+async function thrLoad(key) {
+  key = Number(key);
+  const old = thrCache.get(key);
+  const sig = thrListSig(key);
+  if (old && old.loading) return;
+  if (old && old.items && (sig === null || old.sig === sig)) return;
+  thrCache.set(key, { ...(old || {}), loading: true, error: "" });
+  let d = null;
+  try {
+    const r = await api(`/api/mail/threads/${key}`);
+    if (r.ok) d = await r.json();
+  } catch (e) {
+    if (e.message === "auth") { thrCache.delete(key); return; }   // ログインし直す画面に切り替わった
+  }
+  if (d) {
+    thrCache.delete(key);   // 新しく読んだものを後ろに (古いものから消す)
+    thrCache.set(key, { items: d.items || [], total: d.total, sig, loading: false, error: "" });
+  } else if (old && old.items) {
+    thrCache.set(key, { ...old, loading: false });
+  } else {
+    // opened: 開こうとして読めなかった (一覧のスレッドの先頭の行の下に「読み込めませんでした」を出す)
+    thrCache.set(key, { loading: false, error: "load", opened: thrExpanded.has(key) });
+    thrExpanded.delete(key);
+  }
+  for (const k of thrCache.keys()) {
+    if (thrCache.size <= THR_CACHE_MAX) break;
+    if (!thrExpanded.has(k) && k !== key) thrCache.delete(k);
+  }
+  const c = thrCache.get(key);
+  if (viewName === "inbox" && thrHeadItem(key) && (thrExpanded.has(key) || (c && c.opened))) {
+    const head = thrHeadItem(key);
+    renderInbox(lastInboxList, true, { userToggle: true, anchorId: head.id });
+  }
+  if (pv.mail && pvThreadKey() === key) renderPvConv();
+}
+
+// 描き直した後: 開いているスレッドと右の本文のスレッドで、様子が変わった (返事が届いた・ほかの人が返信した)
+// ものを読み直す (読み直している間も、前に読んだものを出したまま)
+function thrAfterRender(list) {
+  if (!thrOn()) return;
+  const keys = new Set(thrExpanded);
+  if (paneOn() && pv.mail) keys.add(pvThreadKey());
+  for (const key of keys) {
+    const c = thrCache.get(key), sig = thrListSig(key);
+    if (sig !== null && c && c.items && !c.loading && c.sig !== sig) thrLoad(key);
+  }
+}
+
+// → ← (右に本文を出しているとき): 選んだ行のスレッドを開く・閉じる。続きの行で ← は、先頭の行を選ぶ
+function thrArrow(open) {
+  const tr = mailRowOf(selectedId);
+  if (!tr || !thrOn()) return false;
+  const key = Number(tr.dataset.th);
+  if (!open && tr.classList.contains("th-child")) {
+    const head = thrHeadItem(key), row = head && mailRowOf(head.id);
+    if (!row) return false;
+    row.scrollIntoView({ block: "nearest" });
+    selectRow(Number(head.id), { announce: true });
+    return true;
+  }
+  if (!tr.querySelector("button.th-tg") || open === thrExpanded.has(key)) return false;
+  thrToggle(key, open);
+  return true;
+}
+
+// 「スレッド [まとめる][1通ずつ]」(このブラウザに覚えておく)。設定でスレッドを止めているときは出さない
+function renderThrToggle() {
+  $("thr-tg").hidden = !(mailStatus && mailStatus.thread_mode);
+  for (const b of document.querySelectorAll("#thr-tg button[data-thr-mode]")) {
+    b.setAttribute("aria-pressed", String((b.dataset.thrMode === "on") === thrWanted));
+  }
+}
+for (const b of document.querySelectorAll("#thr-tg button[data-thr-mode]")) {
+  b.onclick = () => {
+    const on = b.dataset.thrMode === "on";
+    if (thrWanted === on) return;
+    thrWanted = on;
+    savePref(THR_KEY, on ? "on" : "off");
+    renderThrToggle();
+    if (viewName === "inbox") renderInbox(lastInboxList, true, { userToggle: true });
+    if (pv.mail) renderPvConv();
+  };
+}
+
 /* ---------- 対応不要 (ワンタップ) と「元に戻す」 ----------
    未対応のメールを、確かめの画面を出さずにすぐ対応不要にする (管理者だけ。サーバも確かめる)。
    対応不要は「返信しなくてよい」印で、メールは一覧に残り、灰色で「対応不要」と出る
@@ -3159,8 +3561,10 @@ async function archiveFromRow(b, tr) {
     refreshInbox();
     return;
   }
-  // 対応不要にしたメールは見たことにする (「新着」の印を外す。描き直しても付けない)
+  // 対応不要にしたメールは見たことにする (「新着」の印を外す。描き直しても付けない)。
+  // スレッドの中のメールでも、閉じたスレッドに畳まずに出しておく (灰色の「✓ 対応不要」のまま)
   markOpened(id);
+  keepShown.add(id);
   if (leave && tr.isConnected) {
     // 次のメールの行 (開いているプルダウンの下から読んでいたときは、それを画面の上に出す)
     const next = (pk && pk.isConnected ? pk : tr).nextElementSibling;
@@ -3382,6 +3786,8 @@ async function toggleFlag(id, on) {
   if (!r) { setFlagUi(id, ...before); return; }
   // 付けた人・時刻はサーバのもの (ほかの人が先に付けていたら、その人のまま)
   setFlagUi(id, r.flagged_at, r.flagged_by);
+  // ★を外しても、閉じたスレッドにすぐ畳まない (押した行が目の前で消えないように)
+  keepShown.add(id);
   // タブの数をそろえる。一緒に、ほかの変わったこと (新着など) に気付いたら、次の確認で一覧を取り直す
   // (ここで変わったと分かった分は、1分ごとの確認では「変わった」にならないので)
   try { if (await checkStatus()) inboxStale = true; } catch {}
@@ -3677,9 +4083,10 @@ let selLastIndex = -1;      // 選んだ行が一覧の上から何番目にあ�
 // local: 読み込んでいる間にこの画面で変えたこと ({ at: 変えた時刻, f: 変えた項目 }。★・対応不要)。
 // 変える前にサーバが答えた本文が後から届いても、変えた後の様子で出す (一覧の applyLocalFlags と同じ考え)・
 // failed: 出しているメールの読み直しに失敗した (同じ行をもう一度押すと読み直す)・
-// actMovedAt: 「対応不要にする」が消えた・出た (隣の「☆ フラグ」が横にずれた) 時刻 (renderPreview)
+// actMovedAt: 「対応不要にする」が消えた・出た (隣の「☆ フラグ」が横にずれた) 時刻 (renderPreview)・
+// history: 「このスレッド」から別のメールに移る前に出していたメール (「← 前のメールに戻る」用)
 const pv = { id: null, seq: 0, timer: null, loading: null, mail: null, sig: "", offList: false,
-             quietUntil: 0, noteTimer: null, local: [], failed: false, actMovedAt: 0 };
+             quietUntil: 0, noteTimer: null, local: [], failed: false, actMovedAt: 0, history: [] };
 const pvCache = new Map();  // 番号 → { data, sig } (前に読んだもの。新しく読んだ 30 通まで)
 const PV_CACHE_MAX = 30;
 const PV_WAIT_MS = 150;     // ↑ ↓ で動いてから読むまで待つ長さ (押したままでも、通り過ぎた行は読まない)
@@ -3731,7 +4138,9 @@ for (const b of document.querySelectorAll("#pane-tg button[data-pane-mode]")) {
   };
 }
 
-// 選んでいる行に印 (青い地・aria-current) を付ける。右に本文を出していないときは付けない
+// 選んでいる行に印 (青い地・aria-current) を付ける。右に本文を出していないときは付けない。
+// 選んだメールが閉じたスレッドの中にある (「このスレッド」から選んだ) ときは、スレッドの先頭の行に
+// 薄い印 (sel-in) を付ける (↓ は、その行の次から続ける)
 function markSelected() {
   const on = paneOn();
   for (const tr of document.querySelectorAll("#mail-table .mail-row.sel")) {
@@ -3739,8 +4148,16 @@ function markSelected() {
     tr.classList.remove("sel");
     tr.removeAttribute("aria-current");
   }
+  for (const tr of document.querySelectorAll("#mail-table .mail-row.sel-in")) tr.classList.remove("sel-in");
   const tr = on && selectedId ? mailRowOf(selectedId) : null;
-  if (!tr) return;
+  if (!tr) {
+    const key = on && selectedId && pv.mail && Number(pv.mail.th_key);
+    const head = key ? [...document.querySelectorAll(`#mail-table .mail-row.th-head[data-th="${key}"]`)][0] : null;
+    if (!head) return;
+    head.classList.add("sel-in");
+    selLastIndex = rowIds().indexOf(Number(head.dataset.id)) + 1;
+    return;
+  }
   tr.classList.add("sel");
   tr.setAttribute("aria-current", "true");
   selLastIndex = rowIds().indexOf(selectedId);
@@ -3748,11 +4165,14 @@ function markSelected() {
 
 // 一覧の行を選んで、右に本文を出す。now: すぐ読む (押したとき)。そうでなければ少し待つ (↑ ↓ で続けて
 // 動いている間は読まない)。focus: その行にキーボードの位置を移す (画面は動かさない)。
-// announce: 読み上げで「（件名）を表示しました」と知らせる
-function selectRow(id, { now = false, focus = true, announce = false } = {}) {
+// announce: 読み上げで「（件名）を表示しました」と知らせる。keepHistory: 「このスレッド」から移った
+// (「← 前のメールに戻る」を残す。一覧の行を押した・↑ ↓ で動いたときは消す)
+function selectRow(id, { now = false, focus = true, announce = false, keepHistory = false } = {}) {
   id = Number(id);
   if (!id) return;
   selectedId = id;
+  if (!keepHistory) pv.history = [];
+  $("pv-back").hidden = !pv.history.length;
   markSelected();
   if (focus) mailRowOf(id)?.focus({ preventScroll: true });
   clearTimeout(pv.timer);
@@ -3780,8 +4200,10 @@ function clearSelection() {
   selLastIndex = -1;
   clearTimeout(pv.timer);
   pv.seq++;
-  Object.assign(pv, { id: null, loading: null, mail: null, sig: "", offList: false, failed: false });
+  Object.assign(pv, { id: null, loading: null, mail: null, sig: "", offList: false, failed: false,
+                      history: [] });
   $("pv").classList.remove("loading");
+  $("pv-back").hidden = true;
   markSelected();
   pvNote("");
   pvErr("");
@@ -3815,6 +4237,10 @@ async function pvShow(id, opts = {}) {
     const r = await api(`/api/mail/${id}?thread=false`);
     if (r.ok) d = await r.json();
     else err = r.status === 404 ? "gone" : "load";
+    // スレッドの通数は一覧の項目のもの (1通の詳細には無い。一覧の行と同じ様子 (pvSig) にして、
+    // スレッドを開け閉めして描き直しただけで読み直さないように。通数が変わったら読み直す)
+    const it = d && shownMails.get(id);
+    if (it) d.th_size = it.th_size;
   } catch (e) {
     if (e.message === "auth") return;        // ログインし直す画面に切り替わった
     err = "load";
@@ -3903,9 +4329,11 @@ function pvAfterRender() {
   if (!paneOn() || !selectedId || pv.id !== selectedId) return;
   // 読み直している途中なら、もう一度は読まない (読み終えたときの一覧の様子を覚える)
   const m = shownMails.get(selectedId), idle = pv.loading === null;
+  // 「このスレッド」から選んだ、閉じたスレッドの中のメール (一覧には先頭の行がある) は、外れたとは言わない
+  const inThread = !m && document.querySelectorAll("#mail-table .mail-row.sel-in").length > 0;
   if (!m !== pv.offList) {
     pv.offList = !m;
-    pvNote(m ? "" : "このメールは、いまの絞り込みの一覧には出ていません（返信済み・対応不要になったなど）");
+    pvNote(m || inThread ? "" : "このメールは、いまの絞り込みの一覧には出ていません（返信済み・対応不要になったなど）");
     if (!m && idle) pvShow(selectedId, { keepScroll: true, quiet: true });   // 今の様子 (返信済み など) を出す
   }
   if (m && idle && pvSig(m) !== pv.sig) pvShow(selectedId, { keepScroll: true, quiet: true, auto: true });
@@ -4010,6 +4438,8 @@ function renderPreview(d, same) {
   $("pv-reply").textContent = $("pv-reply2").textContent = label;
   $("pv-draft-note").hidden = replied || pending || !d.has_draft;
   $("pv-draft-note").textContent = `下書きがあります（「${label}」で続きを書けます）`;
+  renderPvConv(true);
+  $("pv-back").hidden = !pv.history.length;
   const others = Number(d.thread_count) || 0;
   $("pv-thr").hidden = !others;
   $("pv-thr-text").textContent = `この相手から、ほかにもメールが ${others}通届いています`;
@@ -4075,6 +4505,57 @@ $("pv-atts").onclick = async e => {
   b.textContent = label;
 };
 
+// 右に出しているメールのスレッドの印 (一覧の項目があればそれ。無ければ1通の詳細の th_key)
+function pvThreadKey() {
+  const item = pv.id ? shownMails.get(pv.id) || pv.mail : null;
+  return item ? thKey(item) : 0;
+}
+// 右の本文の「このスレッド」(2通以上のスレッドで、まとめて出しているときだけ)。スレッドのメールは
+// 一覧の「▶ 5通」と同じものを読んで使い回す (読んでいなければ読み、読み終えたら出し直す)
+// retry: 前に読めなかったスレッドを読み直す (メールを選び直したとき)
+function renderPvConv(retry = false) {
+  const box = $("pv-conv");
+  const item = pv.mail ? shownMails.get(pv.id) || pv.mail : null;
+  const key = item ? thKey(item) : 0;
+  const c = key ? thrCache.get(key) : null;
+  const size = item ? Math.max(thSize(item), Number(c && c.total) || 0) : 0;
+  if (!item || !thrOn() || size <= 1) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = c && c.items ? pvConvHtml(c.items, pv.id, c.total)
+    : `<h3>このスレッド（メール ${Number(size)}通・古い順）</h3><small>${c && c.error
+      ? "読み込めませんでした（このメールを選び直すと、もう一度読みます）" : "読み込み中…"}</small>`;
+  if (!c || (retry && c.error && !c.items)) thrLoad(key);
+}
+// 「このスレッド」で押したメールを右に出す (一覧に行があればその行を選ぶ。閉じたスレッドの中なら、
+// スレッドの先頭の行に薄い印)。出していたメールは「← 前のメールに戻る」で戻れる
+function pvGo(id, back = false) {
+  id = Number(id);
+  if (!id || id === pv.id) return;
+  if (!back && pv.id) pv.history.push(pv.id);
+  if (mailRowOf(id)) {
+    selectRow(id, { now: true, keepHistory: true });
+  } else {
+    selectedId = id;
+    $("pv-back").hidden = !pv.history.length;
+    markSelected();
+    clearTimeout(pv.timer);
+    pvShow(id);
+  }
+}
+$("pv-conv").onclick = e => {
+  const b = e.target.closest("button[data-pv-open]");
+  if (b) pvGo(Number(b.dataset.pvOpen));
+};
+$("pv-back").onclick = () => {
+  const id = pv.history.pop();
+  if (id) pvGo(id, true);
+  $("pv-back").hidden = !pv.history.length;
+};
+
 // 「↩ 返信する」(上と下): 返信画面を右の本文の上に重ねて開く (閉じると右の本文を読み直す)
 $("pv-reply").onclick = $("pv-reply2").onclick = () => { if (pv.id) openMail(pv.id).catch(() => {}); };
 $("pv-flag").onclick = () => {
@@ -4120,6 +4601,7 @@ async function archiveFromPane() {
     return;
   }
   markOpened(id);
+  keepShown.add(id);         // スレッドの中のメールでも、閉じたスレッドに畳まない
   showRowArchived(id, r);    // 行と右の本文を「✓ 対応不要」にする
   const tr = mailRowOf(id);
   if ($("filter").value === "unhandled" && tr) {
@@ -4160,6 +4642,9 @@ document.addEventListener("keydown", e => {
     openMail(selectedId).catch(() => {});
   } else if (k === "Escape" && selectedId) {
     clearSelection();
+  } else if ((k === "ArrowRight" || k === "ArrowLeft") && !inPane && selectedId) {
+    // 選んだ行のスレッドを開く・閉じる (続きの行で ← は、スレッドの先頭の行を選ぶ)
+    if (thrArrow(k === "ArrowRight")) e.preventDefault();
   }
 });
 // 右に本文を出しているときは、行をダブルクリックしても返信画面を開く (1回目で選んだ行だけ)。
@@ -4847,6 +5332,7 @@ $("m-send").onclick = async () => {
                              approve_request: approving ? (modal.mail.requested_at || "") : null }),
     });
     rfSending = 0;
+    keepShown.add(id);   // 送ったメールは、閉じたスレッドに畳まずに出しておく
     if (modal.id !== id) { inboxChanged(); return; }
     modal.savedDraft = text;
     const sentCc = r.cc || [], sentBcc = r.bcc || [];
@@ -4908,6 +5394,7 @@ $("m-archive").onclick = async () => {
   let r;
   try { r = await archiveMail(id, m.status || "unhandled"); }
   catch { if (modal.id === id) b.disabled = false; return; }
+  keepShown.add(id);   // スレッドの中のメールでも、閉じたスレッドに畳まない
   inboxStale = true;   // 閉じたら受信箱を取り直す (見ていた場所は動かさない)
   clientStale = true;  // 取引先の画面から開いていたら、閉じたときに取り直す
   if (modal.id === id) await closeModal();
@@ -4941,6 +5428,7 @@ $("m-request").onclick = async () => {
                              reply_files: rfList.map(f => f.id) }),
     });
     rfSending = 0;
+    keepShown.add(id);
     if (modal.id !== id) { inboxChanged(); return; }
     modal.savedDraft = text;
     // CC・BCC の欄も、頼んだもの (宛先と同じ人を除いたもの) にする
@@ -4984,6 +5472,7 @@ $("m-return").onclick = async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ note }),
     });
+    keepShown.add(id);
     if (modal.id !== id) { inboxChanged(); return; }
     Object.assign(modal.mail, { status: "unhandled", returned_by: r.returned_by,
                                 returned_at: r.returned_at, return_note: r.return_note });
@@ -5973,6 +6462,7 @@ function fillSettings(s) {
   fillNotionSettings(s);
   $("set-require-approval").checked = !!s.mail_require_approval;
   $("set-reply-all").checked = !!s.mail_reply_all_default;
+  $("set-mail-threads").checked = !!s.mail_thread_mode;
   $("set-msg").textContent = "";
   $("test-ai-msg").textContent = "";
   $("test-email-msg").textContent = "";
@@ -6388,6 +6878,7 @@ $("set-save").onclick = async () => {
     notion_ai_fill: $("set-notion-ai").checked,
     mail_require_approval: $("set-require-approval").checked,
     mail_reply_all_default: $("set-reply-all").checked,
+    mail_thread_mode: $("set-mail-threads").checked,
   };
   // 空の欄は 0 (お知らせしない) と区別がつかないので、入れてもらう
   for (const id of ["set-remind-high", "set-remind-normal"]) {

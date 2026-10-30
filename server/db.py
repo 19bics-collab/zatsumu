@@ -182,7 +182,11 @@ CREATE TABLE IF NOT EXISTS mails (
     flagged_at TEXT,
     flagged_by TEXT NOT NULL DEFAULT '',
     -- 対応不要にした人 (名前のスナップショット。前の版が対応不要にしたものは空)
-    archived_by TEXT NOT NULL DEFAULT ''
+    archived_by TEXT NOT NULL DEFAULT '',
+    -- スレッド (返信どうしでつながったメールのまとまり。server/mail_threads.py)。まとまりの中で
+    -- 一番小さい番号。1通だけのメールは NULL (書き込まない)。番号は印なので、そのメールが
+    -- 保存日数で消えても、残りはまとまったまま
+    thread_id INTEGER
 );
 -- 取引先 (管理者が名前を付けた・まとめたもの。server/clients.py)。名前を付けていない取引先は
 -- 表に入れず、メールの相手のアドレスから決まった分け方で毎回まとめる (会社のドメインごと・
@@ -254,6 +258,12 @@ CREATE TABLE IF NOT EXISTS mail_refs (
     mail_id INTEGER NOT NULL REFERENCES mails(id) ON DELETE CASCADE,
     ref TEXT NOT NULL,
     PRIMARY KEY (mail_id, ref)
+);
+-- スレッドを作り直すメール (相手が変わった・返信の Message-ID が分かった・送信箱のメールがつながった)。
+-- DB のトリガーが入れる (前の版のコードが動いている間も)。server/mail_threads.py の
+-- process_pending が片付ける。メールが消えたら一緒に消える
+CREATE TABLE IF NOT EXISTS mail_thread_todo (
+    mail_id INTEGER PRIMARY KEY REFERENCES mails(id) ON DELETE CASCADE
 );
 -- 受信メールの添付ファイル (server/mail.py)。中身はデータフォルダの
 -- mail_attachments/<mail_id>/<id> に置く (元のファイル名は保存先のパスに使わない)。
@@ -464,6 +474,9 @@ INT_SETTINGS = {
     # 複数の人に届いたメールへの返信は、最初から「全員に返信」(元の宛先・CC の人を CC に入れる)
     # にする。一斉送信のメール (メーリングリスト・大勢宛て) は、オンでも付けない
     "mail_reply_all_default": 1,
+    # 受信箱で、返信どうしでつながったメール (同じお客様との同じ話) を1つのスレッドにまとめる。
+    # オフでも、まとまりの記録は続ける (オンに戻したら、すぐまとまって出る。server/mail_threads.py)
+    "mail_thread_mode": 1,
 }
 
 # 誰でも作れるメール (フリーメール・携帯電話の会社・プロバイダ・アドレスを隠す中継) のドメイン。
@@ -818,7 +831,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # ★のメールだけの小さい索引 (「★ フラグ」のタブの数・一覧・保存日数の片付け用)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_flagged ON mails(flagged_at)"
                  " WHERE flagged_at IS NOT NULL")
-    acols = [r["name"] for r in conn.execute("PRAGMA table_info(mail_accounts)")]
+    # スレッド (server/mail_threads.py)。前からあるメールは、起動した後の最初の定期受信の回に
+    # まとめる (ここでは列・索引・トリガーを足すだけ。何万通あっても起動を待たせない)
+    if "thread_id" not in mcols:
+        conn.execute("ALTER TABLE mails ADD COLUMN thread_id INTEGER")
+    # スレッドのメールだけの小さい索引。一覧のスレッドごとの数 (通数・未対応・★・一番新しいメール・
+    # 最初の日時) を、表を読まずにこの索引だけで数える。1通だけのメール (NULL) は入らない
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mails_thread"
+                 " ON mails(thread_id, status, flagged_at, received_at) WHERE thread_id IS NOT NULL")
+    for sql in THREAD_TRIGGERS:
+        conn.execute(sql)
+    acols =[r["name"] for r in conn.execute("PRAGMA table_info(mail_accounts)")]
     for col, decl in (("sent_only", "INTEGER NOT NULL DEFAULT 0"),
                       ("sent_import", "INTEGER NOT NULL DEFAULT 1"),
                       ("sent_state_folder", "TEXT NOT NULL DEFAULT ''"),
@@ -848,6 +871,46 @@ CONTACT_DOMAIN_SQL = (
     " THEN lower(trim(substr(contact_addr, instr(contact_addr, '@') + 1))) ELSE '' END")
 # 前からあるメールの contact_domain を入れ終えた印 (settings の非公開キー)
 CONTACT_DOMAIN_FILLED_KEY = "mail_state_contact_domain_filled"
+
+# スレッドのトリガー (server/mail_threads.py)。どれも小さく、作り直すメールを mail_thread_todo に
+# 入れるか、スレッドの印 (thread_id) を外すだけ (前の版のコードが動いている間に書き換えても正しい。
+# まとめ直すのは、この版のコードが process_pending で行う)。
+# - 相手 (お客様) が変わったら、そのメールのスレッドを全部ばらして、作り直すメールに入れる
+#   (別のお客様のメールを同じスレッドに残さない)
+# - 返信の Message-ID が分かったら (この画面から送った・Webメールの返信で返信済みにした)、
+#   先に届いていた、その返信への返事を作り直すメールに入れる
+# - 送信箱のメールがどのメールへの返信か分かったら、その送ったメールへの返事を入れる
+# thread_id を書き換えても、ほかのトリガー (検索の索引・取引先のドメイン) は動かない
+# (どれも UPDATE OF で自分の列だけを見ている)
+THREAD_TRIGGERS = (
+    "CREATE TRIGGER IF NOT EXISTS trg_mails_thread_contact"
+    " AFTER UPDATE OF contact_addr, contact_source, contact_via_form ON mails"
+    " WHEN lower(OLD.contact_addr) IS NOT lower(NEW.contact_addr)"
+    " OR OLD.contact_source IS NOT NEW.contact_source"
+    " OR OLD.contact_via_form IS NOT NEW.contact_via_form"
+    " BEGIN"
+    " INSERT OR IGNORE INTO mail_thread_todo SELECT id FROM mails WHERE thread_id = OLD.thread_id;"
+    " INSERT OR IGNORE INTO mail_thread_todo VALUES (NEW.id);"
+    " UPDATE mails SET thread_id = NULL WHERE thread_id = OLD.thread_id;"
+    " END",
+    "CREATE TRIGGER IF NOT EXISTS trg_mails_thread_replyid"
+    " AFTER UPDATE OF reply_message_id ON mails"
+    " WHEN NEW.reply_message_id <> '' AND OLD.reply_message_id IS NOT NEW.reply_message_id"
+    " BEGIN"
+    " INSERT OR IGNORE INTO mail_thread_todo SELECT mail_id FROM mail_refs"
+    " WHERE ref = NEW.reply_message_id;"
+    " END",
+    "CREATE TRIGGER IF NOT EXISTS trg_sent_thread_ins AFTER INSERT ON sent_mails"
+    " WHEN NEW.linked_mail_id IS NOT NULL"
+    " BEGIN"
+    " INSERT OR IGNORE INTO mail_thread_todo SELECT mail_id FROM mail_refs WHERE ref = NEW.message_id;"
+    " END",
+    "CREATE TRIGGER IF NOT EXISTS trg_sent_thread_link AFTER UPDATE OF linked_mail_id ON sent_mails"
+    " WHEN NEW.linked_mail_id IS NOT NULL"
+    " BEGIN"
+    " INSERT OR IGNORE INTO mail_thread_todo SELECT mail_id FROM mail_refs WHERE ref = NEW.message_id;"
+    " END",
+)
 
 
 def _migrate_client_columns(conn: sqlite3.Connection, mcols: list[str]) -> None:

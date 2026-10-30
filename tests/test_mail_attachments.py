@@ -768,7 +768,10 @@ def test_demo_seed_adds_an_attachment(tmp_path):
     att_dir = tmp_path / "mail_attachments"
     with db.get_db(tmp_path / "demo.db") as conn:
         assert demo.seed(conn, tmp_path / "shots", att_dir) is True
-        rows = [dict(r) for r in conn.execute("SELECT * FROM mail_attachments ORDER BY id")]
+        # お見積もりのご相談のメールの添付 (スレッドの確認用のメールにも、別に1つ付いている)
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM mail_attachments WHERE mail_id ="
+            " (SELECT id FROM mails WHERE subject = 'お見積もりのご相談') ORDER BY id")]
     assert [(r["filename"], r["content_type"], r["skip_reason"]) for r in rows] == [
         ("間取り図.png", "image/png", ""), ("物件の動画.mov", "video/quicktime", "too_large")]
     assert (att_dir / rows[0]["path"]).read_bytes().startswith(b"\x89PNG")
