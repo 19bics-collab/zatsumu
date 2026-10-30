@@ -4691,15 +4691,26 @@ def remove_orphan_attachment_dirs(conn, attachment_dir) -> int:
 PURGE_CHUNK = 500
 
 
+# ★フラグを付けたメールへの返信 (Webメール・Gmail から送って、送信箱に取り込んだもの)。
+# 保存日数を過ぎても、★のメールと一緒に残す (★のメールの「送信箱で見る」・やり取りから消えないように)
+_SENT_OF_FLAGGED = ("EXISTS (SELECT 1 FROM mails m WHERE m.flagged_at IS NOT NULL"
+                    " AND (m.reply_sent_id = sent_mails.id OR m.id = sent_mails.linked_mail_id))")
+
+
 def purge_old_mails(conn, days: int, attachment_dir=None, reply_dir=None) -> int:
     """保存日数を過ぎた受信メールを、添付ファイルごと削除する (days<=0 なら何もしない).
 
     received_at は差出人が付けた Date ヘッダ由来で細工され得るため、
     サーバが付与した取込時刻 (fetched_at) を基準にする。
+    ★フラグを付けたメールは、日数を過ぎても消さない (★を外すと、次の片付けで消える)。
+    そのメールに Webメール・Gmail から送った返信 (送信箱に取り込んだもの) も残す。
     ファイルを先に消してから DB の行を消す (途中で止まっても、次の回にもう一度
     同じメールが対象になり、残りが消える。消えているファイルは飛ばす)。
     reply_dir を渡すと、返信に付けたファイル (送ったもの・まだ送っていないもの) も消し、
     持ち主のいないファイルも片付ける (reply_files.remove_orphans)。
+    まとまりごとに書き込みのロックを取ってから、★が付いていないかを確かめ直す (選んだ後に
+    ★を付けたメールを消さないように。消している間に★を付けようとしても、消し終えるまで待ち、
+    メールが無くなったと分かる)。
     """
     from . import reply_files  # 循環を避けるため遅延インポート
 
@@ -4710,34 +4721,50 @@ def purge_old_mails(conn, days: int, attachment_dir=None, reply_dir=None) -> int
     if days <= 0:
         return 0
     cutoff = tz.utc_iso(datetime.now(timezone.utc) - timedelta(days=days))
+    conn.commit()   # まとまりごとに書き込みのロックを取るので、その前に確定しておく
     # 送信箱に取り込んだメールも、同じ日数で消す (この画面から送った返信は届いたメールと一緒に消える)
-    sent_ids = [(r[0],) for r in conn.execute(
-        "SELECT id FROM sent_mails WHERE fetched_at < ?", (cutoff,))]
+    sent_ids = [r[0] for r in conn.execute(
+        "SELECT id FROM sent_mails WHERE fetched_at < ? AND NOT " + _SENT_OF_FLAGGED, (cutoff,))]
     for i in range(0, len(sent_ids), PURGE_CHUNK):
-        chunk = sent_ids[i:i + PURGE_CHUNK]
-        if attachment_dir is not None:
-            for (sent_id,) in chunk:
-                remove_attachment_files(attachment_dir, sent_id, sent=True)
-        conn.executemany("DELETE FROM sent_mail_attachments WHERE sent_id = ?", chunk)
-        conn.executemany("DELETE FROM sent_mail_refs WHERE sent_id = ?", chunk)
-        conn.executemany("DELETE FROM sent_mails WHERE id = ?", chunk)
-        conn.commit()
-    ids = [(r["id"],) for r in conn.execute(
-        "SELECT id FROM mails WHERE fetched_at < ?", (cutoff,))]
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            chunk = [(sent_id,) for sent_id in sent_ids[i:i + PURGE_CHUNK] if conn.execute(
+                "SELECT 1 FROM sent_mails WHERE id = ? AND NOT " + _SENT_OF_FLAGGED,
+                (sent_id,)).fetchone()]
+            if attachment_dir is not None:
+                for (sent_id,) in chunk:
+                    remove_attachment_files(attachment_dir, sent_id, sent=True)
+            conn.executemany("DELETE FROM sent_mail_attachments WHERE sent_id = ?", chunk)
+            conn.executemany("DELETE FROM sent_mail_refs WHERE sent_id = ?", chunk)
+            conn.executemany("DELETE FROM sent_mails WHERE id = ?", chunk)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM mails WHERE fetched_at < ? AND flagged_at IS NULL", (cutoff,))]
+    purged = 0
     for i in range(0, len(ids), PURGE_CHUNK):
-        chunk = ids[i:i + PURGE_CHUNK]
-        if attachment_dir is not None:
-            for (mail_id,) in chunk:
-                remove_attachment_files(attachment_dir, mail_id)
-        if reply_dir is not None:
-            for (mail_id,) in chunk:
-                reply_files.remove_mail_files(reply_dir, mail_id)
-        conn.executemany("DELETE FROM mail_attachments WHERE mail_id = ?", chunk)
-        conn.executemany("DELETE FROM mail_reply_files WHERE mail_id = ?", chunk)
-        conn.executemany("DELETE FROM mail_refs WHERE mail_id = ?", chunk)
-        conn.executemany("DELETE FROM mails WHERE id = ?", chunk)
-        conn.commit()
-    return len(ids)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            chunk = [(mail_id,) for mail_id in ids[i:i + PURGE_CHUNK] if conn.execute(
+                "SELECT 1 FROM mails WHERE id = ? AND flagged_at IS NULL", (mail_id,)).fetchone()]
+            if attachment_dir is not None:
+                for (mail_id,) in chunk:
+                    remove_attachment_files(attachment_dir, mail_id)
+            if reply_dir is not None:
+                for (mail_id,) in chunk:
+                    reply_files.remove_mail_files(reply_dir, mail_id)
+            conn.executemany("DELETE FROM mail_attachments WHERE mail_id = ?", chunk)
+            conn.executemany("DELETE FROM mail_reply_files WHERE mail_id = ?", chunk)
+            conn.executemany("DELETE FROM mail_refs WHERE mail_id = ?", chunk)
+            conn.executemany("DELETE FROM mails WHERE id = ?", chunk)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        purged += len(chunk)
+    return purged
 
 
 # ---------- 同じ相手とのやり取り (返信画面の履歴) ----------

@@ -185,7 +185,7 @@ def test_mail_page_has_peek_dropdown(client):
     assert m and 'e.target.closest("button.row-peek")' in m.group(1)
     body = m.group(1)
     assert body.index("row-peek") < body.index("openMail(")
-    assert "if (p || b) e.stopPropagation();" in body
+    assert "if (f || p || b) e.stopPropagation();" in body
     assert "if (p) togglePeek(Number(p.dataset.peek));" in body
     # 軽い API を使い、前のやり取りは押したときだけ読む
     assert "/conversation${want ? \"?earlier=true\" : \"\"}" in page
