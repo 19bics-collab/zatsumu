@@ -913,7 +913,8 @@ def test_mail_page_has_client_screens(client):
     for safe in ("${esc(c.name)", "${esc(sub)", "${esc(t.subject)", "${esc(t.snippet)",
                  "${esc(who)}", "${esc(a.addr)}", "${hl(m.client_name, terms)}", "${esc(ruleText(r.pattern))}",
                  '$("cd-name").textContent', '$("cd-note-view").textContent',
-                 '$("m-client-name").textContent', "el.textContent = tlBodies.get(cacheKey)"):
+                 '$("m-client-name").textContent', "el.innerHTML = tlBodies.get(cacheKey)",
+                 "bodyHtml(m.body, { subject: m.subject, form: m.via_form })", "bodyHtml(m.reply_body)"):
         assert safe in page, safe
     for unsafe in ("${c.name}", "${t.subject}", "${t.snippet}", "${a.addr}", "${m.client_name}",
                    "${d.note}"):

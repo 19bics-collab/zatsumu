@@ -362,3 +362,85 @@ def test_mail_page_has_tabs_and_sort_toggle(client):
     assert "flex-wrap: nowrap; overflow-x: auto;" in page
     # 確認待ちを見るときはタブを「すべて」に戻す
     assert 'setTab(TAB_ALL);\n  renderTabs();\n  showInbox();' in page
+
+
+# ---------- 重要度[低]を出さない (受信箱の「重要度」: 高・中 / すべて) ----------
+
+def test_hide_low_list_and_hidden_count(client, users, tmp_path):
+    _, admin, staff = users
+    high = _add_mail(tmp_path, n=1, priority=1)
+    mid = _add_mail(tmp_path, n=2, priority=2)
+    low = _add_mail(tmp_path, n=3, priority=3)
+    low_done = _add_mail(tmp_path, n=4, priority=3, status="replied")
+    _set(tmp_path, low, category="営業・宣伝")
+    # 送らなければ今までどおり全部 (ヘッダも付けない)
+    r = client.get("/api/mail", headers=auth(admin))
+    assert {m["id"] for m in r.json()} == {high, mid, low, low_done}
+    assert "X-Hidden-Low" not in r.headers
+    # hide_low=1 で[低]を出さず、出さなかった数をヘッダで返す (ほかの絞り込みに合うものだけ数える)
+    for user in (admin, staff):
+        r = client.get("/api/mail?hide_low=1", headers=auth(user))
+        assert r.status_code == 200, r.text
+        assert [m["id"] for m in r.json()] == [mid, high]
+        assert r.headers["X-Hidden-Low"] == "2"
+    r = client.get("/api/mail?hide_low=1&status=unhandled", headers=auth(admin))
+    assert r.headers["X-Hidden-Low"] == "1" and len(r.json()) == 2
+    r = client.get("/api/mail?hide_low=1&category=" + "営業・宣伝", headers=auth(admin))
+    assert r.json() == [] and r.headers["X-Hidden-Low"] == "1"
+    r = client.get("/api/mail?hide_low=1&priority=1", headers=auth(admin))
+    assert [m["id"] for m in r.json()] == [high] and r.headers["X-Hidden-Low"] == "0"
+    # 重要度順でも、検索と一緒でも効く
+    assert _ids(client, admin, "?hide_low=1&sort=priority") == [high, mid]
+    r = client.get("/api/mail?hide_low=1&q=" + "件名", headers=auth(admin))
+    assert {m["id"] for m in r.json()} == {high, mid} and r.headers["X-Hidden-Low"] == "2"
+    assert _ids(client, admin, "?hide_low=0") == [low_done, low, mid, high]
+
+
+def test_hide_low_tab_counts(client, users, tmp_path):
+    _, admin, _ = users
+    _add_mail(tmp_path, n=1, priority=1)
+    m2 = _add_mail(tmp_path, n=2, priority=3)
+    m3 = _add_mail(tmp_path, n=3, priority=3, status="pending_approval")
+    m4 = _add_mail(tmp_path, n=4, priority=2)
+    for mid in (m2, m3):
+        _set(tmp_path, mid, category="営業・宣伝")
+    _set(tmp_path, m4, category="清掃のご依頼")
+    t = _tabs(client, admin)
+    assert t["all"] == 4 and t["categories"] == {"営業・宣伝": 2, "清掃のご依頼": 1}
+    t = _tabs(client, admin, "?hide_low=1")
+    assert t["all"] == 2 and t["high"] == 1 and t["uncategorized"] == 1
+    assert t["categories"] == {"清掃のご依頼": 1}
+    # 状態の絞り込みとも一緒に効く。未分類のタブを出すか (has_uncategorized) は変えない
+    assert _tabs(client, admin, "?hide_low=1&status=pending_approval")["all"] == 0
+    assert t["has_uncategorized"] is True
+
+
+def test_mail_page_hides_low_by_default_and_colors_priority(client):
+    page = client.get("/mail").text
+    # 「重要度」の切り替え: 既定は「高・中」。このブラウザに覚えておく
+    assert 'id="low-hide" data-low="hide" aria-pressed="true">高・中</button>' in page
+    assert 'id="low-show" data-low="show" aria-pressed="false">すべて</button>' in page
+    assert 'let showLow = loadPref(LOW_KEY) === "show";' in page
+    assert 'savePref(LOW_KEY, show ? "show" : "hide");' in page
+    # 一覧とタブの数の両方に hide_low を付ける (探しているときは[低]からも探す)
+    assert 'if (word) q.set("q", word);\n  else if (!showLow) q.set("hide_low", "1");' in page
+    assert 'if (!showLow) q.set("hide_low", "1");\n  return q.toString() ? "?" + q : "";' in page
+    assert page.count('hiddenLow = Number(r.headers.get("X-Hidden-Low")) || 0;') == 2
+    assert 'id="low-note" class="low-note" role="status" hidden' in page
+    assert '[inboxHiddenLow > 0, "「重要度」"]' in page
+    # 並び順のボタンと「重要度」のボタンは別々に動かす
+    assert 'document.querySelectorAll(".sort-tg button[data-sort]")' in page
+    assert 'document.querySelectorAll(".sort-tg button[data-low]")' in page
+    assert 'document.querySelectorAll(".sort-tg button")' not in page
+    # 色: 優先度の欄はバッジ、行の左に帯 (高=赤・中=だいだい・低=灰色)。[高]の未対応の行は地も赤
+    assert '<tr class="mail-row p${Number(m.priority)}' in page
+    assert '<span class="prb pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span>' in page
+    for rule in (".prb.pr-1 { background: #dc2626; color: #fff; }",
+                 ".mail-row.p1 > td:first-child { box-shadow: inset 4px 0 0 #dc2626; }",
+                 ".mail-row.p2 > td:first-child { box-shadow: inset 4px 0 0 #f59e0b; }",
+                 ".mail-row.p3 > td:first-child { box-shadow: inset 4px 0 0 #d1d5db; }",
+                 ".table-wrap tr.mail-row.p1 { border-left: 5px solid #dc2626; }",
+                 "#m-priority[data-p=\"1\"]"):
+        assert rule in page, rule
+    assert '$("m-priority").dataset.p = m.priority;' in page
+    assert '$("m-priority").dataset.p = $("m-priority").value;' in page

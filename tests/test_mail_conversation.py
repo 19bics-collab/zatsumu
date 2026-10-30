@@ -218,11 +218,12 @@ def test_mail_page_has_peek_dropdown(client):
     assert '.find(tr => tr.getBoundingClientRect().bottom > 0)' in r and '".mail-row, .peek-row"' in r
     # 外から来た文字は esc() を通す
     ev = page[page.index("function pkEvent("):page.index("function peekInner(")]
-    for safe in ("${esc(e.body)", "${esc(e.subject)", "${esc(contactLine(e))}",
+    # 本文は bodyHtml (引用を畳み、文字は esc() を通す。tests/test_mail_quote.py)
+    for safe in ("${bodyHtml(e.body, ", "${esc(e.subject)", "${esc(contactLine(e))}",
                  "esc(e.replied_by)", "${esc(e.sent_to)}", 'esc(e.cc.join(", "))'):
         assert safe in ev, safe
     assert "${e.body" not in ev and "${e.subject" not in ev and "${d.body" not in inner
-    assert "${esc(d.body)" in inner
+    assert "${bodyHtml(d.body, " in inner
     # 本文は折り返し、中だけのスクロール枠にしない (プルダウンの .mail-body も同じ決まり)
     css = page[page.index("  .peek {"):page.index("  .pk-more {")]
     assert "max-height" not in css and "overflow: auto" not in css

@@ -49,6 +49,26 @@
   .pr-1 { color: var(--hi); font-weight: 700; }
   .pr-2 { color: #d97706; }
   .pr-3 { color: #6b7280; }
+  /* 一覧の優先度は色で分ける: 高=赤・中=だいだい・低=灰色 (優先度の欄のバッジと、行の左の帯。
+     [高]でまだ対応していない行は、地も薄い赤にする) */
+  .prb { display: inline-block; min-width: 1.6em; text-align: center; border-radius: 99px;
+         padding: .05rem .5rem; font-size: .85rem; line-height: 1.5; font-weight: 700;
+         border: 1px solid transparent; }
+  .prb.pr-1 { background: #dc2626; color: #fff; }
+  .prb.pr-2 { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+  .prb.pr-3 { background: #f3f4f6; color: #6b7280; border-color: #e5e7eb; font-weight: 400; }
+  .mail-row.done .prb { opacity: .55; }
+  .mail-row.p1 > td:first-child { box-shadow: inset 4px 0 0 #dc2626; }
+  .mail-row.p2 > td:first-child { box-shadow: inset 4px 0 0 #f59e0b; }
+  .mail-row.p3 > td:first-child { box-shadow: inset 4px 0 0 #d1d5db; }
+  .mail-row.done > td:first-child { box-shadow: inset 4px 0 0 #e5e7eb; }
+  .mail-row.p1:not(.done):not(.new), .mail-row.p1:not(.done):not(.new) td.act { background: #fef2f2; }
+  .mail-row.p1:not(.done):not(.new):hover,
+  .mail-row.p1:not(.done):not(.new):hover td.act { background: #fee2e2; }
+  /* 返信画面の優先度の欄も同じ色 */
+  #m-priority[data-p="1"] { border-color: #dc2626; color: #b91c1c; font-weight: 700; background: #fef2f2; }
+  #m-priority[data-p="2"] { border-color: #f59e0b; color: #92400e; background: #fffbeb; }
+  #m-priority[data-p="3"] { color: #6b7280; }
   .st-replied { color: #0a7d32; } .st-archived { color: #6b7280; }
   .st-unhandled { color: #d97706; } .st-pending_approval { color: #7c3aed; font-weight: 600; }
   /* 確認待ちの数 (受信箱の横のボタン) */
@@ -197,6 +217,9 @@
   .sort-tg button:first-of-type { border-radius: 6px 0 0 6px; }
   .sort-tg button:last-of-type { border-radius: 0 6px 6px 0; border-left: 0; }
   .sort-tg button[aria-pressed="true"] { background: #e5e7eb; color: #111827; font-weight: 700; }
+  .sort-tg + .sort-tg { margin-left: 0; }
+  .low-note { font-size: .82rem; color: #6b7280; margin: -.2rem 0 .6rem; overflow-wrap: anywhere; }
+  .low-note[hidden] { display: none; }
   /* 検索欄 (受信箱・送信箱の上)。iPhone で欄を押したときに画面が拡大されないよう、文字は16px以上 */
   .mail-search { display: flex; align-items: center; gap: .5rem; margin: 0 0 .5rem; min-width: 0; }
   .mail-search input { flex: 1 1 auto; min-width: 0; width: 100%; box-sizing: border-box;
@@ -370,6 +393,17 @@
                background: #f9fafb; border: 1px solid var(--line);
                border-radius: 6px; padding: .7rem; font-size: .92rem; line-height: 1.6;
                color: #374151; }
+  /* 本文の引用 (前のやり取り)。ふだんは畳んで「引用を表示 ▼」だけを出す */
+  .mail-body .q-tg { display: block; margin: .6rem 0 0; padding: .4rem .8rem; min-height: 36px;
+                     font-size: .82rem; white-space: normal; text-align: left; max-width: 100%;
+                     border: 1px dashed #cbd5e1; background: #f8fafc; color: #475569; }
+  .mail-body .q-tg[aria-expanded="true"] { background: #e5e7eb; border-style: solid; }
+  .mail-body .q-body { margin: .4rem 0 0; padding: .1rem 0 .1rem .7rem; border-left: 3px solid #cbd5e1;
+                       color: #6b7280; }
+  .mail-body .q-body[hidden] { display: none; }
+  .mail-body .q-end { display: block; margin: .5rem 0 .2rem; padding: .35rem .8rem; min-height: 36px;
+                      font-size: .82rem; white-space: normal; }
+  @media (pointer: coarse) { .mail-body .q-tg, .mail-body .q-end { min-height: 40px; } }
   #m-draft { width: 100%; box-sizing: border-box; min-height: 11rem; padding: .6rem;
              border: 1px solid #ccc; border-radius: 6px; font-size: .95rem;
              font-family: inherit; margin-top: .3rem; overflow-wrap: break-word; }
@@ -739,6 +773,11 @@
                      font-weight: 600; color: #6b7280; font-size: .72rem; margin-bottom: .15rem; }
     /* 「対応不要」ボタンはカードの右上 (優先度の横。短いので件名などを狭めない) */
     .table-wrap tr.mail-row { position: relative; }
+    .table-wrap tr.mail-row > td:first-child { box-shadow: none; }
+    .table-wrap tr.mail-row.p1 { border-left: 5px solid #dc2626; }
+    .table-wrap tr.mail-row.p2 { border-left: 5px solid #f59e0b; }
+    .table-wrap tr.mail-row.p3 { border-left: 5px solid #d1d5db; }
+    .table-wrap tr.mail-row.done { border-left: 5px solid #e5e7eb; }
     .table-wrap tr.mail-row td.act { position: absolute; top: .45rem; right: .6rem; width: auto;
                                      padding: 0; border: none; background: transparent;
                                      box-shadow: none; }
@@ -830,12 +869,17 @@
   <summary>使い方を見る</summary>
   <p><small>受信メールを新しい順（届いた日時の新しいものが上）に表示します。一覧の上の「並び順」で
   「重要度順」（<span class="pr-1">高</span>→<span class="pr-2">中</span>→<span class="pr-3">低</span>）にもできます。
+  重要度は色で分けています（<span class="prb pr-1">高</span> 赤・<span class="prb pr-2">中</span> だいだい・<span class="prb pr-3">低</span> 灰色）。
+  ふだんは「重要度」が「高・中」で、重要度が低のメールは出しません（隠している数は一覧の上に出ます）。
+  「すべて」を押すと低のメールも出ます（このブラウザに覚えておきます。検索欄で探すときは、低のメールからも探します）。
   一覧のすぐ上のタブで、問い合わせの種類ごとや「重要（高）」だけに分けて見られます
   （タブの数字は、まだ対応していないメールの数です。上の「状態」が「未対応」なら未対応の数、
   「確認待ち」なら確認待ちの数で、ほかを選んでいるときは未対応と確認待ちを合わせた数です）。
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
   行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
+  本文の下に続く前のやり取りの引用（「&gt;」で始まる行や「-----Original Message-----」から下など）は畳んでいます。
+  見たいときは「引用を表示 ▼」を押してください（転送のメール・HPフォームから届いたメールは、畳まずに全部出します）。
   問い合わせの種類（清掃のご依頼など）と担当は自動で入り、返信画面で変えられます。
   同じ相手からほかにもメールが届いているときは差出人の横に「やり取り」の件数が出て、
   返信画面の「この相手とのやり取り」で前のメールと送った返信を見られます。
@@ -867,7 +911,12 @@
       <button type="button" id="sort-date" data-sort="date" aria-pressed="true">新しい順</button>
       <button type="button" id="sort-priority" data-sort="priority" aria-pressed="false">重要度順</button>
     </div>
+    <div class="sort-tg" role="group" aria-label="出す重要度">重要度
+      <button type="button" id="low-hide" data-low="hide" aria-pressed="true">高・中</button>
+      <button type="button" id="low-show" data-low="show" aria-pressed="false">すべて</button>
+    </div>
   </div>
+  <p id="low-note" class="low-note" role="status" hidden></p>
   <div class="table-wrap"><table id="mail-table">
     <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th><th id="th-act" aria-label="本文を見る・対応不要にする"></th></tr></thead>
     <tbody></tbody>
@@ -1640,6 +1689,147 @@ function hl(text, terms) {
   return out + esc(str.slice(last));
 }
 
+/* ---------- 本文の引用 (前のやり取り) を畳む ----------
+   返信のメールには、前のやり取りが引用として下に長く続いていることが多い。新しく書かれた所だけを
+   出し、引用は「引用を表示 ▼」を押したときだけ出す。引用と見るのは
+   ・「>」「＞」で始まる行が続く所 (短いもの = 途中に挟んだ1〜3行の引用は、読めるように畳まない)。
+     すぐ上の「〜 wrote:」「〜さんは書きました:」「2026年10月27日(月) 10:00 山田 <a@b>:」も一緒に畳む
+   ・「-----Original Message-----」「----- 元のメッセージ -----」から下と、Outlook などの
+     「差出人: / 送信日時: / 宛先: / 件名:」(From: / Sent: / To: / Subject:) から下の全部
+   見つからないとき・畳むと何も残らないとき・転送のメール (転送した中身が本文)・HPフォームから
+   届いたメールは、畳まずに全部出す。文字は esc() を通してから HTML にする */
+// 引用: ここから
+const Q_MIN_LINES = 4;      // 「>」の行がこれより少ない引用は畳まない (行が長くて Q_MIN_CHARS 以上なら畳む)
+const Q_MIN_CHARS = 300;
+const qMark = l => /^[ \t\u3000]*[>＞]/.test(l);
+const qBlank = l => !/\S/.test(l);
+// ここから下は全部が前のメール
+const Q_SEP = /^[ \t]*[-_=]{2,}[ \t]*(?:original message|元のメッセージ|オリジナル ?メッセージ|元メッセージ)[ \t]*[-_=]{2,}[ \t]*$/i;
+const Q_LINE = /^[ \t]*[-_=─━]{5,}[ \t]*$/;     // Outlook の見出しの上の線
+// 転送の印 (ここから下は転送した中身なので畳まない)
+const Q_FWD = /^[ \t]*(?:[-_=]{2,}[ \t]*(?:forwarded message|転送メッセージ|転送されたメッセージ)[ \t]*[-_=]{2,}|begin forwarded message[ \t]*[:：]|転送されたメッセージ[ \t]*[:：])/i;
+const Q_FWD_SUBJ = /^[ \t]*(?:fwd?|転送)[ \t]*[:：]/i;
+// Outlook などの見出し: 差出人の行の下 (6行以内) に、送った日時の行と、宛先か件名の行がある
+const Q_FROM = /^[ \t*]*(?:from|差出人|送信者)[ \t*]*[:：]/i;
+const Q_DATE = /^[ \t*]*(?:sent|date|送信日時|日時|日付)[ \t*]*[:：]/i;
+const Q_TO_SUBJ = /^[ \t*]*(?:to|宛先|宛て先|subject|件名)[ \t*]*[:：]/i;
+// 「>」の引用のすぐ上の、誰がいつ書いたかの行
+const Q_ATTR = /(?:wrote|書きました)[ \t]*[:：]?[ \t]*$|のメール[ \t]*[:：][ \t]*$|@[^\s<>]+>[ \t]*[:：][ \t]*$|^[ \t]*\d{4}[年\/.\-]\d{1,2}[月\/.\-]\d{1,2}.*[:：][ \t]*$/i;
+const Q_ATTR_HEAD = /^[ \t]*(?:on[ \t]|\d{4}[年\/.\-])|<[ \t]*$/i;   // 2行に折り返した前の行
+
+function qHeaderAt(lines, i, end) {
+  if (!Q_FROM.test(lines[i])) return false;
+  let date = false, other = false;
+  for (let k = i + 1; k < Math.min(end, i + 7); k++) {
+    if (Q_DATE.test(lines[k])) date = true;
+    else if (Q_TO_SUBJ.test(lines[k])) other = true;
+  }
+  return date && other;
+}
+// 「>」の引用の始まり (すぐ上の「〜 wrote:」の行も含める。空行は1行まで飛ばす)。
+// 調べるのは短い行だけ (とても長い1行で、調べるのに時間がかからないように)
+const Q_ATTR_MAX = 300;
+function qAttrStart(lines, s, floor) {
+  let p = s - 1;
+  if (p >= floor && qBlank(lines[p])) p--;
+  if (p < floor || lines[p].length > Q_ATTR_MAX || !Q_ATTR.test(lines[p])) return s;
+  if (p - 1 >= floor && !qBlank(lines[p - 1]) && lines[p - 1].length <= Q_ATTR_MAX &&
+      !Q_ATTR.test(lines[p - 1]) &&
+      Q_ATTR_HEAD.test(lines[p - 1]) && !/[:：][ \t]*$/.test(lines[p - 1])) return p - 1;
+  return p;
+}
+// 本文を [{ q: 引用か, t: 文字, lines: 引用の行数 }] に分ける (引用が無ければ1つだけ)
+function splitQuotes(text, opts = {}) {
+  const whole = [{ q: false, t: String(text ?? "") }];
+  if (opts.form || Q_FWD_SUBJ.test(opts.subject || "")) return whole;
+  const lines = whole[0].t.split(/\r\n?|\n/);
+  const n = lines.length;
+  // 転送の印があれば、そこから下は見ない。前のメールの区切り・見出しがあれば、そこから下は全部引用
+  let limit = n, tail = -1;
+  for (let i = 0; i < n; i++) {
+    if (Q_FWD.test(lines[i])) { limit = i; break; }
+    if (Q_SEP.test(lines[i])) { tail = i; break; }
+    if (qHeaderAt(lines, i, n)) {
+      tail = i;
+      let p = i - 1;
+      while (p >= 0 && qBlank(lines[p]) && i - p <= 2) p--;
+      if (p >= 0 && Q_LINE.test(lines[p])) tail = p;
+      break;
+    }
+  }
+  if (tail >= 0) limit = tail;
+  const ranges = [];             // 畳む所 [始め, 終わり] (終わりも含む)
+  for (let i = 0; i < limit;) {
+    if (!qMark(lines[i])) { i++; continue; }
+    let j = i, last = i, marks = 0, chars = 0;
+    for (; j < limit && (qMark(lines[j]) || qBlank(lines[j])); j++) {
+      if (qMark(lines[j])) { last = j; marks++; chars += lines[j].length; }
+    }
+    if (marks >= Q_MIN_LINES || chars >= Q_MIN_CHARS) {
+      ranges.push([qAttrStart(lines, i, ranges.length ? ranges[ranges.length - 1][1] + 1 : 0), last]);
+    }
+    i = last + 1;
+  }
+  if (tail >= 0) ranges.push([tail, n - 1]);
+  if (!ranges.length) return whole;
+  const segs = [];
+  let pos = 0;
+  for (const [a, b] of ranges) {
+    if (a > pos) segs.push({ q: false, t: lines.slice(pos, a).join("\n") });
+    segs.push({ q: true, t: lines.slice(a, b + 1).join("\n") });
+    pos = b + 1;
+  }
+  if (pos < n) segs.push({ q: false, t: lines.slice(pos).join("\n") });
+  // 引用の前後の空行は詰める (畳んだボタンの上下に大きな隙間を作らない)
+  const out = [];
+  segs.forEach((g, k) => {
+    let t = g.t;
+    if (g.q || (k > 0 && segs[k - 1].q)) t = t.replace(/^(?:[ \t\u3000]*\n)+/, "");
+    if (g.q || (k + 1 < segs.length && segs[k + 1].q)) t = t.trimEnd();
+    if (!g.q && qBlank(t)) return;
+    out.push(g.q ? { q: true, t, lines: t.split("\n").length } : { q: false, t });
+  });
+  // 新しく書かれた所が何も残らない (全部が引用) ときは、畳まない
+  if (!out.some(g => !g.q)) return whole;
+  return out;
+}
+const qLabel = (open, lines) => open ? "▲ 引用を隠す" : `▼ 引用を表示（前のやり取り・${lines}行）`;
+// 開いた引用 (key を付けたものだけ。一覧のプルダウンを描き直しても開いたままにする)
+const quoteOpen = new Set();
+// 本文の HTML。opts: subject (転送のメールは畳まない)・form (HPフォームから届いた)・key (開いたままにする印)
+function bodyHtml(text, opts = {}) {
+  if (!text) return "（本文なし）";
+  return splitQuotes(text, opts).map((g, k) => {
+    if (!g.q) return esc(g.t);
+    const key = opts.key ? `${opts.key}:${k}` : "";
+    const open = !!key && quoteOpen.has(key);
+    return `<button type="button" class="ghost q-tg" aria-expanded="${open}" data-lines="${g.lines}"${
+      key ? ` data-qk="${esc(key)}"` : ""}>${qLabel(open, g.lines)}</button><div class="q-body"${
+      open ? "" : " hidden"}>${esc(g.t)}<button type="button" class="ghost q-end">${qLabel(true)}</button></div>`;
+  }).join("");
+}
+// 引用: ここまで
+// 「引用を表示 ▼」「引用を隠す ▲」(返信画面・プルダウン・やり取り・取引先・送信箱のどこでも)
+document.addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest("button.q-tg, button.q-end");
+  if (!b || !b.closest(".mail-body")) return;
+  const tg = b.classList.contains("q-end") ? b.parentElement.previousElementSibling : b;
+  const box = tg && tg.nextElementSibling;
+  if (!box || !box.classList.contains("q-body")) return;
+  const open = tg.getAttribute("aria-expanded") !== "true";
+  tg.setAttribute("aria-expanded", String(open));
+  tg.textContent = qLabel(open, Number(tg.dataset.lines));
+  box.hidden = !open;
+  const k = tg.dataset.qk;
+  if (k) { if (open) quoteOpen.add(k); else quoteOpen.delete(k); }
+  // 引用の下の「引用を隠す」で閉じたら、畳んだ所 (上のボタン) が見えるようにする
+  if (b !== tg) {
+    const r = tg.getBoundingClientRect();
+    if (r.top < 0 || r.bottom > window.innerHeight) tg.scrollIntoView({ block: "center" });
+    tg.focus({ preventScroll: true });
+  }
+});
+
 function showLogin(withError) {
   stopPolling();
   $("toasts").textContent = "";   // 前の人の「元に戻す」を残さない
@@ -1892,14 +2082,16 @@ async function showInbox(opts = {}) {
   // 検索欄の言葉 (自動で取り直すときも、そのまま使う)
   const word = $("inbox-q").value.trim();
   if (word) q.set("q", word);
+  else if (!showLow) q.set("hide_low", "1");
   const path = "/api/mail?" + q;
-  let list, found = null;
+  let list, found = null, hiddenLow = 0;
   if (opts.auto) {
     try {
       const r = await api(path);
       if (!r.ok) throw new Error("list " + r.status);
       list = await r.json();
       found = searchMeta(r, word);
+      hiddenLow = Number(r.headers.get("X-Hidden-Low")) || 0;
     } catch (e) {
       // 次の確認のときにもう一度取り直す (アラートは出さない)
       if (e.message !== "auth" && seq === inboxSeq) { inboxStale = true; connLost = true; renderStatus(); }
@@ -1914,9 +2106,11 @@ async function showInbox(opts = {}) {
     }
     list = await r.json();
     found = searchMeta(r, word);
+    hiddenLow = Number(r.headers.get("X-Hidden-Low")) || 0;
   }
   if (seq !== inboxSeq) return;        // 待っている間に、もう一度取り直し始めた
   inboxFound = found;
+  inboxHiddenLow = hiddenLow;
   renderInbox(list, opts.auto);
   refreshAiStatus();   // 自動受信の判定などで AI が失敗した・直ったかを、開くたびに出し直す
 }
@@ -1972,10 +2166,12 @@ function renderInbox(list, keepPlace) {
     seenId = newest || Math.max(0, ...list.map(m => Number(m.id)));
     saveSeen(seenId, reset);
   }
-  const filtered = activeTab !== TAB_ALL || $("filter-asg").value || $("filter-acct").value;
+  const filtered = activeTab !== TAB_ALL || $("filter-asg").value || $("filter-acct").value ||
+    inboxHiddenLow > 0;
   // 何も出ないときの案内で「すべて」に戻すとよいもの (選んでいるものだけを挙げる)
   const narrowed = [[$("filter").value, "「状態」"], [activeTab !== TAB_ALL, "タブ"],
-                    [$("filter-asg").value, "「担当」"], [$("filter-acct").value, "「アドレス」"]]
+                    [$("filter-asg").value, "「担当」"], [$("filter-acct").value, "「アドレス」"],
+                    [inboxHiddenLow > 0, "「重要度」"]]
     .filter(([on]) => on).map(([, name]) => name).join("・");
   const admin = isAdmin();   // 「対応不要」ボタンは管理者だけ (サーバも確かめる)
   // 探しているときは、探した言葉に印を付けて、本文の言葉のあたりを件名の下に出す
@@ -1993,8 +2189,8 @@ function renderInbox(list, keepPlace) {
     const canArchive = admin && m.status === "unhandled";
     const peeking = peekOpen.has(id);
     return `
-    <tr class="mail-row ${["unhandled", "pending_approval"].includes(m.status) ? "" : "done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}" data-id="${id}">
-      <td data-label="優先度"><span class="pr-${m.priority}">${PR[m.priority] || m.priority}</span></td>
+    <tr class="mail-row p${Number(m.priority)}${["unhandled", "pending_approval"].includes(m.status) ? "" : " done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}" data-id="${id}">
+      <td data-label="優先度"><span class="prb pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span></td>
       <td data-label="差出人"><strong>${hl(contactLabel(m), T)}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m, T)}</td>
       <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${hl(m.subject, T) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}${T ? hitSnip(m, T) : ""}</td>
       <td data-label="受信日時">${new Date(m.received_at).toLocaleString("ja-JP")}</td>
@@ -2043,7 +2239,16 @@ function renderInbox(list, keepPlace) {
     if (peekOpen.has(id) && !peekLoading.has(id) && (!c || !c.data || c.sig !== peekSig(m))) loadPeek(id);
   }
   renderSearchInfo(list);
+  renderLowNote();
   rememberShown(list);
+}
+// 出していない重要度[低]のメールの数 (「高・中」を選んでいるとき)
+function renderLowNote() {
+  const box = $("low-note");
+  box.hidden = !(inboxHiddenLow > 0);
+  box.textContent = inboxHiddenLow > 0
+    ? `重要度が「低」のメール ${inboxHiddenLow}通は出していません（お知らせ・広告など。上の「重要度」で「すべて」を押すと出ます）`
+    : "";
 }
 $("filter").onchange = () => {
   // 探している間に「状態」を選んだら、その状態の中だけを探す (検索をやめても、選んだ状態のまま)
@@ -2194,13 +2399,13 @@ function pkEvent(e) {
     return `<div class="pk-ev out">
       <div class="pk-head"><span class="pk-kind">↩ こちらの返信</span> ・ ${at}${e.replied_by ? " ・ " + esc(e.replied_by) + " が送信" : ""}</div>
       <small>宛先: ${esc(e.sent_to)}${(e.cc || []).length ? "・CC: " + esc(e.cc.join(", ")) : ""}</small>
-      <div class="mail-body">${esc(e.body) || "（本文なし）"}</div>${pkCut(e)}</div>`;
+      <div class="mail-body">${bodyHtml(e.body, { key: "pko:" + Number(e.mail_id) })}</div>${pkCut(e)}</div>`;
   }
   return `<div class="pk-ev in">
       <div class="pk-head"><span class="pk-kind">📩 届いたメール</span> ・ ${at} ・ <span class="st-${esc(e.status)}">${esc(ST[e.status] || e.status)}</span></div>
       <small>${esc(contactLine(e))}${e.via_form ? "（HPフォーム経由）" : ""}</small>
       <div class="pk-subj">${esc(e.subject) || "（件名なし）"}</div>
-      <div class="mail-body">${esc(e.body) || "（本文なし）"}</div>${pkCut(e)}
+      <div class="mail-body">${bodyHtml(e.body, { subject: e.subject, form: e.via_form, key: "pk:" + Number(e.mail_id) })}</div>${pkCut(e)}
       <button type="button" class="ghost pk-more" data-pk-open="${Number(e.mail_id)}">このメールを開く</button></div>`;
 }
 
@@ -2219,7 +2424,7 @@ function peekInner(id) {
   }
   const after = d.after || [], earlier = d.earlier || [];
   let html = `<small>📩 このメール ・ ${esc(fmtDate(d.received_at))} ・ ${esc(contactLine(d))}${d.via_form ? "（HPフォーム経由）" : ""}</small>
-    <div class="mail-body">${esc(d.body) || "（本文なし）"}</div>
+    <div class="mail-body">${bodyHtml(d.body, { subject: d.subject ?? m.subject, form: d.via_form, key: "pk:" + Number(id) })}</div>
     <div class="pk-sec">この後のやり取り</div>`;
   html += after.length ? after.map(pkEvent).join("")
     : '<p class="pk-note">この後のやり取りは、まだありません</p>';
@@ -2569,6 +2774,10 @@ function savePref(key, v) {
 }
 let activeTab = loadPref(TAB_KEY) || TAB_ALL;
 let sortMode = SORTS.includes(loadPref(SORT_KEY)) ? loadPref(SORT_KEY) : "date";
+// 重要度[低]のメールも出すか (一覧の上の「重要度」。既定は「高・中」で、[低]は出さない)
+const LOW_KEY = "zatsumu_mail_low";
+let showLow = loadPref(LOW_KEY) === "show";
+let inboxHiddenLow = 0;   // 出していない[低]のメールの数 (一覧の答えのヘッダ X-Hidden-Low)
 function setTab(t) {
   activeTab = t;
   savePref(TAB_KEY, t);
@@ -2581,6 +2790,7 @@ function scopeQuery() {
   for (const [key, id] of [["status", "filter"], ["assignee", "filter-asg"], ["account", "filter-acct"]]) {
     if ($(id).value) q.set(key, $(id).value);
   }
+  if (!showLow) q.set("hide_low", "1");
   return q.toString() ? "?" + q : "";
 }
 
@@ -2661,17 +2871,31 @@ function revealActiveTab() {
 }
 
 function renderSort() {
-  for (const b of document.querySelectorAll(".sort-tg button")) {
+  for (const b of document.querySelectorAll(".sort-tg button[data-sort]")) {
     b.setAttribute("aria-pressed", b.dataset.sort === sortMode ? "true" : "false");
   }
+  for (const b of document.querySelectorAll(".sort-tg button[data-low]")) {
+    b.setAttribute("aria-pressed", (b.dataset.low === "show") === showLow ? "true" : "false");
+  }
 }
-for (const b of document.querySelectorAll(".sort-tg button")) {
+for (const b of document.querySelectorAll(".sort-tg button[data-sort]")) {
   b.onclick = () => {
     if (sortMode === b.dataset.sort) return;
     sortMode = b.dataset.sort;
     savePref(SORT_KEY, sortMode);
     renderSort();
     showInbox();
+  };
+}
+// 重要度: 「高・中」(既定。[低]を出さない) と「すべて」
+for (const b of document.querySelectorAll(".sort-tg button[data-low]")) {
+  b.onclick = () => {
+    const show = b.dataset.low === "show";
+    if (showLow === show) return;
+    showLow = show;
+    savePref(LOW_KEY, show ? "show" : "hide");
+    renderSort();
+    showInbox();   // 受信の様子を聞き直すので、タブの数も[低]を入れる・入れないに合わせて変わる
   };
 }
 renderSort();
@@ -2787,13 +3011,14 @@ async function openMail(id) {
     ? `元のメールの宛先・CC に ${(m.reply_cc_candidates || []).length}人` : "";
   $("m-subject").textContent = m.subject || "（件名なし）";
   renderMailClient(m);
-  $("m-body").textContent = m.body || "（本文なし）";
+  $("m-body").innerHTML = bodyHtml(m.body, { subject: m.subject, form: m.via_form });
   renderAttachments(id, m);
   renderThread(m);
   clearCalendar();   // 前のメールの予定の候補は出さない
   ntnSeq++;          // 前のメールの Notion の登録結果は出さない
   renderNotion(modal.notion);
   $("m-priority").value = m.priority;
+  $("m-priority").dataset.p = m.priority;
   modal.category = m.category || "";
   modal.assigneeId = m.assignee_user_id || null;
   modal.assigneeName = m.assignee_name || "";
@@ -2992,6 +3217,7 @@ $("m-priority").onchange = async () => {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ priority: +$("m-priority").value }),
     });
+    $("m-priority").dataset.p = $("m-priority").value;
     $("m-reason").textContent = "判定理由: 手動変更（手動）";
     inboxChanged();
   } catch {}
@@ -3589,7 +3815,7 @@ function renderThread(m) {
         <div class="mail-body thr-body">読み込み中…</div>
         ${t.replied_at ? `
         <small>送った返信（${esc(fmtDate(t.replied_at))}${t.replied_by ? "・" + esc(t.replied_by) : ""}）${(t.reply_cc || []).length ? "<br>CC: " + esc(t.reply_cc.join(", ")) : ""}</small>
-        <div class="mail-body">${esc(t.reply_body) || "（本文なし）"}</div>` : ""}
+        <div class="mail-body">${bodyHtml(t.reply_body)}</div>` : ""}
         <button class="ghost" data-thr-open="${Number(t.id)}">このメールを開く</button>
       </div>
     </details>`;
@@ -3609,7 +3835,7 @@ async function loadThreadBody(item) {
     if (!r.ok) throw new Error(r.status === 404 ? "gone" : "load");
     const d = await r.json();
     if (seq !== threadSeq) return;     // 待っている間に別のメールを開いた
-    el.textContent = d.body || "（本文なし）";
+    el.innerHTML = bodyHtml(d.body, { subject: d.subject, form: d.via_form });
   } catch (e) {
     if (seq !== threadSeq || e.message === "auth") return;
     delete item.dataset.loaded;        // 閉じてもう一度開くと読み直す
@@ -5191,7 +5417,7 @@ let clientList = { q: null, items: [], total: 0, seq: 0 };
 let clientView = { key: null, data: null, items: [], seq: 0 };
 let clientStale = false;   // 返信画面で送った・変えた (取引先の画面を開き直すときに取り直す)
 let clientSearchTimer = null;
-const tlBodies = new Map();   // やり取りの全文 (読み込んだもの) "in:番号" / "out:番号"
+const tlBodies = new Map();   // やり取りの全文 (読み込んだもの。bodyHtml で作った HTML) "in:番号" / "out:番号"
 
 // 日付だけ (「2026/10/20」)
 function fmtDay(iso) {
@@ -5390,7 +5616,7 @@ async function loadTimelineBody(item) {
   const [kind, idText] = item.dataset.tl.split(":");
   const el = item.querySelector(".tl-body");
   const cacheKey = item.dataset.tl;
-  if (tlBodies.has(cacheKey)) { el.textContent = tlBodies.get(cacheKey); return; }
+  if (tlBodies.has(cacheKey)) { el.innerHTML = tlBodies.get(cacheKey); return; }
   if (item.dataset.loading) return;
   item.dataset.loading = "1";
   const seq = clientView.seq;
@@ -5398,9 +5624,9 @@ async function loadTimelineBody(item) {
     const r = await api(`/api/mail/${Number(idText)}?thread=false`);
     if (!r.ok) throw new Error(r.status === 404 ? "gone" : "load");
     const m = await r.json();
-    tlBodies.set(`in:${Number(idText)}`, m.body || "（本文なし）");
-    if (m.replied_at) tlBodies.set(`out:${Number(idText)}`, m.reply_body || "（本文なし）");
-    if (seq === clientView.seq) el.textContent = tlBodies.get(cacheKey) || "（本文なし）";
+    tlBodies.set(`in:${Number(idText)}`, bodyHtml(m.body, { subject: m.subject, form: m.via_form }));
+    if (m.replied_at) tlBodies.set(`out:${Number(idText)}`, bodyHtml(m.reply_body));
+    if (seq === clientView.seq) el.innerHTML = tlBodies.get(cacheKey) || "（本文なし）";
   } catch (e) {
     if (e.message === "auth" || seq !== clientView.seq) return;
     el.textContent = e.message === "gone"
@@ -5787,7 +6013,7 @@ function renderSentDetail(d) {
         <small>${esc(a.reason)}</small></div></div>`).join("")
     : "";
   $("sd-atts").hidden = !atts.length && !skipped.length;
-  $("sd-body").textContent = d.body || "（本文なし）";
+  $("sd-body").innerHTML = bodyHtml(d.body, { subject: d.subject });
 }
 $("sd-links").onclick = e => {
   const m = e.target.closest("button[data-sd-mail]");

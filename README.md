@@ -141,6 +141,12 @@ python -m client.widget --server http://<server>:8000 --token <自分のトー�
   Webhook や SMTP メールへ通知できます（設定画面で「テスト送信」可）
 - **メール対応（受信箱の優先度分類・AI返信）**: 共有の受信箱（例: info@…）を IMAP で
   定期取得し、**専用画面 `/mail`** に**受信日時の新しい順**で表示します（「並び順」で重要度順（高→中→低）にも切り替えられ、どちらもブラウザごとに覚えます）。
+  一覧は重要度で色分けし（高=赤・中=だいだい・低=灰色。まだ対応していない[高]の行は薄い赤）、
+  ふだんは「重要度」が「高・中」で、[低]（お知らせ・広告・自動通知）は出しません
+  （出していない数を一覧の上に出す。「すべて」で[低]も出し、ブラウザごとに覚える。検索では[低]からも探す）。
+  本文の下に続く前のやり取りの引用（「>」の行・「〜 wrote:」・「-----Original Message-----」・
+  Outlook の「差出人: / 送信日時: / 宛先: / 件名:」から下）は畳み、「引用を表示 ▼」で開きます
+  （転送のメール・HPフォームから届いたメール・途中に挟んだ短い引用は畳まない）。
   Claude API キーを設定すると優先度判定と**返信文の下書き生成**を AI が行い
   （未設定でもキーワード分類＋定型文で動作）、内容を編集して画面から
   **そのまま返信を送信**できます（送信は SMTP 設定を使用、スレッドが繋がる
@@ -367,12 +373,12 @@ curl "http://<server>:8000/api/reports/monthly.csv?month=2026-05" -H "Authorizat
 | GET | `/api/reports/sessions.csv` | admin | 在席データ(全打刻のCSV) |
 | GET | `/api/reports/audit.csv` | admin | 修正履歴(管理者操作の監査ログCSV) |
 | POST | `/api/admin/purge` | admin | 古いスクショを即時削除 |
-| GET | `/api/mail` | admin・メール担当者 | 受信メール一覧（`q` で検索: 件名・本文・相手・取引先の名前・添付の名前。空白区切りは全部を含むもの・100文字・10語まで。各メールに `snippet`（本文の言葉のあたり）・`match_files`、ヘッダ `X-Search-Total`（合った数）・`X-Search-Mode`（`index` / `scan`）・古いメールを探していなければ `X-Search-Partial: 1`。既定は新しい順。`sort=priority` で優先度順。差出人の付けた日付が取り込んだ時刻より先なら取り込んだ時刻で並べる。status（`pending_approval`=確認待ち）/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分） |
+| GET | `/api/mail` | admin・メール担当者 | 受信メール一覧（`q` で検索: 件名・本文・相手・取引先の名前・添付の名前。空白区切りは全部を含むもの・100文字・10語まで。各メールに `snippet`（本文の言葉のあたり）・`match_files`、ヘッダ `X-Search-Total`（合った数）・`X-Search-Mode`（`index` / `scan`）・古いメールを探していなければ `X-Search-Partial: 1`。既定は新しい順。`sort=priority` で優先度順。差出人の付けた日付が取り込んだ時刻より先なら取り込んだ時刻で並べる。status（`pending_approval`=確認待ち）/priority/category/assignee/account で絞り込み。`account=none` は削除したアドレスに届いたメール。`thread_count` は同じアドレスから届いたほかのメールの数。`category=none` は未分類、`assignee=none` は担当なし・`me` は自分。`hide_low=1` で優先度[低]を出さず、ほかの絞り込みに合うのに出さなかった[低]の数をヘッダ `X-Hidden-Low` に入れる） |
 | GET | `/api/mail/{id}` | admin・メール担当者 | メール詳細（確認のお願い・差し戻しの中身も。本文・返信下書き・全員に返信の CC 候補・添付ファイルの一覧・この相手とのやり取り `thread`（新しい順に30件まで。送った返信付き）と全部の件数 `thread_total`。`?thread=false` でやり取りを省く） |
 | GET | `/api/mail/{id}/conversation` | admin・メール担当者 | 受信箱のプルダウン用。本文と、この後のやり取り `after`（このメールへの返信・後から届いた同じ相手／ヘッダでつながるメールとその返信を古い順に。届いたメールは30通まで）と件数 `after_total`。`?earlier=true` で前のやり取り `earlier` も（直前の30通を古い順に。無しなら件数 `earlier_total` だけ） |
 | GET | `/api/mail/{id}/attachments/{添付id}` | admin・メール担当者 | 添付ファイルの中身（ダウンロード。中身を確かめた画像だけ `?inline=1` で表示用） |
 | POST | `/api/mail/fetch` | admin・メール担当者 | 今すぐ IMAP から新着を取り込み（受信するアドレスを順に。一部のアドレスだけ失敗したら `errors` に理由。ほかの受信の途中で、少し待っても終わらなければ 409） |
-| GET | `/api/mail/status` | admin・メール担当者 | 受信の様子（未対応・確認待ちの数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗とどのアドレスか・アドレスごとの様子 `accounts`・受信箱のタブの数 `tabs`（種類ごと・重要（高）・未分類の、未対応と確認待ちの数。`status=unhandled`/`pending_approval` を付けるとその状態だけを数え、`assignee`/`account` を付けると絞り込む。どれもタブの数だけに効く））。メール画面が 1 分ごとに呼ぶ |
+| GET | `/api/mail/status` | admin・メール担当者 | 受信の様子（未対応・確認待ちの数・一番新しいメールの番号・最終受信の時刻・直近の受信の失敗とどのアドレスか・アドレスごとの様子 `accounts`・受信箱のタブの数 `tabs`（種類ごと・重要（高）・未分類の、未対応と確認待ちの数。`status=unhandled`/`pending_approval` を付けるとその状態だけを数え、`assignee`/`account` を付けると絞り込む。`hide_low=1` で優先度[低]を数えない。どれもタブの数だけに効く））。メール画面が 1 分ごとに呼ぶ |
 | GET/POST | `/api/mail/accounts` | admin | 受信するメールアドレスの一覧・追加（パスワードは返さず `imap_pass_set` などだけ） |
 | PATCH/DELETE | `/api/mail/accounts/{id}` | admin | アドレスの変更・止める（`enabled`）・並べ替え（`move: up/down`）・削除（届いたメールは残す） |
 | POST | `/api/mail/accounts/{id}/test` | admin | そのアドレスの保存済みの受信サーバに接続テスト |

@@ -562,8 +562,8 @@ def test_mail_page_has_thread_ui(client):
         assert "${modal.id}" not in body, handler
     # 外から来た文字 (件名・本文・差出人・返信) は esc() か textContent で出す
     for safe in ("${esc(t.subject)", "${esc(t.snippet)", "${esc(who)}",
-                 "${esc(t.reply_body)", "${esc(snip(t.reply_body))}",
-                 'esc(t.reply_cc.join(", "))', 'el.textContent = d.body || "（本文なし）"'):
+                 "${bodyHtml(t.reply_body)}", "${esc(snip(t.reply_body))}",
+                 'esc(t.reply_cc.join(", "))', "el.innerHTML = bodyHtml(d.body, "):
         assert safe in page, safe
     assert "${t.subject" not in page and "${t.snippet" not in page
     assert "${t.reply_body" not in page and '"・" + esc(t.replied_by)' in page
@@ -586,10 +586,11 @@ def test_mail_body_shows_whole_text(client):
     for gone in ("folded", "--fold", "body-more", "全文を表示", "fitBody", "setBody",
                  "ResizeObserver", "thr-sent"):
         assert gone not in page, gone
-    # 本文は textContent で入れる (返信画面・やり取り・取引先のやり取り)
-    assert '$("m-body").textContent = m.body || "（本文なし）";' in page
-    assert 'el.textContent = d.body || "（本文なし）";' in page
-    assert "el.textContent = tlBodies.get(cacheKey)" in page
+    # 本文は bodyHtml で入れる (前のやり取りの引用だけを畳み、文字は esc() を通す。
+    # 返信画面・やり取り・取引先のやり取り。tests/test_mail_quote.py)
+    assert '$("m-body").innerHTML = bodyHtml(m.body, { subject: m.subject, form: m.via_form });' in page
+    assert "el.innerHTML = bodyHtml(d.body, { subject: d.subject, form: d.via_form });" in page
+    assert "el.innerHTML = tlBodies.get(cacheKey)" in page
     # 返信文・差し戻しの欄も長い文字を折り返す
     assert "font-family: inherit; margin-top: .3rem; overflow-wrap: break-word; }" in page
     # 取引先の印: 個人は 👤、会社は 🏢
