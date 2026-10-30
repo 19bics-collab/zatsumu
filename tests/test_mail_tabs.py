@@ -7,6 +7,8 @@
 - GET /api/mail/status の tabs (種類ごと・重要・未分類の、未対応と確認待ちの数。
   「状態」で未対応か確認待ちを選んでいるときはその状態だけ) と権限
 - 未分類のメールが無くても、タブの数を数えるのに表を全部読まないこと (種類の索引)
+- hide_low=1 (受信箱の「重要度」の「高・中」) で優先度[低]を一覧・タブの数から外すこと。
+  確認待ちの[低]は外さないこと
 - 画面にタブと並び順の切り替えがあること
 """
 from datetime import datetime, timedelta, timezone
@@ -372,28 +374,34 @@ def test_hide_low_list_and_hidden_count(client, users, tmp_path):
     mid = _add_mail(tmp_path, n=2, priority=2)
     low = _add_mail(tmp_path, n=3, priority=3)
     low_done = _add_mail(tmp_path, n=4, priority=3, status="replied")
+    # 確認待ち (メール担当者からの確認のお願い) は[低]でも出す (隠すと管理者が承認できない)
+    low_pend = _add_mail(tmp_path, n=5, priority=3, status="pending_approval")
     _set(tmp_path, low, category="営業・宣伝")
+    _set(tmp_path, low_pend, category="営業・宣伝")
     # 送らなければ今までどおり全部 (ヘッダも付けない)
     r = client.get("/api/mail", headers=auth(admin))
-    assert {m["id"] for m in r.json()} == {high, mid, low, low_done}
+    assert {m["id"] for m in r.json()} == {high, mid, low, low_done, low_pend}
     assert "X-Hidden-Low" not in r.headers
     # hide_low=1 で[低]を出さず、出さなかった数をヘッダで返す (ほかの絞り込みに合うものだけ数える)
     for user in (admin, staff):
         r = client.get("/api/mail?hide_low=1", headers=auth(user))
         assert r.status_code == 200, r.text
-        assert [m["id"] for m in r.json()] == [mid, high]
+        assert [m["id"] for m in r.json()] == [low_pend, mid, high]
         assert r.headers["X-Hidden-Low"] == "2"
     r = client.get("/api/mail?hide_low=1&status=unhandled", headers=auth(admin))
     assert r.headers["X-Hidden-Low"] == "1" and len(r.json()) == 2
+    # 「確認待ち」を押したとき (状態=確認待ち・[低]を出さない) も、[低]の確認待ちが出る
+    r = client.get("/api/mail?hide_low=1&status=pending_approval", headers=auth(admin))
+    assert [m["id"] for m in r.json()] == [low_pend] and r.headers["X-Hidden-Low"] == "0"
     r = client.get("/api/mail?hide_low=1&category=" + "営業・宣伝", headers=auth(admin))
-    assert r.json() == [] and r.headers["X-Hidden-Low"] == "1"
+    assert [m["id"] for m in r.json()] == [low_pend] and r.headers["X-Hidden-Low"] == "1"
     r = client.get("/api/mail?hide_low=1&priority=1", headers=auth(admin))
     assert [m["id"] for m in r.json()] == [high] and r.headers["X-Hidden-Low"] == "0"
     # 重要度順でも、検索と一緒でも効く
-    assert _ids(client, admin, "?hide_low=1&sort=priority") == [high, mid]
+    assert _ids(client, admin, "?hide_low=1&sort=priority") == [high, mid, low_pend]
     r = client.get("/api/mail?hide_low=1&q=" + "件名", headers=auth(admin))
-    assert {m["id"] for m in r.json()} == {high, mid} and r.headers["X-Hidden-Low"] == "2"
-    assert _ids(client, admin, "?hide_low=0") == [low_done, low, mid, high]
+    assert {m["id"] for m in r.json()} == {high, mid, low_pend} and r.headers["X-Hidden-Low"] == "2"
+    assert _ids(client, admin, "?hide_low=0") == [low_pend, low_done, low, mid, high]
 
 
 def test_hide_low_tab_counts(client, users, tmp_path):
@@ -407,11 +415,16 @@ def test_hide_low_tab_counts(client, users, tmp_path):
     _set(tmp_path, m4, category="清掃のご依頼")
     t = _tabs(client, admin)
     assert t["all"] == 4 and t["categories"] == {"営業・宣伝": 2, "清掃のご依頼": 1}
+    # [低]を数えない。ただし確認待ちの[低] (m3) は一覧に出すので数える
     t = _tabs(client, admin, "?hide_low=1")
-    assert t["all"] == 2 and t["high"] == 1 and t["uncategorized"] == 1
-    assert t["categories"] == {"清掃のご依頼": 1}
-    # 状態の絞り込みとも一緒に効く。未分類のタブを出すか (has_uncategorized) は変えない
-    assert _tabs(client, admin, "?hide_low=1&status=pending_approval")["all"] == 0
+    assert t["all"] == 3 and t["high"] == 1 and t["uncategorized"] == 1
+    assert t["categories"] == {"営業・宣伝": 1, "清掃のご依頼": 1}
+    # 状態の絞り込みとも一緒に効く (「確認待ち」を押したときのタブの数と一覧がそろう)。
+    # 未分類のタブを出すか (has_uncategorized) は変えない
+    t2 = _tabs(client, admin, "?hide_low=1&status=pending_approval")
+    assert t2["all"] == 1 and t2["categories"] == {"営業・宣伝": 1}
+    assert _ids(client, admin, "?hide_low=1&status=pending_approval") == [m3]
+    assert _tabs(client, admin, "?hide_low=1&status=unhandled")["all"] == 2
     assert t["has_uncategorized"] is True
 
 
@@ -422,9 +435,18 @@ def test_mail_page_hides_low_by_default_and_colors_priority(client):
     assert 'id="low-show" data-low="show" aria-pressed="false">すべて</button>' in page
     assert 'let showLow = loadPref(LOW_KEY) === "show";' in page
     assert 'savePref(LOW_KEY, show ? "show" : "hide");' in page
-    # 一覧とタブの数の両方に hide_low を付ける (探しているときは[低]からも探す)
+    # 一覧とタブの数の両方に hide_low を付ける (探しているときは[低]からも探し、タブの数にも[低]を
+    # 入れて、探した一覧とそろえる。探し始めたか (searchStatus) で決め、打っている途中の言葉では変えない)
     assert 'if (word) q.set("q", word);\n  else if (!showLow) q.set("hide_low", "1");' in page
-    assert 'if (!showLow) q.set("hide_low", "1");\n  return q.toString() ? "?" + q : "";' in page
+    i = page.index("function scopeQuery() {")
+    scope = page[i:page.index("\n}", i)]
+    assert 'if (!showLow && !searchStatus) q.set("hide_low", "1");\n  return q.toString() ? "?" + q : "";' in scope
+    assert scope.count("hide_low") == 1
+    # 探し始める・やめるときは、searchStatus を変えてから受信箱を出し直す (受信の様子を聞き直してから
+    # 一覧を取るので、タブの数と一覧が同じ絞り込みになる)
+    assert "syncSearchStatus(word);\n  showInbox().catch(() => {});" in page
+    assert "searchStatus = null;" in page[page.index("function showPending() {"):page.index("$(\"approval-show\")")]
+    assert "確認待ちのメールは低でも出します" in page
     assert page.count('hiddenLow = Number(r.headers.get("X-Hidden-Low")) || 0;') == 2
     assert 'id="low-note" class="low-note" role="status" hidden' in page
     assert '[inboxHiddenLow > 0, "「重要度」"]' in page

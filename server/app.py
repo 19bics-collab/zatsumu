@@ -2737,6 +2737,10 @@ def _search_terms(q: str | None) -> list[str]:
         raise HTTPException(400, str(e))
 
 
+# 受信箱で[低]を出さない (hide_low) ときに出すメール。確認待ちは[低]でも出す (隠すと承認できない)
+_LOW_SHOWN = "(m.priority <> 3 OR m.status = 'pending_approval')"
+
+
 @app.get("/api/mail")
 def list_mail(
     response: Response = None,   # FastAPI が入れる (検索の数をヘッダに書く。関数として呼ぶときは無し)
@@ -2764,6 +2768,7 @@ def list_mail(
     (index = 索引 / scan = 1通ずつ) を X-Search-Mode に、古いメールを探していないときは
     X-Search-Partial: 1 を入れる。
     hide_low=1 で優先度[低]のメールを出さない (受信箱の「重要度」の「高・中」。既定の表示)。
+    ただし確認待ち (メール担当者からの確認のお願い) は、[低]でも出す (管理者が承認・差し戻しをする)。
     そのときは、ほかの絞り込みに合うのに出さなかった[低]のメールの数をヘッダ X-Hidden-Low に入れる。
     """
     order = MAIL_SORTS.get(sort or "date")
@@ -2796,10 +2801,10 @@ def list_mail(
         params += p
     if hide_low:
         if response is not None:
-            hidden = conn.execute("SELECT COUNT(*) FROM mails m WHERE "
-                                  + " AND ".join([*where, "m.priority = 3"]), params).fetchone()[0]
+            hidden = conn.execute("SELECT COUNT(*) FROM mails m WHERE " + " AND ".join(
+                [*where, "m.priority = 3 AND m.status <> 'pending_approval'"]), params).fetchone()[0]
             response.headers["X-Hidden-Low"] = str(hidden)
-        where.append("m.priority <> 3")
+        where.append(_LOW_SHOWN)
     sql = _MAIL_LIST_SELECT
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -2893,7 +2898,8 @@ def _mail_tab_counts(conn, user, status: str | None, assignee: str | None,
     categories は種類の名前ごとの数 (未分類は入れず uncategorized に)、high は優先度[高]の数、
     has_uncategorized は未分類のメールが (返信済みなども含めて) 1通でもあるか (「未分類」の
     タブを出すか決める用)。
-    hide_low のときは優先度[低]のメールを数えない (受信箱で[低]を出していないとき。一覧とそろえる)。
+    hide_low のときは優先度[低]のメールを数えない (受信箱で[低]を出していないとき。一覧とそろえる。
+    確認待ちは[低]でも一覧に出すので数える)。
     """
     if status and status not in mail.MAIL_STATUSES:
         raise HTTPException(400, f"不明な状態です: {status}")
@@ -2902,7 +2908,7 @@ def _mail_tab_counts(conn, user, status: str | None, assignee: str | None,
     _mail_scope_filters(user, assignee, account, where, params)
     extra = "".join(" AND " + w for w in where)
     marks = ", ".join("?" for _ in statuses)
-    low = " AND m.priority <> 3" if hide_low else ""
+    low = " AND " + _LOW_SHOWN if hide_low else ""
     rows = conn.execute(
         "SELECT m.category, COUNT(*), COALESCE(SUM(m.priority = 1), 0) FROM mails m"
         f" WHERE m.status IN ({marks})" + extra + low + " GROUP BY m.category",
@@ -2938,7 +2944,7 @@ def mail_status(
     受信箱のタブ (種類ごと・重要) の数 (tabs) も返す。tabs だけは、受信箱で選んでいる
     状態 (status)・担当 (assignee)・アドレス (account) で絞り込む (一覧の /api/mail と同じ
     書き方。状態は未対応・確認待ちのときだけ効く。_mail_tab_counts)。hide_low=1 なら tabs に
-    優先度[低]を数えない (受信箱で[低]を出していないとき)。
+    優先度[低]を数えない (受信箱で[低]を出していないとき。確認待ちの[低]は一覧に出すので数える)。
     1分ごと・タブごとに呼ばれるので、DB は読むだけにする (書き込みのロックを取らない)。
     """
     tabs = _mail_tab_counts(conn, user, status, assignee, account, hide_low)
