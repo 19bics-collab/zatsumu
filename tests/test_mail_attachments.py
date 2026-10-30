@@ -787,7 +787,8 @@ def test_mail_page_has_attachment_ui(client):
     assert "await api(`/api/mail/${mailId}/attachments/" in page
     assert 'href="/api/mail' not in page
     assert "URL.createObjectURL" in page and "URL.revokeObjectURL" in page
-    assert "link.download = a.filename" in page
+    assert "saveBlob(await fetchAttachment(modal.id, a, false), a.filename);" in page
+    assert 'link.download = filename || "添付ファイル";' in page
     # 画像の表示用以外は「ただのデータ」として扱う
     assert '"application/octet-stream"' in page
     assert 'const PREVIEW_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"]' in page

@@ -58,6 +58,8 @@
   .prb.pr-2 { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
   .prb.pr-3 { background: #f3f4f6; color: #6b7280; border-color: #e5e7eb; font-weight: 400; }
   .mail-row.done .prb { opacity: .55; }
+  /* 件名の前の小さい重要度 (右に本文を出しているときの2行の一覧だけで出す) */
+  .prb-in { display: none; }
   .mail-row.p1 > td:first-child { box-shadow: inset 4px 0 0 #dc2626; }
   .mail-row.p2 > td:first-child { box-shadow: inset 4px 0 0 #f59e0b; }
   .mail-row.p3 > td:first-child { box-shadow: inset 4px 0 0 #d1d5db; }
@@ -256,6 +258,7 @@
   .sort-tg button:last-of-type { border-radius: 0 6px 6px 0; border-left: 0; }
   .sort-tg button[aria-pressed="true"] { background: #e5e7eb; color: #111827; font-weight: 700; }
   .sort-tg + .sort-tg { margin-left: 0; }
+  .sort-tg[hidden] { display: none; }
   /* 指で押す画面では、並び順・重要度のボタンを押しやすい高さにする */
   @media (pointer: coarse) { .sort-tg button { min-height: 40px; padding: .45rem .7rem; } }
   .low-note { font-size: .82rem; color: #6b7280; margin: -.2rem 0 .6rem; overflow-wrap: anywhere; }
@@ -822,6 +825,113 @@
   .tl-full { padding: 0 .7rem .7rem; display: flex; flex-direction: column; gap: .4rem; }
   .tl-full .mail-body { background: #fff; }
   .tl-full button { align-self: flex-start; padding: .4rem .8rem; }
+  /* 右の本文 (横幅 1024px 以上のパソコン・iPad の横向き。一覧の行を押すと、右に選んだメールの本文を出す)。
+     一覧は今までどおり画面ごと縦に進み、右の本文は画面に貼り付いたまま (sticky)、中だけを縦に進める。
+     狭い画面では出さない (行を押すと返信画面。今までどおり) */
+  :root { --list-w: clamp(340px, 34vw, 560px); }
+  html.pane-on main { max-width: none; }
+  .panes { display: block; }
+  #inbox.pane-mode .panes { display: grid; grid-template-columns: var(--list-w) minmax(0, 1fr);
+                            gap: 1rem; align-items: start; }
+  .list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .8rem; }
+  .list-count { font-size: .8rem; color: #6b7280; margin: 0 0 .4rem; }
+  .list-count[hidden], #inbox:not(.pane-mode) .list-count { display: none; }
+  .list-head #pane-tg { margin-bottom: .4rem; }
+  .pv { position: sticky; top: .5rem; max-height: calc(100vh - 1rem); max-height: calc(100dvh - 1rem);
+        overflow-y: auto; overscroll-behavior: contain; background: #fff; border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 0 1.2rem 1rem; box-sizing: border-box;
+        min-width: 0; min-height: 16rem; overflow-wrap: anywhere; }
+  .pv[hidden], .pv [hidden] { display: none; }
+  .pv:focus { outline: none; }
+  .pv:focus-visible { outline: 2px solid #14532d; outline-offset: -2px; }
+  .pv-top { position: sticky; top: 0; z-index: 2; background: #fff; display: flex; flex-wrap: wrap;
+            gap: .5rem; align-items: center; padding: .7rem 0 .5rem; border-bottom: 1px solid var(--line); }
+  .pv-act { display: flex; gap: .5rem; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+  .pv-top button, .pv-bottom button { min-height: 40px; white-space: nowrap; }
+  .pv.loading #pv-main { opacity: .55; transition: opacity .15s; }
+  .pv-empty { color: #6b7280; padding: 3rem 1rem; text-align: center; line-height: 1.8; }
+  #pv-subject { margin: .8rem 0 .3rem; font-size: 1.15rem; color: #111827; overflow-wrap: anywhere; }
+  .pv-meta { display: flex; flex-direction: column; gap: .1rem; font-size: .85rem; color: #374151; }
+  .pv-lbl { color: #6b7280; margin-right: .4rem; }
+  .pv-badges { display: flex; flex-wrap: wrap; gap: .35rem .5rem; align-items: center; margin: .5rem 0 0;
+               font-size: .85rem; }
+  .pv-badges .cat { margin-right: 0; }
+  .pv-badges .st-sub { display: inline; margin-left: .3rem; }
+  .pv-chip { display: inline-block; font-size: .78rem; line-height: 1.6; padding: 0 .5rem; border-radius: 99px;
+             background: #f3f4f6; color: #374151; white-space: nowrap; }
+  .pv-chip.pv-star { background: #fef3c7; color: #92400e; font-weight: 700; }
+  .pv-note { margin: .6rem 0 0; font-size: .85rem; line-height: 1.5; background: #fffbeb; border: 1px solid #fde68a;
+             color: #92400e; border-radius: 6px; padding: .4rem .6rem; }
+  .pv-note.warn { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+  .pv .m-client { margin: .5rem 0 0; }
+  #pv-body { margin-top: .7rem; }
+  .pv-thr { display: flex; flex-wrap: wrap; gap: .3rem .7rem; align-items: center; margin: .7rem 0 0;
+            font-size: .85rem; color: #4b5563; }
+  .pv-thr button { padding: .4rem .8rem; }
+  .pv-sent { margin-top: .7rem; }
+  .pv-sent-body { padding: 0 .7rem .7rem; display: flex; flex-direction: column; gap: .35rem; }
+  .pv-sent-body small { color: #6b7280; }
+  .pv-bottom { margin-top: 1rem; display: flex; justify-content: flex-end; }
+  /* 指で押す画面 (iPad の横向き) では、右の本文のボタン・リンクも押しやすい高さにする */
+  @media (pointer: coarse) {
+    .pv .att button, .pv-thr button, .pv-sent > summary { min-height: 40px; box-sizing: border-box; }
+    .pv .m-client a { display: inline-flex; align-items: center; min-height: 40px; }
+  }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+             white-space: nowrap; }
+  /* 右に本文を出しているときの一覧: 同じ行を2行に詰める (1行目: ☆・相手・日時 / 2行目: 重要度・新着・件名・
+     状態。右端に「対応不要」)。見出し・優先度・担当・下書き・「本文 ▼」・やり取りの数などは出さない
+     (右の本文に出る)。行の左の色の線は重要度、右の黄色の線は★ */
+  #inbox.pane-mode #mail-table thead { display: none; }
+  #inbox.pane-mode #mail-table, #inbox.pane-mode #mail-table tbody { display: block; }
+  #inbox.pane-mode .table-wrap { overflow-x: visible; padding: 0; }
+  #inbox.pane-mode tr.mail-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "from date act" "subj st act"; column-gap: .5rem; row-gap: .1rem;
+    padding: .4rem .6rem .4rem calc(.8rem + var(--ind, 0) * 14px);
+    border-bottom: 1px solid var(--line); -webkit-user-select: none; user-select: none;
+    box-shadow: inset 4px 0 0 var(--stripe, transparent), inset -4px 0 0 var(--flag, transparent); }
+  #inbox.pane-mode tr.mail-row > td { display: block; padding: 0; border: 0; min-width: 0; box-shadow: none; }
+  #inbox.pane-mode tr.mail-row.p1 { --stripe: #dc2626; }
+  #inbox.pane-mode tr.mail-row.p2 { --stripe: #f59e0b; }
+  #inbox.pane-mode tr.mail-row.p3 { --stripe: #d1d5db; }
+  #inbox.pane-mode tr.mail-row.done { --stripe: #e5e7eb; }
+  #inbox.pane-mode tr.mail-row.flagged { --flag: #eab308; }
+  #inbox.pane-mode .c-from { grid-area: from; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #inbox.pane-mode .c-date { grid-area: date; font-size: .8rem; color: #6b7280; white-space: nowrap;
+                             align-self: center; }
+  #inbox.pane-mode .c-subj { grid-area: subj; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                             font-size: .9rem; }
+  #inbox.pane-mode .c-st { grid-area: st; align-self: center; white-space: nowrap; }
+  #inbox.pane-mode tr.mail-row td.act { grid-area: act; align-self: center; position: static; width: auto;
+                                        background: transparent; }
+  #inbox.pane-mode tr.mail-row > td.c-pr, #inbox.pane-mode tr.mail-row > td.c-asg,
+  #inbox.pane-mode tr.mail-row > td.c-draft, #inbox.pane-mode #mail-table .peek-row,
+  #inbox.pane-mode #mail-table .row-peek, #inbox.pane-mode #mail-table .thr-badge,
+  #inbox.pane-mode #mail-table .cl-tag, #inbox.pane-mode #mail-table .acct, #inbox.pane-mode #mail-table .cat,
+  #inbox.pane-mode #mail-table .st-sub, #inbox.pane-mode #mail-table .d-long,
+  #inbox.pane-mode #mail-table .hit-snip { display: none; }
+  #inbox.pane-mode #mail-table .d-short, #inbox.pane-mode #mail-table .prb-in { display: inline; }
+  #inbox.pane-mode #mail-table .prb-in { font-size: .72rem; min-width: 0; padding: 0 .35rem; margin-right: .25rem; }
+  #inbox.pane-mode .mail-row:not(.done) .c-from strong { font-weight: 700; }
+  #inbox.pane-mode .mail-row.done .c-from strong { font-weight: 500; }
+  #inbox.pane-mode #mail-table .row-archive { padding: .25rem .55rem; font-size: .78rem; min-height: 30px; }
+  @media (pointer: coarse) { #inbox.pane-mode #mail-table .row-archive { min-height: 40px; } }
+  /* 選んでいる行 (右に本文を出しているメール): 高の赤・新着の黄・指したときより強い青。左の線・★・新着の印は残す */
+  #mail-table .mail-row.sel, #mail-table .mail-row.sel td.act { background: #dbeafe !important; }
+  #mail-table .mail-row.sel { outline: 2px solid #2563eb; outline-offset: -2px; }
+  #mail-table .mail-row.sel.done td { color: #4b5563; }
+  #mail-table .mail-row:focus { outline: none; }
+  #mail-table .mail-row.sel:focus { outline: 2px solid #2563eb; }
+  #mail-table .mail-row:focus-visible { outline: 2px solid #14532d; outline-offset: -2px; }
+  /* 右に本文を出しているときの返信画面は、右の本文の上に重ねる (左の一覧は薄く見えたまま。一覧の行を押すと、
+     返信画面を閉じてそのメールを右に出す)。左端は右の本文の左端 (main の左の余白 + 一覧の幅 + 間) */
+  html.pane-on #mail-modal { justify-content: flex-end; align-items: stretch; background: rgba(15,23,42,.28); }
+  html.pane-on #mail-modal .box { box-sizing: border-box; width: max(560px, calc(100% - 2.5rem - var(--list-w)));
+                                  max-width: 100%; height: 100vh; height: 100dvh; max-height: none;
+                                  border-radius: 0; box-shadow: -4px 0 16px rgba(0,0,0,.18); }
+  /* 画面の下の知らせは一覧の上に出す (右上の「↩ 返信する」などを隠さない) */
+  html.pane-on #toasts { left: 1.5rem; transform: none; width: min(30rem, var(--list-w)); }
   @media (max-width: 720px) {
     html { font-size: 15px; }
     main { padding: .8rem; }
@@ -973,7 +1083,13 @@
   ★のメールは、重要度が「低」でも一覧に出し、メールの保存日数を過ぎても消しません（要らなくなったら ★ を外してください）。
   新しいメールは自動で受信し、この画面も開いたままで1分ごとに新しくなります
   （前に見た後に届いて、まだ開いていないメールには「新着」と出ます）。
-  行をクリックすると本文の確認・返信文の生成/編集・送信ができます。
+  行を押すと、広い画面では右に本文が出ます（スマホでは返信画面が開きます）。
+  返信画面で本文の確認・返信文の生成/編集・送信ができます。
+  広い画面（パソコン・iPad の横向き）では、一覧のメールを押すと、右側に本文が出ます。キーボードの ↑ ↓ で前後のメールに移り、
+  Enter で返信画面を開きます（Esc で選ぶのをやめます）。返信するときは右上の「↩ 返信する」を押してください
+  （返信画面が右側に重なって開きます。閉じると、元の一覧と本文に戻ります）。
+  右に出さないときは、一覧の上の「表示」で「一覧だけ」を押してください（このブラウザに覚えておきます）。
+  スマホでは今までどおり、押すと返信画面が開きます。
   返信画面の「📎 ファイルを添付」で、写真・PDF・Excel・Word などを返信に付けて送れます
   （1通に10個・合わせて13MBまで。iPhone は写真を選ぶか、その場で撮れます。PC はファイルを返信文の欄に持ってきても付けられます。
   付けたファイルは閉じても残り、送ると「この相手とのやり取り」と送信箱に 📎 で出ます）。
@@ -1018,10 +1134,61 @@
     </div>
   </div>
   <p id="low-note" class="low-note" role="status" hidden></p>
-  <div class="table-wrap"><table id="mail-table">
-    <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th><th id="th-act" aria-label="本文を見る・対応不要にする"></th></tr></thead>
-    <tbody></tbody>
-  </table></div>
+  <!-- 一覧のすぐ上の行: 出している通数 (右に本文を出しているとき) と、右に本文を出すか (広い画面だけ。
+       このブラウザに覚えておく)。上のタブの列に入れると、横幅 1024px でタブが何段にも折り返すので、ここに置く -->
+  <div class="list-head">
+    <p id="list-count" class="list-count" hidden></p>
+    <div class="sort-tg" id="pane-tg" role="group" aria-label="表示" hidden>表示
+      <button type="button" data-pane-mode="on" aria-pressed="true">右に本文</button>
+      <button type="button" data-pane-mode="off" aria-pressed="false">一覧だけ</button>
+    </div>
+  </div>
+  <!-- 広い画面 (横幅 1024px 以上) では、左に一覧・右に選んだメールの本文 (#pv) を並べる -->
+  <div class="panes">
+    <div class="list-col">
+      <div class="table-wrap"><table id="mail-table">
+        <thead><tr><th>優先度</th><th>差出人</th><th>件名</th><th>受信日時</th><th>状態</th><th>担当</th><th>下書き</th><th id="th-act" aria-label="本文を見る・対応不要にする"></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+    <!-- 右の本文 (読むだけ。返信は「↩ 返信する」で開く返信画面で)。外から来た文字は textContent か
+         esc() で入れ、本文は bodyHtml -->
+    <aside id="pv" class="pv" aria-label="選んだメールの本文" tabindex="-1" hidden>
+      <div id="pv-empty" class="pv-empty">左の一覧でメールを押すと、ここに本文が出ます<br>
+        <small>キーボードの ↑ ↓ で前後のメール、Enter で返信画面を開きます</small></div>
+      <p id="pv-err" class="pv-note warn" role="alert" hidden></p>
+      <div id="pv-main" hidden>
+        <div class="pv-top">
+          <div class="pv-act">
+            <button type="button" id="pv-flag" class="ghost m-flag" aria-pressed="false" hidden><span class="m-flag-ic" aria-hidden="true">☆</span><span class="m-flag-txt"> フラグ</span></button>
+            <button type="button" id="pv-archive" class="m-archive" title="返信しなくてよい印を付けます（メールは受信箱に残ります）" hidden>✓ 対応不要にする</button>
+            <button type="button" id="pv-reply">↩ 返信する</button>
+          </div>
+        </div>
+        <p id="pv-stale" class="pv-note" role="status" hidden></p>
+        <h2 id="pv-subject"></h2>
+        <div id="pv-meta" class="pv-meta"></div>
+        <div id="pv-badges" class="pv-badges"></div>
+        <div class="m-client" id="pv-client" hidden>
+          <span class="cl-chip" id="pv-client-name"></span>
+          <a href="#" id="pv-client-link">この取引先のやり取りをすべて見る</a>
+        </div>
+        <div id="pv-misdir" class="misdir" hidden></div>
+        <div id="pv-appr" class="appr" hidden></div>
+        <!-- 同じスレッドのメールを並べる所 (次の段階のスレッドで使う。今は出さない) -->
+        <section id="pv-conv" class="pv-conv" hidden></section>
+        <div id="pv-body" class="mail-body"></div>
+        <div id="pv-atts" class="atts" hidden></div>
+        <details id="pv-reply-sent" class="thread pv-sent" hidden><summary></summary>
+          <div class="pv-sent-body"></div></details>
+        <p id="pv-draft-note" class="pv-note" hidden></p>
+        <p id="pv-thr" class="pv-thr" hidden><span id="pv-thr-text"></span>
+          <button type="button" id="pv-thr-open" class="ghost">やり取りを見る</button></p>
+        <div class="pv-bottom"><button type="button" id="pv-reply2">↩ 返信する</button></div>
+      </div>
+      <span id="pv-live" class="sr-only" aria-live="polite"></span>
+    </aside>
+  </div>
 </section>
 
 <section id="sent-view" hidden>
@@ -2043,6 +2210,7 @@ document.addEventListener("click", e => {
 function showLogin(withError) {
   stopPolling();
   $("toasts").textContent = "";   // 前の人の「元に戻す」を残さない
+  clearSelection();               // 前の人が右に出していたメールも残さない
   $("app").hidden = true;
   $("device-verify").hidden = true;
   $("login").hidden = false;
@@ -2123,6 +2291,7 @@ function switchView(name) {
   $("nav-sent").classList.toggle("active", name === "sent" || name === "sentmail");
   $("nav-clients").classList.toggle("active", name === "clients" || name === "client");
   $("nav-settings").classList.toggle("active", name === "settings");
+  applyLayout();   // 右の本文は受信箱だけ
 }
 
 // 返信画面で変えた (送った・種類を変えた など) 後に、受信箱を新しくする。受信箱を見ているときだけ
@@ -2183,6 +2352,12 @@ function fmtDate(iso) {
   const d = new Date(iso);
   return isNaN(d) ? "" : fmtTz(d, { year: "numeric", month: "numeric", day: "numeric",
                                      hour: "2-digit", minute: "2-digit" });
+}
+// 日時を曜日も付けて「2026/10/29(木) 20:15」にする (受信日時を指したとき・右の本文)
+function fmtDateLong(iso) {
+  const d = new Date(iso);
+  return !iso || isNaN(d) ? "" : fmtTz(d, { year: "numeric", month: "numeric", day: "numeric",
+                                            weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 // 未対応の数 (受信箱のボタン・タブの名前)、最終受信の時刻、直近の受信の失敗を出す。
@@ -2263,7 +2438,8 @@ const formTag = m => m.via_form
   : "";
 
 // 一覧の行: ここから
-// 受信箱の行の ☆ (★フラグ)・状態の印・受信日時。使うのは esc・ST・snip・fmtTz・fmtDate だけ
+// 受信箱の行の ☆ (★フラグ)・状態の印・受信日時と、右の本文で使う行の様子・次の行。
+// 使うのは esc・ST・snip・fmtTz・fmtDate・fmtDateLong だけ
 // (node のテストで、この間だけを動かす)。外から来た文字 (件名・名前) は esc() を通す
 
 // 日時を一覧用に短く (会社のタイムゾーン): 今日「20:15」・6日以内「木 20:15」・今年「10/23」・前の年「2025/10/23」
@@ -2285,8 +2461,7 @@ function fmtListDate(iso, now = new Date()) {
 function listTime(iso) {
   const d = new Date(iso);
   if (!iso || isNaN(d)) return "";
-  const full = fmtTz(d, { year: "numeric", month: "numeric", day: "numeric", weekday: "short",
-                          hour: "2-digit", minute: "2-digit" });
+  const full = fmtDateLong(iso);
   return `<time datetime="${esc(iso)}" title="${esc(full)}"><span class="d-long">${esc(fmtDate(iso))}</span>` +
     `<span class="d-short">${esc(fmtListDate(iso))}</span></time>`;
 }
@@ -2346,6 +2521,23 @@ function statusMark(m) {
   }
   return chip(ST[st] || st) + (m.returned
     ? '<span class="ret-badge" title="管理者が差し戻しました（返信画面にコメントがあります）">差し戻し</span>' : "");
+}
+// 右の本文に出しているメールの、一覧の行の様子 (これが変わったら右の本文を読み直す)。一覧の項目でも
+// 1通の詳細でも同じになるように、確認を頼んだ人は確認待ちのときだけ見る。th_size はスレッドの通数 (次の段階)
+const pvSig = m => [m.status, m.replied_at, m.flagged_at, m.has_draft,
+                    m.status === "pending_approval" ? m.requested_by : "", m.returned,
+                    m.priority, m.category, m.assignee_user_id, m.attachment_count, m.thread_count,
+                    m.th_size].join("|");
+// 一覧で次 (step = 1)・前 (step = -1) のメールの番号 (ids は上から順)。端より先は無い (今のまま)。
+// 今のメール (cur) が一覧に無い (取り直したら外れた) ときは、前にいた位置 (last) から続ける
+// (外れた行の所には下の行が上がってきている)。何も選んでいなければ一番上
+function nextRowId(ids, cur, step, last = -1) {
+  if (!ids.length) return null;
+  const i = cur == null ? -1 : ids.indexOf(cur);
+  if (i >= 0) return ids[Math.min(ids.length - 1, Math.max(0, i + step))];
+  if (cur == null || last < 0) return ids[0];
+  const at = Math.min(last, ids.length) - (step > 0 ? 0 : 1);
+  return ids[Math.min(ids.length - 1, Math.max(0, at))];
 }
 // 一覧の行: ここまで
 
@@ -2493,15 +2685,17 @@ function renderInbox(list, keepPlace) {
     const isNew = id > seenId && !openedIds.has(id);
     const canArchive = admin && m.status === "unhandled";
     const peeking = peekOpen.has(id);
+    // 欄の c-… は、右に本文を出しているときの2行の一覧で使う (表・スマホのカードと同じ行)。
+    // 件名の前の小さい重要度 (prb-in) も、その2行の一覧だけで出す
     return `
-    <tr class="mail-row p${Number(m.priority)}${["unhandled", "pending_approval"].includes(m.status) ? "" : " done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}${m.flagged ? " flagged" : ""}" data-id="${id}">
-      <td data-label="優先度"><span class="prb pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span></td>
-      <td data-label="差出人">${starButton(m)}<strong>${hl(contactLabel(m), T)}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m, T)}</td>
-      <td data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}${repliedIcon(m)}${hl(m.subject, T) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}${T ? hitSnip(m, T) : ""}</td>
-      <td data-label="受信日時">${listTime(m.received_at)}</td>
-      <td data-label="状態">${statusMark(m)}</td>
-      <td data-label="担当">${esc(m.assignee_name) || "—"}</td>
-      <td data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
+    <tr class="mail-row p${Number(m.priority)}${["unhandled", "pending_approval"].includes(m.status) ? "" : " done"}${isNew ? " new" : ""}${canArchive ? " two-btn" : ""}${peeking ? " peeking" : ""}${m.flagged ? " flagged" : ""}" data-id="${id}" tabindex="-1">
+      <td class="c-pr" data-label="優先度"><span class="prb pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span></td>
+      <td class="c-from" data-label="差出人">${starButton(m)}<strong>${hl(contactLabel(m), T)}</strong>${formTag(m)}${threadBadge(m)}${clientTag(m, T)}</td>
+      <td class="c-subj" data-label="件名">${isNew ? '<span class="new-badge">新着</span>' : ""}${acctBadge(m)}${catBadge(m.category)}<span class="prb prb-in pr-${Number(m.priority)}">${esc(PR[m.priority] || m.priority)}</span>${repliedIcon(m)}${hl(m.subject, T) || "（件名なし）"}${m.attachment_count ? ' <span title="添付ファイルあり">📎</span>' : ""}${T ? hitSnip(m, T) : ""}</td>
+      <td class="c-date" data-label="受信日時">${listTime(m.received_at)}</td>
+      <td class="c-st" data-label="状態">${statusMark(m)}</td>
+      <td class="c-asg" data-label="担当">${esc(m.assignee_name) || "—"}</td>
+      <td class="c-draft" data-label="下書き">${m.status === "replied" ? "送信済" : m.has_draft ? "あり" : "—"}</td>
       <td class="act">${peekButton(m, peeking)}${canArchive ? archiveButton(m) : ""}</td>
     </tr>${peeking ? peekRowHtml(id) : ""}`;
   }).join("") ||
@@ -2524,10 +2718,12 @@ function renderInbox(list, keepPlace) {
       // 同じ所をもう一度押しても何もしない (2回押したつもりで、次のメールまで対応不要にしたり、
       // その場所に来た「本文 ▼」や行を押して、プルダウン・返信画面を開いたりしないように)
       if (Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
-      // ☆ は★フラグを付ける・外す。「本文 ▼」は、その行の下に本文とやり取りを出す (返信画面は開かない)
+      // ☆ は★フラグを付ける・外す。「本文 ▼」は、その行の下に本文とやり取りを出す (返信画面は開かない)。
+      // 行は、右に本文を出しているときは右に出し、そうでなければ返信画面を開く
       if (f) toggleFlag(Number(f.dataset.flag), f.getAttribute("aria-pressed") !== "true");
       else if (p) togglePeek(Number(p.dataset.peek));
       else if (b) archiveFromRow(b, tr);
+      else if (paneOn()) selectRow(+tr.dataset.id, { now: true });
       else openMail(+tr.dataset.id);
     });
   setPeekWidth();
@@ -2536,11 +2732,17 @@ function renderInbox(list, keepPlace) {
   if (again) window.scrollBy(0, again.getBoundingClientRect().top - anchorTop);
   refocus(focus);
   // 開いているプルダウンは、まだ読んでいない・メールが変わった (返信した・続きが届いた) ときだけ
-  // 読み直す (読み直す間も、前に読んだものを出したままにする)
+  // 読み直す (読み直す間も、前に読んだものを出したままにする)。右に本文を出している間は
+  // プルダウンを出さないので読まない (一覧だけに戻したときに、次の取り直しで読む)
   for (const m of list) {
     const id = Number(m.id), c = peekCache.get(id);
-    if (peekOpen.has(id) && !peekLoading.has(id) && (!c || !c.data || c.sig !== peekSig(m))) loadPeek(id);
+    if (!paneOn() && peekOpen.has(id) && !peekLoading.has(id) &&
+        (!c || !c.data || c.sig !== peekSig(m))) loadPeek(id);
   }
+  // 出している通数 (右に本文を出しているときだけ。一覧の見出しを出さないので)。探しているときは上の知らせに出る
+  $("list-count").hidden = !list.length || !!inboxFound;
+  $("list-count").textContent = `${list.length}通を出しています`;
+  pvAfterRender();
   renderSearchInfo(list);
   renderLowNote();
   rememberShown(list);
@@ -2668,6 +2870,11 @@ const subjLabel = m => esc(snip(m.subject, 30)) || "件名なし";
 const ROW_BTN_KEYS = ["data-peek", "data-archive", "data-flag", "data-pk-open", "data-pk-close", "data-pk-earlier", "data-pk-retry"];
 function focusedRowButton(box) {
   const b = document.activeElement;
+  // 行そのもの (右に本文を出しているときに、↑↓ で選んだ行) にいたときは、同じメールの行に戻す
+  if (b && b.matches && b.matches(".mail-row") && box.contains(b)) {
+    const row = `.mail-row[data-id="${Number(b.dataset.id)}"]`;
+    return { btn: row, alt: row };
+  }
   const tr = b && box.contains(b) ? b.closest(".mail-row, .peek-row") : null;
   const key = tr && ROW_BTN_KEYS.find(k => b.hasAttribute(k));
   if (!key) return null;
@@ -2964,6 +3171,7 @@ function showRowArchived(id, r = {}) {
   const done = { status: "archived", archived_at: r.archived_at || null,
                  archived_by: r.archived_by || (r.archived_at ? me.name || "" : "") };
   if (m) Object.assign(m, done);
+  pvMailChanged(id, done);   // 右に出していれば、右の本文も「✓ 対応不要」にする
   const tbody = document.querySelector("#mail-table tbody");
   const anchor = viewName === "inbox" && window.scrollY > 0
     ? [...tbody.querySelectorAll(".mail-row, .peek-row")].find(x => x.getBoundingClientRect().bottom > 0)
@@ -2984,6 +3192,26 @@ function showArchivedToast(id, subject, r) {
   const box = $("toasts");
   makeRoomForToast(box);
   box.append(undoToast([{ id, subject, r }]));
+}
+
+// 「元に戻す」の無い知らせ (書きかけの返信文を保存できなかった など)。「閉じる」で消せる。
+// 返信画面を開いている間は隠れるので、閉じてから10秒ほどで消す。文字は textContent で入れる
+function noticeToast(msg) {
+  const box = $("toasts");
+  makeRoomForToast(box);
+  const t = document.createElement("div");
+  t.className = "toast";
+  const text = document.createElement("span");
+  text.textContent = msg;
+  const ok = document.createElement("button");
+  ok.type = "button";
+  ok.textContent = "閉じる";
+  const close = () => { t.classList.add("out"); setTimeout(() => t.remove(), 300); };
+  ok.onclick = close;
+  const later = () => setTimeout(() => (anyModalOpen() ? later() : close()), 10000);
+  t.append(text, ok);
+  box.append(t);
+  later();
 }
 
 // 知らせを重ねすぎない。戻し終わった知らせから消し、それでも多いときは古い2つを1つにまとめる
@@ -3090,7 +3318,7 @@ const flagTapAt = new Map();  // メールごとの、最後に ☆ を押した
 // 頼んでいた一覧の答えが届いても、古い★で描き直さないようにする (applyLocalFlags)
 const flagLocal = new Map();
 
-// そのメールの★の見た目を、出ている所 (一覧の行の ☆・返信画面) 全部でそろえる
+// そのメールの★の見た目を、出ている所 (一覧の行の ☆・返信画面・右の本文) 全部でそろえる
 function setFlagUi(id, at, by) {
   const f = { flagged: !!at, flagged_at: at || null, flagged_by: at ? by || "" : "" };
   flagLocal.set(id, { at: Date.now(), f });
@@ -3107,6 +3335,7 @@ function setFlagUi(id, at, by) {
     Object.assign(modal.mail, f);
     renderModalFlag(modal.mail);
   }
+  pvMailChanged(id, f);
 }
 
 // 一覧の答え (askedAt に頼んだもの) に、頼んだ後でこの画面が付けた・外した★を当てる
@@ -3122,7 +3351,7 @@ async function toggleFlag(id, on) {
   if (flagBusy.has(id) || Date.now() - (flagTapAt.get(id) || 0) < ROW_QUIET_MS) return;
   flagBusy.add(id);
   flagTapAt.set(id, Date.now());
-  const m = shownMails.get(id) || (modal.id === id && modal.mail) || {};
+  const m = shownMails.get(id) || (modal.id === id && modal.mail) || (pv.id === id && pv.mail) || {};
   const before = [m.flagged_at || null, m.flagged_by || ""];
   setFlagUi(id, on ? new Date().toISOString() : null, on ? me.name : "");
   let r = null;
@@ -3408,9 +3637,498 @@ $("fetch-now").onclick = async () => {
   b.disabled = false; b.textContent = "今すぐ受信";
 };
 
+/* ---------- 右の本文 (広い画面で、一覧の右に選んだメールを出す) ----------
+   横幅 1024px 以上 (パソコン・iPad の横向き) では、一覧の行を押すと、返信画面を開かずに右に本文を出す
+   (読むだけ。返信・承認・差し戻しなどは「↩ 返信する」で開く返信画面で、今までどおり。返信画面は右の本文の
+   上に重なって開き、閉じると元の一覧と本文に戻る)。↑ ↓ (j k) で前後のメール、Enter で返信画面、
+   Esc で選ぶのをやめる。右に出すか (一覧の上の「表示」) はこのブラウザに覚えておく。狭い画面
+   (iPad の縦・スマホ) では今までどおり (押すと返信画面)。
+   本文は1通の詳細 (/api/mail/{id}?thread=false) を読む。↑ ↓ で通り過ぎた行は読まず、「新着」も外さない
+   (少し止まったメールだけ読む)。1分ごとの取り直しでも選んだメールはそのままで、そのメールが変わった
+   (ほかの人が返信した など) ときだけ読み直す。前に頼んだ答えが後から届いても、今選んでいるメールを上書きしない。
+   外から来た文字 (件名・名前・アドレス・ファイル名・本文) は textContent か esc() で入れ、本文は bodyHtml */
+const PANE_MQ = matchMedia("(min-width: 1024px)");
+const PANE_KEY = "zatsumu_mail_pane";   // "on" (既定) | "off"
+let paneWanted = loadPref(PANE_KEY) !== "off";
+const paneOn = () => PANE_MQ.matches && paneWanted && viewName === "inbox";
+let selectedId = null;      // 右に出しているメール (一覧で選んだ行の番号)
+let selLastIndex = -1;      // 選んだ行が一覧の上から何番目にあったか (取り直して外れたら、そこから続ける)
+// 右の本文の様子。id: 出しているメール・seq: 読み込んだ回数 (前に頼んだ答えで上書きしない)・
+// timer: ↑ ↓ で動いたときに少し待つ・loading: 読み込み中のメール・mail: 読んだ詳細・
+// sig: 出しているメールの様子 (pvSig。一覧の行と違ったら読み直す)・offList: 今の一覧に無い・
+// quietUntil: この画面で変えた (返信画面を閉じた・対応不要にした) 後しばらくは「変わりました」を出さない
+const pv = { id: null, seq: 0, timer: null, loading: null, mail: null, sig: "", offList: false,
+             quietUntil: 0, noteTimer: null };
+const pvCache = new Map();  // 番号 → { data, sig } (前に読んだもの。新しく読んだ 30 通まで)
+const PV_CACHE_MAX = 30;
+const PV_WAIT_MS = 150;     // ↑ ↓ で動いてから読むまで待つ長さ (押したままでも、通り過ぎた行は読まない)
+const PV_QUIET_MS = 15000;
+// 1分ごとの取り直しで、右に出しているメールの状態が変わったのに気付いたときの知らせ
+const PV_CHANGED = {
+  replied: "このメールは、開いた後に「返信済み」になりました（ほかの人か、Webメールから返信しました）",
+  archived: "このメールは、開いた後に「対応不要」になりました（ほかの人が対応不要にしました）",
+  pending_approval: "このメールは、開いた後に「確認待ち」になりました（メール担当者が確認をお願いしました）",
+};
+const rowIds = () => [...document.querySelectorAll("#mail-table .mail-row:not(.leaving)")]
+  .map(tr => Number(tr.dataset.id));
+
+// 右に本文を出すか (広い画面で、「表示」が「右に本文」で、受信箱を見ているとき) に合わせて、画面の形を変える
+function applyLayout() {
+  const was = document.documentElement.classList.contains("pane-on"), on = paneOn();
+  document.documentElement.classList.toggle("pane-on", on);
+  $("inbox").classList.toggle("pane-mode", on);
+  $("pv").hidden = !on;
+  $("pane-tg").hidden = !PANE_MQ.matches;   // 狭い画面では切り替えを出さない
+  for (const b of document.querySelectorAll("#pane-tg button[data-pane-mode]")) {
+    b.setAttribute("aria-pressed", String((b.dataset.paneMode === "on") === paneWanted));
+  }
+  markSelected();
+  // また右に出すとき (一覧だけにしていた・ほかの画面にいた間に)、選んでいたメールが変わっていたら読み直す
+  if (on && !was && selectedId && pv.loading === null) {
+    const m = shownMails.get(selectedId);
+    if (pv.id !== selectedId || (m && pvSig(m) !== pv.sig)) {
+      pvShow(selectedId, { keepScroll: pv.id === selectedId, quiet: true });
+    }
+  }
+}
+// 「表示」を押した・ウィンドウの幅が変わったとき。一覧だけに戻したら、右に出していた間は読まなかった
+// プルダウン (「本文 ▼」) を読み直す (受信箱を取り直す)
+function layoutChanged() {
+  const was = document.documentElement.classList.contains("pane-on");
+  applyLayout();
+  if (was && !paneOn() && viewName === "inbox" && peekOpen.size) refreshInbox();
+}
+if (PANE_MQ.addEventListener) PANE_MQ.addEventListener("change", layoutChanged);
+else PANE_MQ.addListener(layoutChanged);   // 古い Safari
+for (const b of document.querySelectorAll("#pane-tg button[data-pane-mode]")) {
+  b.onclick = () => {
+    const on = b.dataset.paneMode === "on";
+    if (paneWanted === on) return;
+    paneWanted = on;
+    savePref(PANE_KEY, on ? "on" : "off");
+    layoutChanged();
+  };
+}
+
+// 選んでいる行に印 (青い地・aria-current) を付ける。右に本文を出していないときは付けない
+function markSelected() {
+  const on = paneOn();
+  for (const tr of document.querySelectorAll("#mail-table .mail-row.sel")) {
+    if (on && Number(tr.dataset.id) === selectedId) continue;
+    tr.classList.remove("sel");
+    tr.removeAttribute("aria-current");
+  }
+  const tr = on && selectedId ? mailRowOf(selectedId) : null;
+  if (!tr) return;
+  tr.classList.add("sel");
+  tr.setAttribute("aria-current", "true");
+  selLastIndex = rowIds().indexOf(selectedId);
+}
+
+// 一覧の行を選んで、右に本文を出す。now: すぐ読む (押したとき)。そうでなければ少し待つ (↑ ↓ で続けて
+// 動いている間は読まない)。focus: その行にキーボードの位置を移す (画面は動かさない)。
+// announce: 読み上げで「（件名）を表示しました」と知らせる
+function selectRow(id, { now = false, focus = true, announce = false } = {}) {
+  id = Number(id);
+  if (!id) return;
+  selectedId = id;
+  markSelected();
+  if (focus) mailRowOf(id)?.focus({ preventScroll: true });
+  clearTimeout(pv.timer);
+  if (pv.loading === id) return;             // 読んでいる途中
+  if (pv.id === id) {                        // 出しているメール (読み直さない。読んでいた所を動かさない)
+    if (pv.loading !== null) { pv.seq++; pv.loading = null; $("pv").classList.remove("loading"); }
+    return;
+  }
+  pv.timer = setTimeout(() => pvShow(id, { announce }), now ? 0 : PV_WAIT_MS);
+}
+
+// ↑ ↓ で前後のメールに移る (画面は、その行が見えるところまでだけ動かす)
+function moveSelection(step) {
+  const id = nextRowId(rowIds(), selectedId, step, selLastIndex);
+  if (!id || id === selectedId) return;
+  mailRowOf(id)?.scrollIntoView({ block: "nearest" });
+  selectRow(id, { announce: true });
+}
+
+// 選ぶのをやめる (Esc・ログアウト)。右は「左の一覧でメールを押すと…」に戻す
+function clearSelection() {
+  selectedId = null;
+  selLastIndex = -1;
+  clearTimeout(pv.timer);
+  pv.seq++;
+  Object.assign(pv, { id: null, loading: null, mail: null, sig: "", offList: false });
+  $("pv").classList.remove("loading");
+  markSelected();
+  pvNote("");
+  pvErr("");
+  $("pv-main").hidden = true;
+  $("pv-empty").hidden = false;
+  try {
+    if (history.state && history.state.sel) {
+      const { sel: _s, ...rest } = history.state;
+      history.replaceState(rest, "", location.href);
+    }
+  } catch {}
+}
+
+// 右に本文を読み込んで出す。keepScroll: 読んでいた所を動かさない (読み直すとき)。quiet: 読み直しに
+// 失敗しても知らせない (前に読んだものを出したまま)。auto: 1分ごとの取り直しで変わったのに気付いたとき
+// (ほかの人が返信した などを知らせる)
+async function pvShow(id, opts = {}) {
+  id = Number(id);
+  clearTimeout(pv.timer);
+  const seq = ++pv.seq, box = $("pv");
+  pv.loading = id;
+  // 前に読んだものがあって、一覧の行の様子が変わっていなければ、すぐ出す (読み直している間も)
+  const item = shownMails.get(id), c = pvCache.get(id);
+  const cached = !!(c && item && c.sig === pvSig(item));
+  if (cached) pvShown(id, c.data, opts);
+  else box.classList.add("loading");
+  let d = null, err = "";
+  try {
+    const r = await api(`/api/mail/${id}?thread=false`);
+    if (r.ok) d = await r.json();
+    else err = r.status === 404 ? "gone" : "load";
+  } catch (e) {
+    if (e.message === "auth") return;        // ログインし直す画面に切り替わった
+    err = "load";
+  }
+  if (d) pvCacheSet(id, d);
+  if (seq !== pv.seq) return;                // 待っている間に、別のメールを読み始めた
+  pv.loading = null;
+  box.classList.remove("loading");
+  if (selectedId !== id) return;             // 待っている間に、別のメールを選んだ (そちらをすぐ読む)
+  if (d) {
+    pvShown(id, d, { ...opts, keepScroll: opts.keepScroll || cached, announce: opts.announce && !cached });
+    return;
+  }
+  const text = err === "gone"
+    ? "このメールは見つかりませんでした（保存日数を過ぎて消えた可能性があります）"
+    : "読み込めませんでした（通信が戻ったら、もう一度押してください）";
+  // 出しているメールの読み直しに失敗したときは、前に読んだものを出したままにする
+  if (pv.id === id && err !== "gone") {
+    if (!opts.quiet) pvErr(text);
+    return;
+  }
+  pvCache.delete(id);
+  Object.assign(pv, { id: null, mail: null, sig: "", offList: false });
+  $("pv-main").hidden = true;
+  $("pv-empty").hidden = true;
+  pvNote("");
+  pvErr(text);
+}
+function pvCacheSet(id, data) {
+  pvCache.delete(id);   // 新しく読んだものを後ろに (古いものから消す)
+  pvCache.set(id, { data, sig: pvSig(data) });
+  while (pvCache.size > PV_CACHE_MAX) pvCache.delete(pvCache.keys().next().value);
+}
+
+// 読んだメールを右に出す。出したときだけ「新着」を外す (↑ ↓ で通り過ぎた行は外さない)
+function pvShown(id, d, opts = {}) {
+  const same = pv.id === id;
+  const before = same && pv.mail ? pv.mail.status : null;
+  pv.id = id;
+  pv.mail = d;
+  pv.sig = pvSig(d);   // 1通の詳細にも一覧と同じ項目がある (一覧の行と比べて、変わったら読み直す)
+  if (!same) { pv.offList = false; pvNote(""); }
+  markOpened(id);
+  pvRemember(id);
+  renderPreview(d, same);
+  if (!opts.keepScroll) $("pv").scrollTop = 0;
+  const why = PV_CHANGED[d.status];
+  if (opts.auto && before && before !== d.status && why && Date.now() > pv.quietUntil) pvNote(why, 6000);
+  if (opts.announce) $("pv-live").textContent = `${snip(d.subject, 40) || "件名なし"}を表示しました`;
+}
+// 右に出しているメールを履歴に残す (取引先の画面などから「戻る」で戻ったときに、また右に出す)
+function pvRemember(id) {
+  if (viewName !== "inbox") return;
+  try {
+    const st = history.state || { v: "inbox" };
+    if (st.sel !== id) history.replaceState({ ...st, sel: id }, "", location.href);
+  } catch {}   // 短い間に何度も書き換えると止めるブラウザがある (Safari)
+}
+// 右の本文の上の知らせ (今の一覧に無い・ほかの人が返信した など)。ms があれば、その後に消す
+function pvNote(text, ms) {
+  const el = $("pv-stale");
+  clearTimeout(pv.noteTimer);
+  el.textContent = text;
+  el.hidden = !text;
+  if (text && ms) pv.noteTimer = setTimeout(() => pvNote(""), ms);
+}
+function pvErr(text) {
+  $("pv-err").textContent = text;
+  $("pv-err").hidden = !text;
+}
+
+// 受信箱を描き直した後: 選んでいる行に印を付け直し、右に出しているメールが変わっていたら読み直す。
+// 今の一覧に無くなった (「状態」で「未対応」を選んでいて、返信済みになった など) ときは、右には
+// 出したままにして、そのことを知らせる (↓ は、その行があった所から続ける)
+function pvAfterRender() {
+  markSelected();
+  if (!paneOn() || !selectedId || pv.id !== selectedId) return;
+  // 読み直している途中なら、もう一度は読まない (読み終えたときの一覧の様子を覚える)
+  const m = shownMails.get(selectedId), idle = pv.loading === null;
+  if (!m !== pv.offList) {
+    pv.offList = !m;
+    pvNote(m ? "" : "このメールは、いまの絞り込みの一覧には出ていません（返信済み・対応不要になったなど）");
+    if (!m && idle) pvShow(selectedId, { keepScroll: true, quiet: true });   // 今の様子 (返信済み など) を出す
+  }
+  if (m && idle && pvSig(m) !== pv.sig) pvShow(selectedId, { keepScroll: true, quiet: true, auto: true });
+}
+
+// 一覧の行・返信画面で★を付け外しした・対応不要にしたときに、右の本文 (と前に読んだもの) もそろえる。
+// 読み直さない (一覧の行の様子も同じに変わっているので、次の取り直しでも読み直さない)
+function pvMailChanged(id, fields) {
+  const c = pvCache.get(id);
+  if (c) { Object.assign(c.data, fields); c.sig = pvSig(c.data); }
+  if (pv.id !== id || !pv.mail) return;
+  Object.assign(pv.mail, fields);
+  pv.sig = pvSig(pv.mail);
+  if (!("status" in fields)) { renderPvFlag(pv.mail); return; }
+  pv.quietUntil = Date.now() + PV_QUIET_MS;
+  renderPreview(pv.mail, true);
+}
+
+// 右の本文の「↩ 返信する」の言葉 (押すと返信画面。管理者・メール担当者とメールの状態で変える)
+function pvReplyLabel(d, admin) {
+  if (d.status === "replied") return "返信画面を開く";
+  if (d.status === "pending_approval") return admin ? "確かめて送る・差し戻す" : "返信画面を開く（確認待ち）";
+  return admin ? "↩ 返信する" : "✏️ 返信文を作る";
+}
+
+// 右の本文を描く (読むだけ)。same: 同じメールを描き直す (開いていた「こちらの返信」は開いたまま)
+function renderPreview(d, same) {
+  const id = Number(d.id), admin = isAdmin();
+  const replied = d.status === "replied", pending = d.status === "pending_approval";
+  pvErr("");
+  $("pv-empty").hidden = true;
+  $("pv-main").hidden = false;
+  $("pv-subject").textContent = d.subject || "（件名なし）";
+  // 発信者・宛先・CC・日付 (1行ずつ)
+  const meta = $("pv-meta");
+  meta.textContent = "";
+  const line = (label, text, title) => {
+    if (!text) return;
+    const row = document.createElement("div"), lbl = document.createElement("span");
+    lbl.className = "pv-lbl";
+    lbl.textContent = label + ":";
+    row.append(lbl, text);
+    if (title) row.title = title;
+    meta.append(row);
+  };
+  line("発信者", contactLine(d) + (d.via_form ? `（HPフォーム経由・送信元: ${d.from_addr}）` : ""));
+  const acct = showAccounts() ? `（届いたアドレス: ${d.account_id ? d.account_label : "削除したアドレス"}）` : "";
+  line("宛先", [snip(d.to_addr, 200), acct].filter(Boolean).join(" "), d.to_addr);
+  line("CC", snip(d.cc_addr, 200), d.cc_addr);
+  line("日付", fmtDateLong(d.received_at));
+  renderPvFlag(d);
+  // 取引先 (一覧の項目から。1通の詳細では取引先を探さないので)
+  const item = shownMails.get(id) || {};
+  $("pv-client").hidden = !item.client_name;
+  $("pv-client-name").textContent = item.client_name ? clientIcon(item.client_kind) + " " + item.client_name : "";
+  $("pv-client-link").dataset.key = item.client_key || "";
+  $("pv-client-link").hidden = !item.client_key;
+  // 前の版で、返信をフォームの送信元に送ってしまっていたメールの注意
+  $("pv-misdir").hidden = !d.misdirected;
+  $("pv-misdir").textContent = d.misdirected
+    ? "⚠ この返信は、フォームの送信元に送られていました（お客様に届いていないかもしれません）。返信画面で確かめてください" : "";
+  // 確認のお願い・差し戻し (読むだけ。確認待ちは、確かめてほしい返信文も出す)
+  const a = approvalText(d, admin), appr = $("pv-appr");
+  appr.hidden = !a.kind;
+  appr.className = "appr" + (a.kind === "returned" ? " ret" : "");
+  appr.textContent = "";
+  const add = (cls, text) => {
+    if (!text) return;
+    const el = document.createElement("div");
+    el.className = cls;
+    el.textContent = text;
+    appr.append(el);
+  };
+  add("appr-head", a.head);
+  add("", a.note);
+  if (pending && d.draft_reply) {
+    add("appr-help", "返信文（まだ送っていません）");
+    const body = document.createElement("div");
+    body.className = "mail-body";
+    body.innerHTML = bodyHtml(d.draft_reply);
+    appr.append(body);
+  }
+  $("pv-body").innerHTML = bodyHtml(d.body, { subject: d.subject, form: d.via_form, key: "pv:" + id });
+  renderPvAttachments(d);
+  // 送った返信 (押すと本文が出る)
+  const sent = $("pv-reply-sent");
+  sent.hidden = !replied;
+  if (!same) sent.open = false;
+  if (replied) {
+    sent.querySelector("summary").textContent = d.reply_source
+      ? `↩ ${d.reply_source_label || "Webメールなど"}から返信済み（${fmtDate(d.replied_at)}）`
+      : `↩ こちらの返信（${[fmtDate(d.replied_at), d.replied_by].filter(Boolean).join("・")}）`;
+    const files = (d.reply_files || []).map(f => f.filename);
+    sent.querySelector(".pv-sent-body").innerHTML =
+      (files.length ? `<small>📎 添付: ${esc(files.join("、"))}</small>` : "") +
+      `<div class="mail-body">${bodyHtml(d.reply_body)}</div>`;
+  }
+  // 返信のボタン・下書き・この相手とのやり取り・対応不要 (管理者の未対応のメールだけ)
+  const label = pvReplyLabel(d, admin);
+  $("pv-reply").textContent = $("pv-reply2").textContent = label;
+  $("pv-draft-note").hidden = replied || pending || !d.has_draft;
+  $("pv-draft-note").textContent = `下書きがあります（「${label}」で続きを書けます）`;
+  const others = Number(d.thread_count) || 0;
+  $("pv-thr").hidden = !others;
+  $("pv-thr-text").textContent = `この相手から、ほかにもメールが ${others}通届いています`;
+  $("pv-archive").hidden = !(admin && d.status === "unhandled");
+  $("pv-archive").disabled = archivingIds.has(id);
+}
+// 右の本文の「☆ フラグ」と、件名の下の印 (重要度・種類・状態・担当・★)。★を付け外ししたときは、ここだけ描き直す
+function renderPvFlag(d) {
+  setFlagButton($("pv-flag"), d);
+  const who = [d.flagged_by, d.flagged_at ? fmtListDate(d.flagged_at) : ""].filter(Boolean).join("・");
+  $("pv-badges").innerHTML =
+    `<span class="prb pr-${Number(d.priority)}" title="重要度">${esc(PR[d.priority] || d.priority)}</span>` +
+    catBadge(d.category) + `<span class="pv-st">${statusMark(d)}</span>` +
+    (d.assignee_name ? `<span class="pv-chip">担当: ${esc(d.assignee_name)}</span>` : "") +
+    (d.flagged ? `<span class="pv-chip pv-star">★ ${esc(who || "フラグ")}</span>` : "");
+}
+// 右の本文の添付ファイル (縮小画像は出さない。画像は「見る」で大きく見られる。「保存」でダウンロード)。
+// ファイル名・理由は esc() を通す
+function renderPvAttachments(d) {
+  const atts = d.attachments || [], skipped = d.skipped_attachments || [];
+  const box = $("pv-atts");
+  box.hidden = !atts.length && !skipped.length;
+  box.innerHTML = box.hidden ? "" :
+    `<small>📎 添付ファイル（${atts.length + skipped.length}）</small>` +
+    atts.map(a => `
+    <div class="att">
+      <span class="att-icon" aria-hidden="true">${a.previewable ? "🖼" : "📄"}</span>
+      <div class="att-name">${esc(a.filename)}<br><small>${esc(fmtSize(a.size))}</small></div>
+      ${a.previewable ? `<button type="button" class="ghost" data-pv-view="${Number(a.id)}" aria-label="${esc(a.filename)} を見る">見る</button>` : ""}
+      <button type="button" class="ghost" data-pv-dl="${Number(a.id)}" aria-label="${esc(a.filename)} を保存">保存</button>
+    </div>`).join("") +
+    skipped.map(a => `
+    <div class="att skipped">
+      <span class="att-icon">⚠</span>
+      <div class="att-name">${esc(a.filename)}${a.size ? ` <small>（${esc(fmtSize(a.size))}）</small>` : ""}<br>
+        <small>${esc(a.reason)}</small></div>
+    </div>`).join("") +
+    (skipped.length ? "<small>保存していないファイルは、Webメールで元のメールを開くと見られます。</small>" : "");
+}
+$("pv-atts").onclick = async e => {
+  const b = e.target.closest("button[data-pv-dl], button[data-pv-view]");
+  if (!b || b.disabled || !pv.mail) return;
+  const id = pv.id, view = b.hasAttribute("data-pv-view");
+  const a = (pv.mail.attachments || []).find(x => x.id === Number(view ? b.dataset.pvView : b.dataset.pvDl));
+  if (!a) return;
+  const label = b.textContent;
+  b.disabled = true;
+  b.textContent = "準備中…";
+  try {
+    const blob = await fetchAttachment(id, a, view);
+    if (!view) saveBlob(blob, a.filename);
+    else if (pv.id === id) showViewer(URL.createObjectURL(blob), a.filename, true);
+  } catch (err) {
+    if (err.message !== "auth") alert(err.message);
+  }
+  b.disabled = false;
+  b.textContent = label;
+};
+
+// 「↩ 返信する」(上と下): 返信画面を右の本文の上に重ねて開く (閉じると右の本文を読み直す)
+$("pv-reply").onclick = $("pv-reply2").onclick = () => { if (pv.id) openMail(pv.id).catch(() => {}); };
+$("pv-flag").onclick = () => { if (pv.id && pv.mail) toggleFlag(pv.id, !pv.mail.flagged); };
+// 「やり取りを見る」: 返信画面を開いて、「この相手とのやり取り」を開く
+$("pv-thr-open").onclick = async () => {
+  const id = pv.id;
+  if (!id) return;
+  try { await openMail(id); } catch { return; }
+  if (modal.id !== id || $("m-thread").hidden) return;
+  $("m-thread").open = true;
+  $("m-thread").scrollIntoView({ block: "start" });
+};
+$("pv-client-link").onclick = e => {
+  e.preventDefault();
+  const key = $("pv-client-link").dataset.key;
+  if (key) navTo({ v: "client", key });   // 「戻る」で戻ると、このメールをまた右に出す
+};
+$("pv-archive").onclick = () => archiveFromPane();
+
+// 右の本文の「対応不要にする」(管理者・未対応のメールだけ。サーバも確かめる)。行の「対応不要」と同じく、
+// 行は一覧に残して灰色の「✓ 対応不要」にし、画面の下に「元に戻す」を出す。「状態」で「未対応」を
+// 選んでいるときは行が一覧から外れるので、次のメールを右に出す (Webメールと同じ)
+async function archiveFromPane() {
+  const b = $("pv-archive"), id = pv.id, d = pv.mail;
+  if (!id || !d || b.disabled || archivingIds.has(id)) return;
+  archivingIds.add(id);
+  b.disabled = true;
+  const rowBtns = () => document.querySelectorAll(`button.row-archive[data-archive="${id}"]`);
+  rowBtns().forEach(x => { x.disabled = true; });
+  let r = null;
+  try { r = await archiveMail(id, "unhandled"); } catch {}
+  archivingIds.delete(id);
+  if (!r) {
+    // 変えられなかった (理由はアラートで出した)。ボタンを戻して、受信箱を取り直す
+    if (pv.id === id) b.disabled = false;
+    rowBtns().forEach(x => { x.disabled = false; });
+    refreshInbox();
+    return;
+  }
+  markOpened(id);
+  showRowArchived(id, r);    // 行と右の本文を「✓ 対応不要」にする
+  const tr = mailRowOf(id);
+  if ($("filter").value === "unhandled" && tr) {
+    const ids = rowIds();
+    const next = nextRowId(ids.filter(x => x !== id), id, 1, ids.indexOf(id));
+    tr.classList.add("leaving");
+    peekRowOf(id)?.classList.add("leaving");
+    await new Promise(res => setTimeout(res, 260));
+    removeRows([tr, peekRowOf(id)], null);
+    rowsMovedAt = Date.now();
+    if (selectedId === id && next && paneOn()) selectRow(next, { now: true });
+  }
+  showArchivedToast(id, d.subject, r);
+  refreshInbox();      // タブの数・未対応の数も取り直す
+}
+
+// キーボード (右に本文を出しているときだけ): ↓ ↑ (j k) で前後のメール、Enter で返信画面、Esc で選ぶのを
+// やめる。文字を打つ所 (検索欄・選択欄など)・日本語の変換中・Ctrl などを押しているとき・返信画面などを
+// 開いているときは使わない。キーボードの位置が一覧か右の本文にあるとき (どこも押していないときも) だけ。
+// 右の本文の中では ↑ ↓ は本文を上下に動かす (j k で前後のメール)
+document.addEventListener("keydown", e => {
+  if (!paneOn() || anyModalOpen() || e.isComposing || e.keyCode === 229 ||
+      e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.defaultPrevented) return;
+  const t = e.target instanceof Element ? e.target : document.body;
+  if (t.isContentEditable || t.closest("input, textarea, select")) return;
+  const inPane = !!t.closest("#pv");
+  if (t !== document.body && !inPane && !t.closest("#mail-table")) return;
+  const k = e.key;
+  const step = k === "ArrowDown" || k === "j" ? 1 : k === "ArrowUp" || k === "k" ? -1 : 0;
+  if (step) {
+    if (inPane && k.startsWith("Arrow")) return;
+    e.preventDefault();
+    moveSelection(step);
+  } else if (k === "Enter" && !e.repeat && selectedId &&
+             (t === document.body || t === $("pv") || t.matches(".mail-row"))) {
+    e.preventDefault();       // ボタンにいるときの Enter は、そのボタンを押す
+    openMail(selectedId).catch(() => {});
+  } else if (k === "Escape" && selectedId) {
+    clearSelection();
+  }
+});
+// 右に本文を出しているときは、行をダブルクリックしても返信画面を開く
+document.querySelector("#mail-table tbody").addEventListener("dblclick", e => {
+  const tr = e.target.closest(".mail-row");
+  if (!tr || !paneOn() || e.target.closest("button")) return;
+  openMail(Number(tr.dataset.id)).catch(() => {});
+});
+applyLayout();
+
 /* ---------- 返信モーダル ---------- */
+// 返信画面を開いた回数 (続けて開いた・閉じたときに、前に頼んだメールの答えで上書きしない用)
+let openSeq = 0;
 async function openMail(id) {
+  const seq = ++openSeq;
   const m = await apiJson(`/api/mail/${id}`);
+  if (seq !== openSeq) return;         // 待っている間に別のメールを開いた・閉じた
   markOpened(id);
   const replied = m.status === "replied";
   modal = { ...EMPTY_MODAL, id, savedDraft: m.draft_reply || "",
@@ -3588,10 +4306,15 @@ function modalMeta(m) {
     (m.flagged ? `・★フラグ${m.flagged_by ? `（${m.flagged_by}）` : ""}` : "");
 }
 
-// 返信画面の「☆ フラグ」(付いていれば「★ フラグ中」。付けた人・時刻は指したときの説明)。
-// サーバが★を返さない (前の版の) ときは出さない。件名の下の行もそろえる
+// 返信画面の「☆ フラグ」と、件名の下の行
 function renderModalFlag(m) {
-  const b = $("m-flag"), on = !!m.flagged;
+  setFlagButton($("m-flag"), m);
+  $("m-meta").textContent = modalMeta(m);
+}
+// 「☆ フラグ」のボタン (返信画面・右の本文。付いていれば「★ フラグ中」。付けた人・時刻は指したときの説明)。
+// サーバが★を返さない (前の版の) ときは出さない
+function setFlagButton(b, m) {
+  const on = !!m.flagged;
   b.hidden = !("flagged" in m);
   b.setAttribute("aria-pressed", String(on));
   b.setAttribute("aria-label", on ? "★フラグを外す" : "★フラグを付ける");
@@ -3599,7 +4322,6 @@ function renderModalFlag(m) {
   b.querySelector(".m-flag-txt").textContent = on ? " フラグ中" : " フラグ";
   b.title = !on ? "★フラグを付けると、みんなの画面で目立ちます"
     : `${m.flagged_by ? m.flagged_by + " が " : ""}${m.flagged_at ? fmtDate(m.flagged_at) + " に" : ""}付けました（押すと外します）`;
-  $("m-meta").textContent = modalMeta(m);
 }
 $("m-flag").onclick = () => {
   if (modal.id && modal.mail) toggleFlag(modal.id, !modal.mail.flagged);
@@ -3655,11 +4377,20 @@ function renderControls(m) {
 // 確認のお願い (確認待ち) と差し戻しの知らせ。名前・ひとこと・コメントは textContent で入れる
 function renderApprovalBox(m) {
   const admin = isAdmin();
+  const { kind, head, note, help } = approvalText(m, admin);
+  $("m-appr").hidden = !kind;
+  $("m-appr").className = "appr" + (kind === "returned" ? " ret" : "");
+  $("m-return-box").hidden = !(admin && kind === "pending");
+  $("m-appr-head").textContent = head;
+  $("m-appr-note").textContent = note;
+  $("m-appr-note").hidden = !note;
+  $("m-appr-help").textContent = help;
+}
+// 確認のお願いと差し戻しの言葉 (返信画面と右の本文で同じ言葉にする)。
+// kind: "pending" (確認待ち)・"returned" (差し戻し)・"" (どちらでもない)。文字は画面に入れるときに textContent で
+function approvalText(m, admin) {
   const pending = m.status === "pending_approval";
   const returned = !pending && m.status !== "replied" && !!m.return_note;
-  $("m-appr").hidden = !pending && !returned;
-  $("m-appr").className = "appr" + (returned ? " ret" : "");
-  $("m-return-box").hidden = !(admin && pending);
   let head = "", note = "", help = "";
   if (pending) {
     head = `📝 ${m.requested_by || "メール担当者"} さんが確認をお願いしています` +
@@ -3673,10 +4404,7 @@ function renderApprovalBox(m) {
     note = "コメント: " + m.return_note;
     help = admin ? "" : "コメントを見て返信文を直し、もう一度「確認をお願いする」を押してください。";
   }
-  $("m-appr-head").textContent = head;
-  $("m-appr-note").textContent = note;
-  $("m-appr-note").hidden = !note;
-  $("m-appr-help").textContent = help;
+  return { kind: pending ? "pending" : returned ? "returned" : "", head, note, help };
 }
 
 $("m-priority").onchange = async () => {
@@ -4223,28 +4951,38 @@ const seenRequest = () => modal.mail ? (modal.mail.requested_at || "") : null;
 // CC・BCC の欄の今の中身 (開いたとき・残したときから変えたかを比べる用)
 const rcptKey = () => $("m-cc").value + "\n" + $("m-bcc").value;
 
-// 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき。送信済みは保存しない)。
-// CC・BCC を変えていたら一緒に残す (開き直したときに、外した人を「全員に返信」で入れ直さない)
-async function saveDraft() {
+// 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき・タブを隠したとき。
+// 送信済みは保存しない)。CC・BCC を変えていたら一緒に残す (開き直したときに、外した人を
+// 「全員に返信」で入れ直さない)。opts.keepalive: ページを閉じても送り終えるようにする
+// (送れる大きさに上限があるので、長い文はふつうに送る)。保存できなかったときは画面の下に知らせる
+// (ほかの人が先に確認をお願いした・通信が切れた など。黙って書きかけを失わないように)
+async function saveDraft(opts = {}) {
   const draft = $("m-draft").value, rcpt = rcptKey();
   const rcptChanged = rcpt !== modal.savedRcpt;
   if (modal.id && !$("m-draft").readOnly && (draft !== modal.savedDraft || rcptChanged)) {
     const body = { draft_reply: draft, seen_request: seenRequest() };
     if (rcptChanged) Object.assign(body, { draft_cc: $("m-cc").value, draft_bcc: $("m-bcc").value });
+    const json = JSON.stringify(body), opened = modal;   // 待っている間に閉じても、閉じたメールの印に残す
     try {
-      await api(`/api/mail/${modal.id}`, {
+      const r = await api(`/api/mail/${modal.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: json, keepalive: !!opts.keepalive && json.length < 60000,
       });
-      modal.savedDraft = draft;
-      modal.savedRcpt = rcpt;
-    } catch {}
+      if (!r.ok) throw new Error("draft " + r.status);
+      opened.savedDraft = draft;
+      opened.savedRcpt = rcpt;
+    } catch (e) {
+      if (e.message !== "auth") {
+        noticeToast("書きかけの返信文を保存できませんでした（そのメールを開き直して確かめてください）");
+      }
+    }
   }
 }
 
 async function closeModal(opts = {}) {
   sugHide();
   await saveDraft();
+  openSeq++;           // 開こうとしていたメール (やり取りの別のメール) の答えが後から来ても、開き直さない
   modal = { ...EMPTY_MODAL };
   modalHistory = [];
   clearAttachments();
@@ -4258,6 +4996,13 @@ async function closeModal(opts = {}) {
     const { mail: _m, ...rest } = history.state;
     history.replaceState(rest, "", location.href);
   }
+  // 右に本文を出しているときは、返信画面でしたこと (送った・確認をお願いした・対応不要にした・
+  // 下書きを直した) を右の本文にも出し直し、選んでいた行に戻る
+  if (paneOn() && pv.id) {
+    pv.quietUntil = Date.now() + PV_QUIET_MS;
+    pvShow(pv.id, { keepScroll: true, quiet: true });
+    mailRowOf(selectedId)?.focus({ preventScroll: true });
+  }
   // 開いている間に新着などで受信箱が変わっていたら、ここで取り直す
   if (inboxStale && viewName === "inbox") showInbox({ auto: true });
   // 取引先の画面から開いたメールを送った・変えたときは、取引先の画面を取り直す (見ていた場所はそのまま)
@@ -4266,7 +5011,23 @@ async function closeModal(opts = {}) {
   if (sentStale && viewName === "sent") refreshSent();
 }
 $("m-close").onclick = $("m-close-top").onclick = () => closeModal();
-$("mail-modal").onclick = e => { if (e.target === $("mail-modal")) closeModal(); };
+// 返信画面の外 (暗い所) を押すと閉じる。右に本文を出しているときは、薄く見えている一覧の行を押したら、
+// 閉じてそのメールを右に出す (1回で)
+$("mail-modal").onclick = async e => {
+  if (e.target !== $("mail-modal")) return;
+  const x = e.clientX, y = e.clientY;
+  await closeModal();
+  if (!paneOn()) return;
+  const tr = document.elementFromPoint(x, y)?.closest("#mail-table .mail-row");
+  if (tr) selectRow(Number(tr.dataset.id), { now: true });
+};
+// 書きかけの返信文は、タブを隠したとき (iPhone でほかのアプリに切り替えた など)・ページを閉じるときにも
+// 残す (そのまま閉じられても、次に開いたときに続きを書ける)
+function saveDraftNow() {
+  if (!$("mail-modal").hidden) saveDraft({ keepalive: true });
+}
+window.addEventListener("pagehide", saveDraftNow);
+document.addEventListener("visibilitychange", () => { if (document.hidden) saveDraftNow(); });
 
 /* この相手とのやり取り (同じ相手から届いたほかのメールと、こちらが送った返信)。
    差出人・件名・本文などは外から来た文字なので、必ず esc() を通してから入れる。
@@ -4443,20 +5204,25 @@ async function loadThumbnails(mailId, seq) {
   }
 }
 
+// 受け取ったファイルを、ブラウザの「ダウンロード」で保存する (返信画面・右の本文)
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename || "添付ファイル";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // すぐ消すと保存が始まる前に消えてしまうブラウザがあるので、少し待ってから消す
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 async function downloadAttachment(button) {
   const a = attList.find(x => x.id === +button.dataset.attDl);
   if (!a || !modal.id) return;
   button.disabled = true; button.textContent = "準備中…";
   try {
-    const url = URL.createObjectURL(await fetchAttachment(modal.id, a, false));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = a.filename || "添付ファイル";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    // すぐ消すと保存が始まる前に消えてしまうブラウザがあるので、少し待ってから消す
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    saveBlob(await fetchAttachment(modal.id, a, false), a.filename);
   } catch (e) {
     if (e.message !== "auth") alert(e.message);
   }
@@ -4467,15 +5233,22 @@ $("m-atts").onclick = e => {
   const dl = e.target.closest("button[data-att-dl]");
   if (dl) { downloadAttachment(dl); return; }
   const img = e.target.closest("img[data-att]");
-  if (img && img.src) {                // 縮小画像を押すと大きく見られる
-    $("att-viewer-img").src = img.src;
-    $("att-viewer-img").alt = img.alt;
-    $("att-viewer").hidden = false;
-  }
+  if (img && img.src) showViewer(img.src, img.alt);   // 縮小画像を押すと大きく見られる
 };
+// 画像を大きく見る。own: この画面で作った一時的な URL (閉じたら消す。返信画面の縮小画像の URL は、
+// 返信画面を閉じたときに消す)
+let viewerUrl = null;
+function showViewer(src, alt, own) {
+  closeViewer();
+  if (own) viewerUrl = src;
+  $("att-viewer-img").src = src;
+  $("att-viewer-img").alt = alt || "";
+  $("att-viewer").hidden = false;
+}
 function closeViewer() {
   $("att-viewer").hidden = true;
   $("att-viewer-img").removeAttribute("src");
+  if (viewerUrl) { URL.revokeObjectURL(viewerUrl); viewerUrl = null; }
 }
 $("att-viewer").onclick = () => closeViewer();
 
@@ -6760,7 +7533,8 @@ $("m-reply-via-link").onclick = async e => {
 /* ---------- 画面の行き来 (ブラウザ・スマホの「戻る」で、前の画面の前の場所に戻れるように) ----------
    履歴の1つ1つ: { v: "inbox" | "sent" | "sentmail" | "clients" | "client" | "settings",
    key (取引先の番号・送信箱の1通の番号),
-   q (探す言葉), mail (開いていたメールの番号), scroll (見ていた位置), n (この画面までの数) } */
+   q (探す言葉), mail (開いていたメールの番号), sel (受信箱の右に出していたメールの番号),
+   scroll (見ていた位置), n (この画面までの数) } */
 function stateFromHash() {
   const h = location.hash;
   if (h === "#clients") return { v: "clients" };
@@ -6815,6 +7589,8 @@ async function renderState(st, restore) {
     else await showInbox(restore ? { auto: true } : {});
   } catch { return; }
   if (restore && typeof st.scroll === "number") window.scrollTo(0, st.scroll);
+  // 右に出していたメール (取引先の画面などから戻ったとき)
+  if (restore && st.sel && paneOn()) selectRow(st.sel, { now: true, focus: false });
   if (restore && st.mail && $("mail-modal").hidden) openMail(st.mail).catch(() => {});
 }
 window.addEventListener("popstate", async e => {
