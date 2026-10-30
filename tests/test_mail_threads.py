@@ -41,7 +41,7 @@ def conn(tmp_path):
               " VALUES ('info', 'imap.example.com', ?, ?, '2026-01-01T00:00:00+00:00')", (OWN, OWN))
     c.execute("INSERT INTO users (name, token, email) VALUES ('黒須', 'tok-k', ?)", (STAFF,))
     c.commit()
-    mail_threads.process_pending(c)   # 空の DB を数え終えた (この後は少しずつ)
+    mail_threads.rebuild(c, mail_threads.Ctx(c))   # 空の DB を数え終えた (この後は少しずつ)
     yield c
     c.close()
 
@@ -469,7 +469,7 @@ def test_rebuild_equals_incremental_for_any_insertion_order(tmp_path):
             c.execute("INSERT INTO mail_accounts (label, imap_user, from_addr, created_at)"
                       " VALUES ('info', ?, ?, '2026-01-01T00:00:00+00:00')", (OWN, OWN))
             c.commit()
-            mail_threads.process_pending(c)
+            mail_threads.rebuild(c, mail_threads.Ctx(c))
             got = _scenario(c, random.Random(seed))
             parts = sorted(sorted(g) for g in got)
             if want is None:
@@ -549,6 +549,101 @@ def test_rule_change_rebuilds_and_dissolves_thread(conn):
     assert mail_threads._state(conn, mail_threads.RULE_KEY) == mail_threads.Ctx(conn).signature()
 
 
+def test_contact_change_during_rebuild_never_leaves_two_customers(conn, tmp_path, monkeypatch):
+    """数え直している間 (読んだ後、書く前) に、ほかの書き込み (管理者が「フォームの送信元」を保存して
+    相手を決め直した など) でメールの相手が変わっても、別のお客様のメールを1つのスレッドに残さない."""
+    from server import db, mail_threads
+    monkeypatch.setattr(mail_threads, "_checked", True)   # 起動してから最初の回は、もう済んでいる
+    a = ins(conn, "cust1@gmail.com")
+    x = ins(conn, "cust1@gmail.com", irt=msgid(conn, a))
+    # 社内の人のアドレスを登録した → 決まりが変わり、次の回に数え直す
+    conn.execute("INSERT INTO users (name, token, email) VALUES ('新人', 'tok-new', 'new.staff@example.com')")
+    conn.commit()
+    other = db.connect(tmp_path / "zatsumu.db")
+    real = mail_threads.partition
+
+    def partition_then_other_write(c, ctx):
+        want = real(c, ctx)
+        other.execute("UPDATE mails SET contact_addr = 'cust2@gmail.com', contact_source = 'body',"
+                      " contact_via_form = 1 WHERE id = ?", (x,))
+        other.commit()
+        return want
+
+    monkeypatch.setattr(mail_threads, "partition", partition_then_other_write)
+    try:
+        mail_threads.maintain(conn)
+    finally:
+        monkeypatch.setattr(mail_threads, "partition", real)
+        other.close()
+    assert mail_threads.check(conn, mail_threads.Ctx(conn), repair=False) == []
+    assert tid(conn, x) is None
+    pend(conn)
+    mail_threads.maintain(conn)
+    assert mail_threads.check(conn, mail_threads.Ctx(conn), repair=False) == []
+    assert tid(conn, x) is None
+
+
+def test_contact_change_while_linking_never_leaves_two_customers(conn, tmp_path, monkeypatch):
+    """process_pending がつなぐ先を読んだ後、書く前に、ほかの書き込みで相手が変わっても、
+    確定する前に確かめて、別のお客様のメールを1つのスレッドに残さない."""
+    from server import db, mail_threads
+    a = ins(conn, "cust1@gmail.com")
+    x = ins(conn, "cust1@gmail.com", irt=msgid(conn, a))
+    other = db.connect(tmp_path / "zatsumu.db")
+    real = mail_threads.plan
+    done = []
+
+    def plan_then_other_write(c, ctx, m, refs):
+        got = real(c, ctx, m, refs)
+        if not done and got[0] is not None:
+            done.append(1)
+            other.execute("UPDATE mails SET contact_addr = 'cust2@gmail.com' WHERE id = ?", (x,))
+            other.commit()
+        return got
+
+    monkeypatch.setattr(mail_threads, "plan", plan_then_other_write)
+    try:
+        pend(conn)
+    finally:
+        monkeypatch.setattr(mail_threads, "plan", real)
+        other.close()
+    assert done
+    assert mail_threads.check(conn, mail_threads.Ctx(conn), repair=False) == []
+    assert tid(conn, x) is None
+    pend(conn)
+    assert mail_threads.check(conn, mail_threads.Ctx(conn), repair=False) == []
+    assert tid(conn, x) is None
+
+
+def test_rebuild_lets_other_writers_in_between_chunks(conn, tmp_path, monkeypatch):
+    """数え直しは、少しずつ確定し、確定するごとに休む。休んでいる間は、ほかの書き込み (画面の操作・
+    打刻など) が待たずに書ける (待っている側が空いたかを確かめる間隔 (長くて 0.1 秒) より長く休む)."""
+    import types
+    from server import db, mail_threads
+    for i in range(5):
+        p = ins(conn, f"cust{i}@c.example.jp", commit=False)
+        ins(conn, f"cust{i}@c.example.jp", irt=msgid(conn, p), commit=False)
+    conn.commit()
+    monkeypatch.setattr(mail_threads, "REBUILD_CHUNK", 3)
+    other = db.connect(tmp_path / "zatsumu.db")
+    other.execute("PRAGMA busy_timeout = 0")   # 待たずに書けるか
+    pauses = []
+
+    def pause(sec):
+        pauses.append(sec)
+        other.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('probe', ?)", (str(len(pauses)),))
+        other.commit()
+
+    monkeypatch.setattr(mail_threads, "time", types.SimpleNamespace(sleep=pause))
+    try:
+        assert mail_threads.rebuild(conn, mail_threads.Ctx(conn)) == 10
+    finally:
+        other.close()
+    assert len(pauses) == 3                     # 10行を3行ずつ: 4回に分けて確定し、間に3回休む
+    assert min(pauses) > 0.1 and mail_threads.REBUILD_PAUSE > 0.1
+    assert len(groups(conn)) == 5
+
+
 def test_maintain_skips_while_fetching(conn):
     from server import mail, mail_threads
     a = ins(conn, "taro@a.example.jp")
@@ -564,16 +659,44 @@ def test_maintain_skips_while_fetching(conn):
 
 
 def test_first_run_rebuilds_everything_once(tmp_path):
-    """この機能を入れた最初の回 (決まりの印が無い) は、全部を数える (前からあるメールもまとまる)."""
+    """この機能を入れた最初の回 (決まりの印が無い) は、定期受信の回 (maintain) が全部を数える
+    (前からあるメールもまとまる)。それまでの process_pending は何もしない."""
     from server import db, mail_threads
     c = db.connect(tmp_path / "first.db")
     try:
         a = ins(c, "taro@a.example.jp")
         b = ins(c, "taro@a.example.jp", irt=msgid(c, a))
         assert mail_threads._state(c, mail_threads.RULE_KEY) == ""
-        mail_threads.process_pending(c)
+        assert mail_threads.process_pending(c) == 0
+        assert tid(c, a) is None and tid(c, b) is None and mail_threads._upto(c) == 0
+        mail_threads.maintain(c)
         assert same(c, a, b)
         assert mail_threads._upto(c) == b and mail_threads._state(c, mail_threads.RULE_KEY)
+    finally:
+        c.close()
+
+
+def test_fetch_now_before_first_tick_does_not_rebuild(tmp_path, monkeypatch):
+    """更新した後、最初の定期受信の回の前に「今すぐ受信」(fetch_mail_locked) を押しても、全部を数え直さない
+    (画面の頼みの中で何万通も書き込みのロックを持たない)。全部を数えるのは定期受信の回 (maintain)."""
+    from server import db, mail, mail_threads
+    from tests.test_mail_attachments import FakeIMAP
+    c = db.connect(tmp_path / "first.db")
+    try:
+        c.execute("INSERT INTO mail_accounts (label, imap_host, imap_user, from_addr, created_at, sent_import)"
+                  " VALUES ('info', 'imap.example.com', ?, ?, '2026-01-01T00:00:00+00:00', 0)", (OWN, OWN))
+        c.commit()
+        a = ins(c, "taro@a.example.jp")
+        b = ins(c, "taro@a.example.jp", irt=msgid(c, a))
+        called = []
+        real = mail_threads.rebuild
+        monkeypatch.setattr(mail_threads, "rebuild", lambda *x, **k: called.append(1) or real(*x, **k))
+        monkeypatch.setattr(mail, "_imap_connect", lambda s: FakeIMAP({}))
+        assert mail.fetch_mail_locked(c, {**db.get_settings(c), "mail_auto_draft": 0}) == []
+        assert called == [] and tid(c, a) is None and tid(c, b) is None
+        assert mail_threads._state(c, mail_threads.RULE_KEY) == ""
+        mail_threads.maintain(c)
+        assert called == [1] and same(c, a, b)
     finally:
         c.close()
 
@@ -676,7 +799,7 @@ def test_previous_version_writes_are_picked_up(tmp_path):
     c.execute("INSERT INTO mail_accounts (label, imap_user, from_addr, created_at)"
               " VALUES ('info', ?, ?, '2026-01-01T00:00:00+00:00')", (OWN, OWN))
     c.commit()
-    mail_threads.process_pending(c)
+    mail_threads.rebuild(c, mail_threads.Ctx(c))
     a = ins(c, "taro@a.example.jp", msgid="<a@x>")
     b = ins(c, "taro@a.example.jp", irt="<a@x>", msgid="<b@x>")
     gone = ins(c, "gone@g.example.jp", msgid="<g@x>", fetched="2026-01-01T00:00:00+00:00")
@@ -725,9 +848,13 @@ def test_previous_version_writes_are_picked_up(tmp_path):
 
 # ---------- 速さ (2万通) ----------
 
-def test_performance_on_20k_mails(tmp_path):
-    """2万通 (3万件ほどのつながり) の DB: 最初の数え直し・2回目 (書かない)・一覧の数え・新しいメールの決め方."""
+def test_performance_on_20k_mails(tmp_path, monkeypatch):
+    """2万通 (3万件ほどのつながり) の DB: 最初の数え直し・2回目 (書かない)・一覧の数え・新しいメールの決め方.
+
+    数え直しで確定するごとに休む分 (REBUILD_PAUSE。ほかの書き込みに順番を譲る) は数えない
+    (休むことは test_rebuild_lets_other_writers_in_between_chunks で確かめる)。"""
     from server import db, mail, mail_threads
+    monkeypatch.setattr(mail_threads, "REBUILD_PAUSE", 0)
     c = db.connect(tmp_path / "big.db")
     try:
         c.execute("INSERT INTO mail_accounts (label, imap_user, from_addr, created_at)"

@@ -40,7 +40,7 @@ def users(client, tmp_path):
 def conn(tmp_path, users):
     from server import db, mail_threads
     c = db.connect(tmp_path / "zatsumu.db")
-    mail_threads.process_pending(c)
+    mail_threads.rebuild(c, mail_threads.Ctx(c))   # 空の DB を数え終えた (この後は少しずつ)
     yield c
     c.close()
 

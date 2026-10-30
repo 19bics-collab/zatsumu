@@ -950,6 +950,8 @@
   .th-att { margin-left: .2rem; }
   .th-n { color: #475569; font-size: .78rem; margin-right: .35rem; white-space: nowrap; }
   @media (pointer: coarse) { .th-tg { min-height: 40px; padding: .45rem .8rem; } }
+  /* 右に本文の2行の一覧 (マウスの画面): 「▶ 5通」で件名の行を高くしない (先頭の行もほかの行と同じ高さ) */
+  @media (pointer: fine) { #inbox.pane-mode #mail-table .th-tg { min-height: 0; line-height: 1.3; padding: 0 .5rem; } }
   /* 表: 続きの行は差出人を下げて ↳ を付ける (スマホのカードは、欄の名前「差出人」をそのまま出し、カードごと右へ) */
   @media (min-width: 641px) {
     .mail-row.th-child td.c-from { padding-left: calc(.6rem + min(var(--ind, 1), 4) * .7rem); }
@@ -2718,13 +2720,22 @@ function groupThreads(list, o = {}) {
     const rest = Math.max(0, size - shown.length);
     const visOpen = shown.filter(m => TH_OPEN.includes(m.status)).length;
     const visFlag = shown.filter(m => m.flagged).length;
+    // スレッドの★の数: サーバが数えた数に、この画面で後から付けた・外した★を足し引きする (外した★が
+    // 「★1」で残らないように)。一覧の答えにあるメールは答えの★ (srv_flagged) との違い、無いメールは
+    // o.offFlags (toggleFlag) の分
+    const listed = new Set([h, ...b.cands].map(m => Number(m.id)));
+    let flagFix = [h, ...b.cands].reduce((n, m) =>
+      n + (m.srv_flagged === undefined ? 0 : (m.flagged ? 1 : 0) - (m.srv_flagged ? 1 : 0)), 0);
+    for (const [id, f] of o.offFlags || []) {
+      if (f.key === b.key && !listed.has(Number(id))) flagFix += (f.now ? 1 : 0) - (f.was ? 1 : 0);
+    }
     head.pill = {
       size, open, rest, button: rest > 0 || open,
       // 一覧に出ていない (上の絞り込みに合わない) 未対応・確認待ち。「返信済み」「対応不要」だけを出して
       // いるときは、ほかの状態のメールが出ていないのは当たり前なので数えない
       openHidden: o.status === "replied" || o.status === "archived" ? 0
         : Math.max(0, (Number(h.th_open) || 0) - visOpen),
-      flagHidden: Math.max(0, (Number(h.th_flagged) || 0) - visFlag),
+      flagHidden: Math.max(0, (Number(h.th_flagged) || 0) + flagFix - visFlag),
       newFolded: hidden.some(m => isNew(m)),
       attFolded: hidden.some(m => Number(m.attachment_count) > 0),
       firstAt: h.th_first_at || "",
@@ -2776,6 +2787,37 @@ function pvConvHtml(items, cur, total) {
   const rest = n - items.length;
   return `<h3>このスレッド（メール ${n}通・古い順）</h3><ol>${li}</ol>` + (rest > 0
     ? `<small>古いメールが、ほかに ${rest} 通あります（返信画面の「この相手とのやり取り」で見られます）</small>` : "");
+}
+// 行の並びの、スレッド (と1通のメール) の印の並び (同じ印は最初の1つだけ)
+const blockKeys = keys => [...new Set(keys.map(Number))];
+// 描き直す前と後で、場所が動いたスレッド (と1通のメール) の印。前と後の両方にあるものだけで比べ、上と下の
+// 隣が両方とも変わったものを「動いた」とする (新着でスレッドが一番上に動いた など。上に新着が増えた・
+// 消えただけのものは動いたことにしない)
+function thrMovedKeys(before, after) {
+  const inA = new Set(after), inB = new Set(before);
+  const a = before.filter(k => inA.has(k)), b = after.filter(k => inB.has(k));
+  const near = list => new Map(list.map((k, i) => [k, [list[i - 1], list[i + 1]]]));
+  const na = near(a), nb = near(b), moved = new Set();
+  for (const k of a) {
+    const [p1, n1] = na.get(k), [p2, n2] = nb.get(k);
+    if (p1 !== p2 && n1 !== n2) moved.add(k);
+  }
+  return moved;
+}
+// 自動で取り直して描き直すときに、同じ位置に見せる行 (seen は描き直す前に見えていた行。上から)。ふつうは一番上に
+// 見えていた行。その行のスレッドが動いた (新着で一番上へ など) ときは、動かなかった行 (右に本文を出していれば、
+// 選んでいる行を先に) に合わせる (見ていたあたりの行を、画面の外へ飛ばさない)。動かなかった行が見えていなければ、
+// 一番上の行のまま (そのスレッドを読んでいた)
+function thrStableAnchor(seen, before, rows) {
+  if (!seen.length) return null;
+  const blockOf = tr => Number(tr.classList.contains("peek-row")
+    ? mailRowOf(tr.dataset.peekRow)?.dataset.th ?? tr.dataset.peekRow : tr.dataset.th);
+  const moved = thrMovedKeys(before, blockKeys(rows.filter(r => r.m).map(r => r.key)));
+  if (!moved.has(blockOf(seen[0]))) return seen[0];
+  const inView = seen.filter(tr => tr.getBoundingClientRect().top < window.innerHeight && !moved.has(blockOf(tr)));
+  const sel = paneOn() && selectedId ? inView.find(tr => tr.classList.contains("mail-row") &&
+                                                         Number(tr.dataset.id) === selectedId) : null;
+  return sel || inView[0] || seen[0];
 }
 // スレッド: ここまで
 
@@ -2845,6 +2887,8 @@ async function showInbox(opts = {}) {
   // スレッドの数を付けて返したか (前の版のサーバ・探しているとき・設定で止めているときは1通ずつ)
   thrServer = threads;
   applyLocalFlags(list, askedAt);
+  // 一覧の答えに無いメールの★ (offFlags) は、送り終えた後に頼んだ答えなら、もう数に入っている
+  for (const [id, f] of offFlags) if (f.at < askedAt) offFlags.delete(id);
   renderInbox(list, opts.auto);
   refreshAiStatus();   // 自動受信の判定などで AI が失敗した・直ったかを、開くたびに出し直す
 }
@@ -2887,15 +2931,20 @@ function renderInbox(list, keepPlace, opts = {}) {
   // 自動で取り直したときは、見ていた場所を動かさない (一番上に見えていた行が、
   // 描き直した後も同じ位置に見えるようにする)。一番上にいるときは、上に増えた新着を見せる
   // (開いているプルダウンの中を読んでいるときは、そのプルダウンの位置を動かさない)。
-  // スレッドを開け閉めしたときは、押した行 (スレッドの先頭の行) を動かさない
+  // スレッドを開け閉めしたときは、押した行 (スレッドの先頭の行) を動かさない。
+  // 合わせる行は、下でスレッドにまとめた後に決める (thrStableAnchor。新着でスレッドが上に動いたとき)
   const pinRow = opts.anchorId ? mailRowOf(opts.anchorId) : null;
-  const anchor = pinRow || (keepPlace && window.scrollY > 0
-    ? [...tbody.querySelectorAll(".mail-row, .peek-row")].find(tr => tr.getBoundingClientRect().bottom > 0)
-    : null);
-  const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
-  const anchorSel = !anchor ? ""
-    : anchor.classList.contains("peek-row") ? `.peek-row[data-peek-row="${Number(anchor.dataset.peekRow)}"]`
-    : `.mail-row[data-id="${Number(anchor.dataset.id)}"]`;
+  const seenRows = [], seenTops = new Map();   // 見えている行 (上から) と、その位置
+  if (!pinRow && keepPlace && window.scrollY > 0) {
+    for (const tr of tbody.querySelectorAll(".mail-row, .peek-row")) {
+      const b = tr.getBoundingClientRect();
+      if (b.bottom <= 0) continue;
+      seenRows.push(tr);
+      seenTops.set(tr, b.top);
+      if (b.top >= window.innerHeight) break;
+    }
+  }
+  const blocksBefore = blockKeys([...tbody.querySelectorAll(".mail-row")].map(tr => tr.dataset.th));
   const focus = focusedRowButton(tbody);   // キーボードでいたボタン (描き直した後に戻す)
   const newest = mailStatus && mailStatus.newest_id || 0;
   // 初めて開いた (覚えていない) ときは、今あるメールには印を付けない。
@@ -2925,10 +2974,15 @@ function renderInbox(list, keepPlace, opts = {}) {
   // スレッドにまとめる (探しているとき・「1通ずつ」・設定でオフのときは、そのまま1通ずつ)
   const rows = groupThreads(list, {
     on: thrOn(), expanded: thrExpanded, keep: keepShown, sel: paneOn() ? selectedId : null,
-    cache: thrCache, cards: CARD_MQ.matches, status: $("filter").value,
+    cache: thrCache, cards: CARD_MQ.matches, status: $("filter").value, offFlags,
     isNew: m => Number(m.id) > seenId && !openedIds.has(Number(m.id)) });
   // 開いたスレッドで出した、一覧に無い (上の絞り込みに合わない) メールも、出しているメールに入れる
   for (const r of rows) if (r.off && !shownMails.has(Number(r.m.id))) shownMails.set(Number(r.m.id), r.m);
+  const anchor = pinRow || thrStableAnchor(seenRows, blocksBefore, rows);
+  const anchorTop = !anchor ? 0 : seenTops.has(anchor) ? seenTops.get(anchor) : anchor.getBoundingClientRect().top;
+  const anchorSel = !anchor ? ""
+    : anchor.classList.contains("peek-row") ? `.peek-row[data-peek-row="${Number(anchor.dataset.peekRow)}"]`
+    : `.mail-row[data-id="${Number(anchor.dataset.id)}"]`;
   // 自動で取り直して行が増えた・減ったときは、少しの間「対応不要」などの行のボタン・行を押せないようにする
   // (押そうとした指の下に、別のメールのボタン・行が来ることがあるため)。比べるのは出す行の並び
   // (スレッドの続きの行も入れる)。スレッドを開け閉めした (押した人が動かした) ときは比べない
@@ -3738,6 +3792,10 @@ const flagTapAt = new Map();  // メールごとの、最後に ☆ を押した
 // この画面で付けた・外した★ (番号 → {at: 変えた時刻, f: ★})。★を送り終えた後に、押す前に
 // 頼んでいた一覧の答えが届いても、古い★で描き直さないようにする (applyLocalFlags)
 const flagLocal = new Map();
+// 一覧の答えに無いメール (開いたスレッドの条件外の行・右に出したメール) で、この画面が付けた・外した★
+// (番号 → {key: スレッドの印, was: 一覧を頼んだときの★, now: 今の★, at: 送り終えた時刻})。スレッドの「★N」
+// (畳んだ中の★の数) をそろえる (groupThreads)。その後に頼んだ一覧の答えが届いたら要らない (showInbox)
+const offFlags = new Map();
 
 // そのメールの★の見た目を、出ている所 (一覧の行の ☆・返信画面・右の本文) 全部でそろえる
 function setFlagUi(id, at, by) {
@@ -3760,9 +3818,11 @@ function setFlagUi(id, at, by) {
 }
 
 // 一覧の答え (askedAt に頼んだもの) に、頼んだ後でこの画面が付けた・外した★を当てる
-// (頼む前に変えた★は、サーバの答えのとおりに出す。ほかの人が付け替えた★も、それで出る)
+// (頼む前に変えた★は、サーバの答えのとおりに出す。ほかの人が付け替えた★も、それで出る)。
+// サーバの答えの★は srv_flagged に残す (スレッドの★の数 th_flagged は、その答えのときの数なので。groupThreads)
 function applyLocalFlags(list, askedAt) {
   for (const m of list) {
+    if ("flagged" in m) m.srv_flagged = !!m.flagged;
     const c = flagLocal.get(Number(m.id));
     if (c && c.at >= askedAt && "flagged" in m) Object.assign(m, c.f);
   }
@@ -3788,6 +3848,12 @@ async function toggleFlag(id, on) {
   setFlagUi(id, r.flagged_at, r.flagged_by);
   // ★を外しても、閉じたスレッドにすぐ畳まない (押した行が目の前で消えないように)
   keepShown.add(id);
+  // 一覧の答えに無いスレッドのメールなら、スレッドの「★N」をそろえるために覚えておく (一覧の答えにある
+  // メールの分は、答えの★ srv_flagged との違いでそろえる。groupThreads)
+  if (m.th_key != null && !lastInboxList.some(x => Number(x.id) === id)) {
+    const was = offFlags.has(id) ? offFlags.get(id).was : !!before[0];
+    offFlags.set(id, { key: Number(m.th_key), was, now: !!r.flagged_at, at: Date.now() });
+  }
   // タブの数をそろえる。一緒に、ほかの変わったこと (新着など) に気付いたら、次の確認で一覧を取り直す
   // (ここで変わったと分かった分は、1分ごとの確認では「変わった」にならないので)
   try { if (await checkStatus()) inboxStale = true; } catch {}
@@ -4084,9 +4150,11 @@ let selLastIndex = -1;      // 選んだ行が一覧の上から何番目にあ�
 // 変える前にサーバが答えた本文が後から届いても、変えた後の様子で出す (一覧の applyLocalFlags と同じ考え)・
 // failed: 出しているメールの読み直しに失敗した (同じ行をもう一度押すと読み直す)・
 // actMovedAt: 「対応不要にする」が消えた・出た (隣の「☆ フラグ」が横にずれた) 時刻 (renderPreview)・
-// history: 「このスレッド」から別のメールに移る前に出していたメール (「← 前のメールに戻る」用)
+// history: 「このスレッド」から別のメールに移る前に出していたメール (「← 前のメールに戻る」用)・
+// viaThread: 一覧の答えに無いメールを、スレッドから選んだ (「このスレッド」・開いたスレッドの条件外の行。markSelected)
 const pv = { id: null, seq: 0, timer: null, loading: null, mail: null, sig: "", offList: false,
-             quietUntil: 0, noteTimer: null, local: [], failed: false, actMovedAt: 0, history: [] };
+             quietUntil: 0, noteTimer: null, local: [], failed: false, actMovedAt: 0, history: [],
+             viaThread: false };
 const pvCache = new Map();  // 番号 → { data, sig } (前に読んだもの。新しく読んだ 30 通まで)
 const PV_CACHE_MAX = 30;
 const PV_WAIT_MS = 150;     // ↑ ↓ で動いてから読むまで待つ長さ (押したままでも、通り過ぎた行は読まない)
@@ -4140,7 +4208,14 @@ for (const b of document.querySelectorAll("#pane-tg button[data-pane-mode]")) {
 
 // 選んでいる行に印 (青い地・aria-current) を付ける。右に本文を出していないときは付けない。
 // 選んだメールが閉じたスレッドの中にある (「このスレッド」から選んだ) ときは、スレッドの先頭の行に
-// 薄い印 (sel-in) を付ける (↓ は、その行の次から続ける)
+// 薄い印 (sel-in) を付ける (↓ は、その行の次から続ける)。閉じたスレッドの中にあるとするのは、一覧の
+// 答えにある (畳んでいる) か、一覧の答えに無いメールをスレッドから選んだ (pv.viaThread) ときだけ。
+// 選んだ後に絞り込みに合わなくなった (対応不要にした など) メールは、同じスレッドのほかのメールが
+// 一覧に出ていても入れない (そのスレッドに畳んだのではないので。右には「一覧には出ていません」と出す)
+const selInList = id => lastInboxList.some(m => Number(m.id) === Number(id));
+function selFolded() {
+  return !!selectedId && (pv.viaThread || selInList(selectedId));
+}
 function markSelected() {
   const on = paneOn();
   for (const tr of document.querySelectorAll("#mail-table .mail-row.sel")) {
@@ -4151,7 +4226,7 @@ function markSelected() {
   for (const tr of document.querySelectorAll("#mail-table .mail-row.sel-in")) tr.classList.remove("sel-in");
   const tr = on && selectedId ? mailRowOf(selectedId) : null;
   if (!tr) {
-    const key = on && selectedId && pv.mail && Number(pv.mail.th_key);
+    const key = on && selFolded() && pv.mail && Number(pv.mail.th_key);
     const head = key ? [...document.querySelectorAll(`#mail-table .mail-row.th-head[data-th="${key}"]`)][0] : null;
     if (!head) return;
     head.classList.add("sel-in");
@@ -4172,6 +4247,8 @@ function selectRow(id, { now = false, focus = true, announce = false, keepHistor
   if (!id) return;
   selectedId = id;
   if (!keepHistory) pv.history = [];
+  // 一覧の答えに無いメールを、スレッドから選んだか (「このスレッド」から・開いたスレッドの条件外の行)
+  pv.viaThread = !selInList(id) && (keepHistory || !!mailRowOf(id)?.classList.contains("off"));
   $("pv-back").hidden = !pv.history.length;
   markSelected();
   if (focus) mailRowOf(id)?.focus({ preventScroll: true });
@@ -4201,7 +4278,7 @@ function clearSelection() {
   clearTimeout(pv.timer);
   pv.seq++;
   Object.assign(pv, { id: null, loading: null, mail: null, sig: "", offList: false, failed: false,
-                      history: [] });
+                      history: [], viaThread: false });
   $("pv").classList.remove("loading");
   $("pv-back").hidden = true;
   markSelected();
@@ -4330,6 +4407,7 @@ function pvAfterRender() {
   // 読み直している途中なら、もう一度は読まない (読み終えたときの一覧の様子を覚える)
   const m = shownMails.get(selectedId), idle = pv.loading === null;
   // 「このスレッド」から選んだ、閉じたスレッドの中のメール (一覧には先頭の行がある) は、外れたとは言わない
+  // (同じスレッドのほかのメールが出ているだけで、選んだメールが絞り込みに合わなくなったときは言う。markSelected)
   const inThread = !m && document.querySelectorAll("#mail-table .mail-row.sel-in").length > 0;
   if (!m !== pv.offList) {
     pv.offList = !m;
@@ -4540,6 +4618,7 @@ function pvGo(id, back = false) {
     selectRow(id, { now: true, keepHistory: true });
   } else {
     selectedId = id;
+    pv.viaThread = !selInList(id);
     $("pv-back").hidden = !pv.history.length;
     markSelected();
     clearTimeout(pv.timer);

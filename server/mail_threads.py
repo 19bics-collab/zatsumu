@@ -20,6 +20,7 @@
 迷うときはまとめない (まとめ損ねても、今までどおり1通ずつ出るだけ)。
 """
 import hashlib
+import time
 from datetime import datetime, timedelta, timezone
 
 from . import db, mail, tz
@@ -29,8 +30,11 @@ THREAD_RULE_VERSION = "1"
 # 1回の process_pending で作り直すメールの数の上限 (前の版に戻っていた間に何千通も届いていても、
 # 書き込みのロックを長く持たない。残りは次の回)
 PENDING_MAX = 2000
-# rebuild で、この数の行を書き直すごとに確定する (書き込みのロックを長く持たない)
-REBUILD_CHUNK = 2000
+# rebuild で、この数の行を書き直すごとに確定し、REBUILD_PAUSE 秒休む (書き込みのロックを長く持たない。
+# 休んでいる間に、待っているほかの書き込み (画面の操作・打刻など) が書ける。待っている側は長くても
+# 0.1 秒ごとにしか空いたかを確かめないので、それより長く休む。何万通でも、待たせるのは1秒ほどまで)
+REBUILD_CHUNK = 500
+REBUILD_PAUSE = 0.15
 # /api/mail/threads/{key} で返すメールの数の上限 (最初のメールと、新しい方から残り)
 MEMBERS_MAX = 100
 # どの番号のメールまでスレッドを決め終えたか・数え直したときの決まり (settings の非公開キー)
@@ -225,13 +229,16 @@ def process_pending(conn, settings: dict | None = None, limit: int = PENDING_MAX
     """まだスレッドを決めていないメール (前の版が入れた・この版が入れた後) と、トリガーが入れた
     作り直すメールを、つながるスレッドに入れる。作り直したメールの数を返す.
 
-    まだ一度も数えていない DB (この機能を入れた最初の回) は、全部を数える (rebuild)。
+    まだ一度も数えていない DB (この機能を入れた最初の回) では何もしない (全部を数えるのは、定期受信の
+    回の maintain。「今すぐ受信」の画面の頼みの中で、何万通も数えて書き込みのロックを持たない)。
+    入れた後、確定する前に、入れたメールのスレッドの相手がそろっているかを確かめる (check。読んでから
+    書くまでの間に、ほかの書き込みで相手が変わったメールを、別のお客様のスレッドに入れたままにしない)。
     失敗しても受信の結果は変えない (ログに出して 0。次の回にもう一度)。
     """
     try:
         ctx = Ctx(conn, settings)
         if not _state(conn, RULE_KEY):
-            return rebuild(conn, ctx)
+            return 0
         upto = _upto(conn)
         new = [r[0] for r in conn.execute(
             "SELECT id FROM mails WHERE id > ? ORDER BY id LIMIT ?", (upto, limit))]
@@ -243,6 +250,9 @@ def process_pending(conn, settings: dict | None = None, limit: int = PENDING_MAX
             conn.execute(f"DELETE FROM mail_thread_todo WHERE mail_id IN ({_marks(part)})", part)
         if new:
             mail._set_state(conn, UPTO_KEY, max(new))
+        # ここまでで書き込みを始めているので、確かめてから確定するまでの間に、ほかの書き込みは入らない
+        # (後から相手が変わったら、トリガーがそのスレッドをばらす)
+        check(conn, ctx, keys=_keys_of(conn, ids))
         conn.commit()
         return len(ids)
     except Exception as e:  # noqa: BLE001  受信・画面の処理は止めない
@@ -308,43 +318,69 @@ def rebuild(conn, ctx: Ctx) -> int:
     """全部のメールを数え直し、印が変わった行だけ書き直す。書き直した行の数を返す.
 
     決まりが変わったとき (と、この機能を入れた最初の回) に、定期受信の処理の中で1回だけ動く。
-    REBUILD_CHUNK 行ごとに確定する (書き込みのロックを長く持たない)。数え直している間に、ほかの
-    書き込み (トリガー) で印が変わった行は書かない (作り直すメールに入っているので、後で入れ直す)。
-    1通だけのメールは書かない。途中で止まっても、決まりの印を最後に書くので、次の回にやり直す。
+    REBUILD_CHUNK 行ごとに確定して少し休む (書き込みのロックを長く持たない)。数え直している間に、
+    ほかの書き込み (トリガー) で印が変わった行は書かない。1通だけのメールは書かない。
+    数える前に、作り直すメールの覚え (mail_thread_todo) を消す (今の様子を全部数えるので要らない)。
+    数えている間に相手などが変わったメールは、トリガーがまた覚える。そのメールは、数えたときの古い
+    相手のスレッドに入れてしまうことがあるので、書き終えた後に、覚えたメールのスレッドの相手がそろって
+    いるかを確かめ (check)、そろっていなければばらす (後の process_pending が入れ直す)。
+    途中で止まっても、決まりの印を最後に書くので、次の回に全部をやり直す。
     """
     conn.commit()
     snap_max = conn.execute("SELECT COALESCE(MAX(id), 0) FROM mails").fetchone()[0]
-    snap_todo = [r[0] for r in conn.execute("SELECT mail_id FROM mail_thread_todo")]
+    conn.execute("DELETE FROM mail_thread_todo")
+    conn.commit()
     want = partition(conn, ctx)
     now = {r[0]: r[1] for r in conn.execute(
         "SELECT id, thread_id FROM mails WHERE thread_id IS NOT NULL")}
     changes = [(want.get(i), i, now.get(i)) for i in sorted(set(want) | set(now))
                if want.get(i) != now.get(i)]
     written = 0
-    for part in _chunks(changes, REBUILD_CHUNK):
+    for n, part in enumerate(_chunks(changes, REBUILD_CHUNK)):
+        if n:
+            time.sleep(REBUILD_PAUSE)   # 待っているほかの書き込みに先に書かせる
         written += sum(conn.execute("UPDATE mails SET thread_id = ? WHERE id = ? AND thread_id IS ?",
                                     c).rowcount for c in part)
         conn.commit()
+    queued = [r[0] for r in conn.execute("SELECT mail_id FROM mail_thread_todo")]
+    check(conn, ctx, keys=_keys_of(conn, queued))
     mail._set_state(conn, UPTO_KEY, max(snap_max, _upto(conn)))
-    for part in _chunks(snap_todo):
-        conn.execute(f"DELETE FROM mail_thread_todo WHERE mail_id IN ({_marks(part)})", part)
     mail._set_state(conn, RULE_KEY, ctx.signature())
     conn.commit()
     return written
 
 
-def check(conn, ctx: Ctx, repair: bool = True) -> list:
+def _keys_of(conn, ids) -> set:
+    """メール ids が入っているスレッドの印 (1通だけのメールは入れない)."""
+    keys = set()
+    for part in _chunks(sorted(set(ids))):
+        keys |= {r[0] for r in conn.execute(
+            f"SELECT thread_id FROM mails WHERE id IN ({_marks(part)}) AND thread_id IS NOT NULL", part)}
+    return keys
+
+
+def check(conn, ctx: Ctx, repair: bool = True, keys=None) -> list:
     """同じスレッドのメールが、みんな同じ空でない相手かを確かめる (違うスレッドの最初の20個を返す).
 
-    repair なら、違うスレッドはばらして作り直すメールに入れ、ログと操作の記録に残す
-    (別のお客様のメールを1つのスレッドに残さない)。
+    keys を渡すと、そのスレッドだけを確かめる (渡さなければ全部)。repair なら、違うスレッドはばらして
+    作り直すメールに入れ、ログと操作の記録に残す (別のお客様のメールを1つのスレッドに残さない)。
+    メールは少しずつ読む (1回の問い合わせで、ほかの書き込みを長く待たせない)。
     """
+    if keys is None:
+        ids = [r[0] for r in conn.execute("SELECT id FROM mails WHERE thread_id IS NOT NULL")]
+    else:
+        ids = []
+        for part in _chunks(sorted({int(k) for k in keys if k})):
+            ids += [r[0] for r in conn.execute(
+                f"SELECT id FROM mails WHERE thread_id IN ({_marks(part)})", part)]
+    if not ids:
+        return []
     groups: dict = {}
-    for r in conn.execute(f"SELECT {_COLS} FROM mails WHERE thread_id IS NOT NULL ORDER BY thread_id"):
-        m = dict(r)
-        groups.setdefault(m["thread_id"], []).append(m)
+    for m in _rows_by_id(conn, ids).values():
+        if m["thread_id"] is not None:
+            groups.setdefault(m["thread_id"], []).append(m)
     bad = []
-    for key, members in groups.items():
+    for key, members in sorted(groups.items()):
         parties = {_party_of(ctx, m) for m in members}
         if len(parties) > 1 or "" in parties:
             bad.append({"key": key, "ids": [m["id"] for m in members][:20],
@@ -364,8 +400,8 @@ def check(conn, ctx: Ctx, repair: bool = True) -> list:
 
 
 def maintain(conn, settings: dict | None = None) -> None:
-    """定期受信の回ごとに: 決まりが変わっていれば数え直し、作り直すメールを片付ける。
-    起動してから最初の回だけ、スレッドの相手がそろっているかも確かめる.
+    """定期受信の回ごとに: 決まりが変わっていれば (この機能を入れた最初の回も) 数え直し、作り直す
+    メールを片付ける。起動してから最初の回だけ、全部のスレッドの相手がそろっているかも確かめる.
 
     受信の途中 (今すぐ受信など) なら、この回は何もしない (入れているメールと重ならないように)。
     """
