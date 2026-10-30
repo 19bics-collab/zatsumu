@@ -971,11 +971,12 @@ def test_staff_cannot_change_draft_cc_while_pending(client, users, tmp_path, mon
 def test_mail_page_keeps_draft_cc_and_dedupes_the_confirm(client):
     """閉じるときに CC・BCC も残し、送る前の確認・確認のお願いでは宛先と同じ人を CC・BCC から除く."""
     page = client.get("/mail").text
-    i = page.index("async function saveDraft()")
+    i = page.index("async function saveDraft(")
     block = page[i:page.index("\n}\n", i)]
     assert "const rcptChanged = rcpt !== modal.savedRcpt;" in block
     assert 'Object.assign(body, { draft_cc: $("m-cc").value, draft_bcc: $("m-bcc").value });' in block
-    assert "modal.savedRcpt = rcpt;" in block
+    # 残したことは、保存を頼んだときに開いていたメールの印に残す (待っている間に閉じても、次のメールに付けない)
+    assert "opened = modal;" in block and "opened.savedRcpt = rcpt;" in block
     dedupe = ('const [cc, bcc] = dedupeRcpts(to, splitAddrs($("m-cc").value), '
               'splitAddrs($("m-bcc").value));')
     for handler in ('$("m-send").onclick', '$("m-request").onclick'):

@@ -8,6 +8,9 @@
 - 外から来た文字 (件名・名前) は esc() を通す (★のボタンの読み上げの名前・状態の欄)
 - toggleFlag: ☆ を2回続けて押しても (送り終えるのが速くても)、ROW_QUIET_MS の間は1回だけ送る。
   applyLocalFlags: ★を押す前に頼んだ一覧の答えが後から届いても、この画面で付けた・外した★で出す
+- 右の本文 (広い画面): nextRowId (↑↓ の次の行。取り直して外れた行の所から続ける)・pvSig (読み直すか)。
+  selectRow・pvShow: ↑↓ で通り過ぎた行は読まず「新着」も外さない、前に頼んだ答えで新しく選んだメールを
+  上書きしない、出しているメールをもう一度押しても読み直さない、1分ごとの取り直しで変わったときだけ読み直す
 """
 import json
 import shutil
@@ -247,6 +250,8 @@ const document = { querySelectorAll: () => [] };
 const mailRowOf = () => null;
 const modal = { id: null, mail: null };
 const renderModalFlag = () => {};
+const pv = { id: null, mail: null };
+const pvMailChanged = () => {};
 const starText = m => ({ on: !!m.flagged, label: "", title: "" });
 const me = { name: "boss" };
 let inboxStale = false;
@@ -312,3 +317,301 @@ def test_old_list_answer_does_not_undo_star(page):
         {"id": 6, "flagged": True, "flagged_at": "2026-10-28T00:00:00Z", "flagged_by": "x"},
         {"id": 7}]
     assert out["fresh"] == [{"id": 5, "flagged": False, "flagged_at": None, "flagged_by": ""}]
+
+
+def test_next_row_for_arrow_keys(page):
+    """↑↓ の次の行: 端より先には行かない。何も選んでいなければ一番上。今のメールが一覧から外れたら、
+    外れた行があった所から続ける (飛ばさない・戻りすぎない)."""
+    out = _run(page, """
+const ids = [11, 12, 13, 14];
+console.log(JSON.stringify({
+  down: nextRowId(ids, 12, 1), up: nextRowId(ids, 12, -1),
+  last: nextRowId(ids, 14, 1), first: nextRowId(ids, 11, -1),
+  none_down: nextRowId(ids, null, 1), none_up: nextRowId(ids, null, -1),
+  // 13 が外れた (13 は上から3番目 = 2 にあった): ↓ は 14、↑ は 12
+  gone_down: nextRowId([11, 12, 14], 13, 1, 2), gone_up: nextRowId([11, 12, 14], 13, -1, 2),
+  // 一番下の 14 が外れた: ↓ も ↑ も 13 (その上)
+  gone_last_down: nextRowId([11, 12, 13], 14, 1, 3), gone_last_up: nextRowId([11, 12, 13], 14, -1, 3),
+  // 一番上の 11 が外れた: ↓ は 12、↑ も 12 (上には無い)
+  gone_first_down: nextRowId([12, 13], 11, 1, 0), gone_first_up: nextRowId([12, 13], 11, -1, 0),
+  // どこにあったか分からない (戻るで来た など) ときは一番上
+  unknown: nextRowId(ids, 99, 1),
+  empty: nextRowId([], 12, 1),
+}));""")
+    assert out == {"down": 13, "up": 11, "last": 14, "first": 11, "none_down": 11, "none_up": 11,
+                   "gone_down": 14, "gone_up": 12, "gone_last_down": 13, "gone_last_up": 13,
+                   "gone_first_down": 12, "gone_first_up": 12, "unknown": 11, "empty": None}
+
+
+def test_preview_signature_changes_when_mail_changes(page):
+    """右の本文を読み直すかの印: 状態・★・下書き・確認のお願い・重要度などが変われば変わる.
+    一覧の項目と1通の詳細 (確認を頼んだ人をいつも返す) で同じになる."""
+    out = _run(page, """
+const base = { id: 1, status: "unhandled", replied_at: null, flagged_at: null, has_draft: false,
+               requested_by: "", returned: false, priority: 2, category: "清掃", assignee_user_id: 3,
+               attachment_count: 0, thread_count: 1 };
+const sig = m => pvSig({ ...base, ...m });
+const o = { same: sig({}) === sig({ subject: "件名だけ違う", body: "本文" }) };
+for (const [k, v] of Object.entries({ status: "replied", replied_at: "2026-10-29T00:00:00Z",
+    flagged_at: "2026-10-29T00:00:00Z", has_draft: true, returned: true, priority: 1,
+    category: "請求", assignee_user_id: 4, attachment_count: 2, thread_count: 2, th_size: 3 })) {
+  o[k] = sig({ [k]: v }) !== sig({});
+}
+// 確認を頼んだ人は確認待ちのときだけ見る (詳細は差し戻した後も頼んだ人を返す)
+o.requested_other = sig({ requested_by: "鈴木" }) === sig({});
+o.requested_pending = sig({ status: "pending_approval", requested_by: "鈴木" }) !==
+                      sig({ status: "pending_approval", requested_by: "田中" });
+console.log(JSON.stringify(o));""")
+    assert all(out.values()), out
+
+
+def _run_pane(page: str, scenario: str):
+    """画面の「右の本文」の部分 (選ぶ・読む・出す) を、画面のほかの所を偽物にして node で動かす.
+
+    サーバへの問い合わせ (api) は calls に溜まり、answer(i, status, body) で i 番目に答える。
+    描いたメール (renderPreview)・「新着」を外したメール (markOpened) は drawn・opened に残る。
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node が無い")
+    i = page.index("const esc = s =>")
+    stubs = """
+const appSettings = { timezone: "Asia/Tokyo" };
+let viewName = "inbox";
+let shownMails = new Map();
+const els = {};
+const el = () => ({ hidden: false, textContent: "", scrollTop: 0, dataset: {},
+                    classList: { set: new Set(), add(c) { this.set.add(c); }, remove(c) { this.set.delete(c); },
+                                 contains(c) { return this.set.has(c); } } });
+const $ = id => els[id] || (els[id] = el());
+const document = { querySelectorAll: () => [], documentElement: { classList: el().classList } };
+const matchMedia = () => ({ matches: true, addEventListener() {} });
+const loadPref = () => null, savePref = () => {};
+const mailRowOf = () => null;
+const history = { state: { v: "inbox" }, replaceState(s) { this.state = s; } };
+const location = { href: "/mail" };
+let modal = { id: null };   // 開いている返信画面のメール ($("mail-modal").hidden で開いているか)
+let loginMark = "m";
+const calls = [];
+const api = path => new Promise(res => calls.push({ path, res }));
+const answer = async (i, status, body) => {
+  calls[i].res({ ok: status === 200, status, json: async () => body });
+  await sleep(10);
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const drawn = [], opened = [];
+const renderPreview = (d, same) => drawn.push(d.id);
+const renderPvFlag = () => {};
+const markOpened = id => opened.push(id);
+const refreshInbox = () => {};
+const peekOpen = new Set();
+const mail = (id, more = {}) => ({ id, subject: "s" + id, status: "unhandled", priority: 2, ...more });
+"""
+    parts = [
+        stubs,
+        page[i:page.index("\n", page.index("c =>", i)) + 1],
+        _cut(page, "const PR = ", "};", include_end=True) + "\n",
+        _cut(page, "const ST = ", "};", include_end=True) + "\n",
+        _cut(page, "const snip = ", "\n};", include_end=True) + "\n",
+        _cut(page, "function fmtTz(", "\n// 未対応の数", include_end=False),
+        _cut(page, "// 一覧の行: ここから", "// 一覧の行: ここまで", include_end=False),
+        _cut(page, "const PANE_MQ = ", "// 右の本文の「↩ 返信する」の言葉", include_end=False),
+    ]
+    r = subprocess.run([node, "-e", "".join(parts) + "\n(async () => {\n" + scenario + "\n})();"],
+                       capture_output=True, text=True, timeout=60, encoding="utf-8")
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_late_answer_never_overwrites_newer_selection(page):
+    """先に選んだメールの答えが後から届いても、新しく選んだメールを上書きしない (「新着」も外さない)."""
+    out = _run_pane(page, """
+  shownMails = new Map([[1, mail(1)], [2, mail(2)]]);
+  selectRow(1, { now: true });
+  await sleep(5);                          // 1 を読み始めた (まだ答えが無い)
+  selectRow(2, { now: true });
+  await sleep(5);
+  await answer(1, 200, mail(2));           // 2 の答えが先に届く
+  await answer(0, 200, mail(1));           // 1 の答えが後から届く
+  console.log(JSON.stringify({ paths: calls.map(c => c.path), drawn, opened, shown: pv.id,
+                               sel: selectedId, loading: pv.loading }));""")
+    assert out["paths"] == ["/api/mail/1?thread=false", "/api/mail/2?thread=false"]
+    assert out["drawn"] == [2] and out["opened"] == [2]
+    assert out["shown"] == 2 and out["sel"] == 2 and out["loading"] is None
+
+
+def test_arrow_keys_only_load_where_they_stop(page):
+    """↑↓ で続けて動いた間の行は読まず、「新着」も外さない (止まったメールだけ読む)。
+    出しているメールをもう一度押しても読み直さない (読んでいた所を動かさない)."""
+    out = _run_pane(page, """
+  shownMails = new Map([1, 2, 3, 4].map(i => [i, mail(i)]));
+  for (const id of [1, 2, 3]) { selectRow(id); await sleep(40); }   // 40ms ごとに ↓
+  const before = calls.length;
+  await sleep(250);
+  const after = calls.map(c => c.path);
+  await answer(0, 200, mail(3));
+  selectRow(3, { now: true });             // 出しているメールをもう一度押す
+  await sleep(30);
+  console.log(JSON.stringify({ before, after, drawn, opened, again: calls.length }));""")
+    assert out["before"] == 0
+    assert out["after"] == ["/api/mail/3?thread=false"]
+    assert out["drawn"] == [3] and out["opened"] == [3]
+    assert out["again"] == 1
+
+
+def test_refresh_reloads_only_when_selected_mail_changed(page):
+    """1分ごとの取り直し: 選んだメールが変わっていなければ読み直さない。変わったら読み直し、ほかの人が
+    返信したことを知らせる。今の一覧から外れたら、右には出したままで、そのことを知らせる."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)], [6, mail(6)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(0, 200, mail(5));
+  const o = {};
+  shownMails = new Map([[5, mail(5)], [6, mail(6)]]);     // 取り直した (変わっていない)
+  pvAfterRender();
+  await sleep(5);
+  o.same = calls.length;
+  shownMails = new Map([[5, mail(5, { status: "replied", replied_at: "2026-10-29T00:00:00Z" })]]);
+  pvAfterRender();                                        // ほかの人が返信した
+  await sleep(5);
+  o.changed = calls.length;
+  await answer(1, 200, mail(5, { status: "replied", replied_at: "2026-10-29T00:00:00Z" }));
+  o.note = $("pv-stale").textContent;
+  o.noteShown = !$("pv-stale").hidden;
+  shownMails = new Map([[6, mail(6)]]);                   // 「未対応」だけを出していて、外れた
+  pvAfterRender();
+  await sleep(5);
+  o.off = $("pv-stale").textContent;
+  o.offCalls = calls.length;
+  o.shown = pv.id;
+  console.log(JSON.stringify(o));""")
+    assert out["same"] == 1
+    assert out["changed"] == 2
+    assert out["noteShown"] and "「返信済み」になりました" in out["note"]
+    assert "いまの絞り込みの一覧には出ていません" in out["off"]
+    assert out["offCalls"] == 3 and out["shown"] == 5
+
+
+def test_own_change_is_not_reported_as_someone_else(page):
+    """この画面で変えた (返信画面を閉じた・対応不要にした) すぐ後は、「ほかの人が」と知らせない."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(0, 200, mail(5));
+  pv.quietUntil = Date.now() + PV_QUIET_MS;               // 返信画面で送って閉じた
+  shownMails = new Map([[5, mail(5, { status: "replied", replied_at: "x" })]]);
+  pvAfterRender();
+  await sleep(5);
+  await answer(1, 200, mail(5, { status: "replied", replied_at: "x" }));
+  console.log(JSON.stringify({ note: $("pv-stale").textContent, calls: calls.length }));""")
+    assert out == {"note": "", "calls": 2}
+
+
+def test_missing_mail_shows_message_instead_of_old_one(page):
+    """消えたメール (404)・読めなかったときは、前のメールの本文を出したままにしない."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)], [6, mail(6)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(0, 200, mail(5));
+  selectRow(6, { now: true });
+  await sleep(5);
+  await answer(1, 404, {});
+  console.log(JSON.stringify({ err: $("pv-err").textContent, main: $("pv-main").hidden,
+                               shown: pv.id, opened }));""")
+    assert out["err"].startswith("このメールは見つかりませんでした")
+    assert out["main"] is True and out["shown"] is None and out["opened"] == [5]
+
+
+def test_change_while_loading_is_not_undone_by_late_answer(page):
+    """読み込んでいる間に、行で対応不要にした・★を付けた: 変える前にサーバが答えた本文が後から届いても、
+    右の本文は変えた後の様子で出す (行と食い違わない。次の取り直しで読み直さなくても合っている).
+    読み始める前に変えたこと・別のメールで変えたことは当てない (サーバの答えのとおりに出す)."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)], [6, mail(6)]]);
+  selectRow(5, { now: true });
+  await sleep(5);                                          // 5 を読み始めた (まだ答えが無い)
+  const done = { status: "archived", archived_at: "2026-10-30T00:00:00Z", archived_by: "管理者" };
+  Object.assign(shownMails.get(5), done);                  // 行の「対応不要」(showRowArchived)
+  pvMailChanged(5, done);
+  await answer(0, 200, mail(5));                           // 変える前の答え (未対応) が後から届く
+  const o = { status: pv.mail.status, by: pv.mail.archived_by, same: pv.sig === pvSig(shownMails.get(5)) };
+  pvAfterRender();                                         // 取り直しても、もう読み直さなくてよい
+  await sleep(5);
+  o.calls = calls.length;
+  selectRow(6, { now: true });                             // 6 を読んでいる間に ☆ を押した
+  await sleep(5);
+  const f = { flagged: true, flagged_at: "2026-10-30T00:00:00Z", flagged_by: "管理者" };
+  Object.assign(shownMails.get(6), f);
+  pvMailChanged(6, f);
+  await answer(1, 200, mail(6, { flagged: false, flagged_at: null, flagged_by: "" }));
+  o.flag = pv.mail.flagged;
+  o.flagSame = pv.sig === pvSig(shownMails.get(6));
+  // 前に変えたこと (5 の対応不要) は、後で読み直した 5 の答え (ほかの人が未対応に戻した) に当てない
+  shownMails = new Map([[5, mail(5)], [6, mail(6, f)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(2, 200, mail(5));
+  o.later = pv.mail.status;
+  console.log(JSON.stringify(o));""")
+    assert out == {"status": "archived", "by": "管理者", "same": True, "calls": 1,
+                   "flag": True, "flagSame": True, "later": "unhandled"}
+
+
+def test_failed_reload_of_shown_mail_retries_when_pressed_again(page):
+    """出しているメールの読み直しに失敗した (「通信が戻ったら、もう一度押してください」) ときは、
+    同じ行をもう一度押すと読み直す (失敗していなければ、もう一度押しても読み直さない)."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)], [6, mail(6)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(0, 200, mail(5));
+  selectRow(6, { now: true });
+  await sleep(5);
+  await answer(1, 200, mail(6));
+  selectRow(5, { now: true });                             // 前に読んだ 5 をすぐ出し、読み直す
+  await sleep(5);
+  await answer(2, 500, {});                                // 通信が切れていて読み直せなかった
+  const o = { err: $("pv-err").textContent, shown: pv.id, failed: pv.failed };
+  selectRow(5, { now: true });                             // 通信が戻って、もう一度押した
+  await sleep(5);
+  o.again = calls.map(c => c.path).slice(3);
+  await answer(3, 200, mail(5));
+  o.failedAfter = pv.failed;
+  selectRow(5, { now: true });                             // 読めた後は、押しても読み直さない
+  await sleep(5);
+  o.total = calls.length;
+  console.log(JSON.stringify(o));""")
+    assert out["err"].startswith("読み込めませんでした") and out["shown"] == 5 and out["failed"] is True
+    assert out["again"] == ["/api/mail/5?thread=false"]
+    assert out["failedAfter"] is False and out["total"] == 4
+
+
+def test_change_made_in_open_reply_screen_is_not_reported(page):
+    """右に出しているメールの返信画面で送った・確認をお願いした (閉じる前に受信箱を取り直す) ときは、
+    「ほかの人が」と知らせない。別のメールの返信画面を開いている間に変わったときは知らせる."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(0, 200, mail(5));
+  modal = { id: 5 };
+  $("mail-modal").hidden = false;                          // 5 の返信画面を開いて送った
+  const replied = mail(5, { status: "replied", replied_at: "2026-10-30T00:00:00Z" });
+  shownMails = new Map([[5, replied]]);
+  pvAfterRender();
+  await sleep(5);
+  await answer(1, 200, replied);
+  const o = { mine: $("pv-stale").textContent, calls: calls.length };
+  modal = { id: 9 };                                       // 9 の返信画面を開いている間に、5 が変わった
+  const archived = mail(5, { status: "archived", archived_at: "2026-10-30T01:00:00Z" });
+  shownMails = new Map([[5, archived]]);
+  pvAfterRender();
+  await sleep(5);
+  await answer(2, 200, archived);
+  o.other = $("pv-stale").textContent;
+  console.log(JSON.stringify(o));""")
+    assert out["mine"] == "" and out["calls"] == 2
+    assert "「対応不要」になりました" in out["other"]

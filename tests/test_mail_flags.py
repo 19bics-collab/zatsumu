@@ -545,7 +545,7 @@ def test_mail_page_has_star_tab_and_reply_screen_flag(client):
     assert "★フラグを付けたメールはありません（一覧の ☆ を押すと付けられます" in page
     # 行の ☆ (差出人の左)。返信画面を開かず、行が動いた直後は押しても何もしない
     r = page[page.index("function renderInbox("):page.index('$("filter").onchange')]
-    assert '<td data-label="差出人">${starButton(m)}<strong>' in r
+    assert '<td class="c-from" data-label="差出人">${starButton(m)}<strong>' in r
     assert '${m.flagged ? " flagged" : ""}' in r
     assert 'class="row-flag" data-flag="${Number(m.id)}" aria-pressed="${t.on}"' in page
     m = re.search(r'tr\.onclick = e => \{(.*?)\n    \}\);', r, re.S).group(1)
@@ -561,8 +561,11 @@ def test_mail_page_has_star_tab_and_reply_screen_flag(client):
     assert '<button id="m-flag" type="button" class="ghost m-flag" aria-pressed="false" hidden>' in top
     f = page[page.index("function renderModalFlag(m) {"):]
     f = f[:f.index("\n}")]
-    assert 'b.hidden = !("flagged" in m);' in f and '"★" : "☆"' in f and '" フラグ中" : " フラグ"' in f
-    assert '$("m-meta").textContent = modalMeta(m);' in f
+    assert 'setFlagButton($("m-flag"), m);' in f and '$("m-meta").textContent = modalMeta(m);' in f
+    # 「☆ フラグ」のボタンは返信画面と右の本文で同じ (setFlagButton)
+    b = page[page.index("function setFlagButton(b, m) {"):]
+    b = b[:b.index("\n}")]
+    assert 'b.hidden = !("flagged" in m);' in b and '"★" : "☆"' in b and '" フラグ中" : " フラグ"' in b
     assert "toggleFlag(modal.id, !modal.mail.flagged)" in page
     # iPhone では、★を付けた人を件名の下の行にも出す (指して説明を見られないので)
     meta = page[page.index("function modalMeta(m) {"):page.index("function renderModalFlag(")]
@@ -608,8 +611,8 @@ def test_mail_page_status_marks_and_dates(client):
     """状態の欄は statusMark (↩ 返信済み・✓ 対応不要 といつ・誰が)。日時は会社のタイムゾーン."""
     page = client.get("/mail").text
     r = page[page.index("function renderInbox("):page.index('$("filter").onchange')]
-    assert '<td data-label="状態">${statusMark(m)}</td>' in r
-    assert '<td data-label="受信日時">${listTime(m.received_at)}</td>' in r
+    assert '<td class="c-st" data-label="状態">${statusMark(m)}</td>' in r
+    assert '<td class="c-date" data-label="受信日時">${listTime(m.received_at)}</td>' in r
     assert "${repliedIcon(m)}${hl(m.subject, T)" in r
     s = re.search(r"function showRowArchived\(id, r = \{\}\) \{(.*?)\n\}", page, re.S).group(1)
     assert "statusMark(" in s
