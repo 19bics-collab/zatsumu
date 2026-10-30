@@ -390,6 +390,8 @@ const loadPref = () => null, savePref = () => {};
 const mailRowOf = () => null;
 const history = { state: { v: "inbox" }, replaceState(s) { this.state = s; } };
 const location = { href: "/mail" };
+let modal = { id: null };   // 開いている返信画面のメール ($("mail-modal").hidden で開いているか)
+let loginMark = "m";
 const calls = [];
 const api = path => new Promise(res => calls.push({ path, res }));
 const answer = async (i, status, body) => {
@@ -521,3 +523,95 @@ def test_missing_mail_shows_message_instead_of_old_one(page):
                                shown: pv.id, opened }));""")
     assert out["err"].startswith("このメールは見つかりませんでした")
     assert out["main"] is True and out["shown"] is None and out["opened"] == [5]
+
+
+def test_change_while_loading_is_not_undone_by_late_answer(page):
+    """読み込んでいる間に、行で対応不要にした・★を付けた: 変える前にサーバが答えた本文が後から届いても、
+    右の本文は変えた後の様子で出す (行と食い違わない。次の取り直しで読み直さなくても合っている).
+    読み始める前に変えたこと・別のメールで変えたことは当てない (サーバの答えのとおりに出す)."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)], [6, mail(6)]]);
+  selectRow(5, { now: true });
+  await sleep(5);                                          // 5 を読み始めた (まだ答えが無い)
+  const done = { status: "archived", archived_at: "2026-10-30T00:00:00Z", archived_by: "管理者" };
+  Object.assign(shownMails.get(5), done);                  // 行の「対応不要」(showRowArchived)
+  pvMailChanged(5, done);
+  await answer(0, 200, mail(5));                           // 変える前の答え (未対応) が後から届く
+  const o = { status: pv.mail.status, by: pv.mail.archived_by, same: pv.sig === pvSig(shownMails.get(5)) };
+  pvAfterRender();                                         // 取り直しても、もう読み直さなくてよい
+  await sleep(5);
+  o.calls = calls.length;
+  selectRow(6, { now: true });                             // 6 を読んでいる間に ☆ を押した
+  await sleep(5);
+  const f = { flagged: true, flagged_at: "2026-10-30T00:00:00Z", flagged_by: "管理者" };
+  Object.assign(shownMails.get(6), f);
+  pvMailChanged(6, f);
+  await answer(1, 200, mail(6, { flagged: false, flagged_at: null, flagged_by: "" }));
+  o.flag = pv.mail.flagged;
+  o.flagSame = pv.sig === pvSig(shownMails.get(6));
+  // 前に変えたこと (5 の対応不要) は、後で読み直した 5 の答え (ほかの人が未対応に戻した) に当てない
+  shownMails = new Map([[5, mail(5)], [6, mail(6, f)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(2, 200, mail(5));
+  o.later = pv.mail.status;
+  console.log(JSON.stringify(o));""")
+    assert out == {"status": "archived", "by": "管理者", "same": True, "calls": 1,
+                   "flag": True, "flagSame": True, "later": "unhandled"}
+
+
+def test_failed_reload_of_shown_mail_retries_when_pressed_again(page):
+    """出しているメールの読み直しに失敗した (「通信が戻ったら、もう一度押してください」) ときは、
+    同じ行をもう一度押すと読み直す (失敗していなければ、もう一度押しても読み直さない)."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)], [6, mail(6)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(0, 200, mail(5));
+  selectRow(6, { now: true });
+  await sleep(5);
+  await answer(1, 200, mail(6));
+  selectRow(5, { now: true });                             // 前に読んだ 5 をすぐ出し、読み直す
+  await sleep(5);
+  await answer(2, 500, {});                                // 通信が切れていて読み直せなかった
+  const o = { err: $("pv-err").textContent, shown: pv.id, failed: pv.failed };
+  selectRow(5, { now: true });                             // 通信が戻って、もう一度押した
+  await sleep(5);
+  o.again = calls.map(c => c.path).slice(3);
+  await answer(3, 200, mail(5));
+  o.failedAfter = pv.failed;
+  selectRow(5, { now: true });                             // 読めた後は、押しても読み直さない
+  await sleep(5);
+  o.total = calls.length;
+  console.log(JSON.stringify(o));""")
+    assert out["err"].startswith("読み込めませんでした") and out["shown"] == 5 and out["failed"] is True
+    assert out["again"] == ["/api/mail/5?thread=false"]
+    assert out["failedAfter"] is False and out["total"] == 4
+
+
+def test_change_made_in_open_reply_screen_is_not_reported(page):
+    """右に出しているメールの返信画面で送った・確認をお願いした (閉じる前に受信箱を取り直す) ときは、
+    「ほかの人が」と知らせない。別のメールの返信画面を開いている間に変わったときは知らせる."""
+    out = _run_pane(page, """
+  shownMails = new Map([[5, mail(5)]]);
+  selectRow(5, { now: true });
+  await sleep(5);
+  await answer(0, 200, mail(5));
+  modal = { id: 5 };
+  $("mail-modal").hidden = false;                          // 5 の返信画面を開いて送った
+  const replied = mail(5, { status: "replied", replied_at: "2026-10-30T00:00:00Z" });
+  shownMails = new Map([[5, replied]]);
+  pvAfterRender();
+  await sleep(5);
+  await answer(1, 200, replied);
+  const o = { mine: $("pv-stale").textContent, calls: calls.length };
+  modal = { id: 9 };                                       // 9 の返信画面を開いている間に、5 が変わった
+  const archived = mail(5, { status: "archived", archived_at: "2026-10-30T01:00:00Z" });
+  shownMails = new Map([[5, archived]]);
+  pvAfterRender();
+  await sleep(5);
+  await answer(2, 200, archived);
+  o.other = $("pv-stale").textContent;
+  console.log(JSON.stringify(o));""")
+    assert out["mine"] == "" and out["calls"] == 2
+    assert "「対応不要」になりました" in out["other"]

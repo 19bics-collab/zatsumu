@@ -66,7 +66,10 @@ def test_pane_markup(page):
     assert ":root { --list-w: clamp(340px, 34vw, 560px); }" in page
     css = page[page.index("  .pv { position: sticky;"):page.index("  .pv[hidden]")]
     assert "max-height: calc(100vh - 1rem); max-height: calc(100dvh - 1rem);" in css
-    assert "overflow-y: auto; overscroll-behavior: contain;" in css
+    # 右の本文の中を終わりまで進めたら、続けて画面も進める (contain にすると、ページの一番上では
+    # 画面の外にある右の本文の下の方 (添付・下の「↩ 返信する」) が見えない)
+    assert "overflow-y: auto; overscroll-behavior: auto;" in css
+    assert "overscroll-behavior: contain" not in css
 
 
 def test_compact_rows_reuse_the_same_rows(page):
@@ -149,7 +152,7 @@ def test_reply_opens_unchanged_modal_over_pane(page):
 
 
 def test_keyboard_is_gated(page):
-    k = page[page.index('document.addEventListener("keydown", e => {\n  if (!paneOn()'):]
+    k = page[page.index('document.addEventListener("keydown", e => {\n  if ($("app").hidden || !paneOn()'):]
     k = k[:k.index("\n});")]
     assert "anyModalOpen()" in k and "e.isComposing || e.keyCode === 229" in k
     assert "e.ctrlKey || e.metaKey || e.altKey || e.shiftKey" in k
@@ -172,7 +175,8 @@ def test_selection_survives_refresh_flag_and_archive(page):
     # ★・対応不要は、右の本文にもそろえる (読み直さない)
     assert "pvMailChanged(id, f);" in _block(page, "function setFlagUi(id, at, by) {")
     assert "pvMailChanged(id, done);" in _block(page, "function showRowArchived(id, r = {}) {")
-    assert '$("pv-flag").onclick = () => { if (pv.id && pv.mail) toggleFlag(pv.id, !pv.mail.flagged); };' in page
+    f = _block(page, '$("pv-flag").onclick = () => {', "\n};\n")
+    assert "toggleFlag(pv.id, !pv.mail.flagged);" in f
     # 描き直してもキーボードの位置 (選んだ行) を戻す
     f = _block(page, "function focusedRowButton(box) {")
     assert 'b.matches(".mail-row")' in f
@@ -201,7 +205,10 @@ def test_open_mail_guard_and_draft_hardening(page):
     assert "openSeq++;" in _block(page, "async function closeModal(opts = {}) {")
     s = _block(page, "async function saveDraft(opts = {}) {")
     assert 'if (!r.ok) throw new Error("draft " + r.status);' in s
-    assert "keepalive: !!opts.keepalive && json.length < 60000" in s
+    # keepalive の上限 (64KB) はバイト数 (日本語は1文字3バイト。文字数で比べると、長い下書きを保存できない)
+    assert "bytes = new TextEncoder().encode(json).length" in s
+    assert "keepalive: !!opts.keepalive && bytes < 60000" in s
+    assert "json.length < 60000" not in s
     assert "書きかけの返信文を保存できませんでした（そのメールを開き直して確かめてください）" in s
     assert 'window.addEventListener("pagehide", saveDraftNow);' in page
     assert 'document.addEventListener("visibilitychange", () => { if (document.hidden) saveDraftNow(); });' in page
@@ -234,3 +241,71 @@ def test_names_are_declared_once(page):
                  "statusMark", "starButton", "setFlagButton", "approvalText", "saveBlob"):
         assert len(re.findall(rf"(?:let|const|function)\s+{name}\b", page)) == 1, name
     assert page.count('data-thr="') == 1
+
+
+def test_draft_failure_notice_goes_away_after_a_later_save(page):
+    """書きかけの返信文を保存できなかった知らせは、後で同じメールを保存できたら消す
+    (保存できているのに「保存できませんでした」と残さない)。同じメールの知らせは1つだけ."""
+    n = _block(page, "function noticeToast(msg) {")
+    assert "return close;" in n
+    s = _block(page, "async function saveDraft(opts = {}) {")
+    ok = s[s.index('if (!r.ok) throw new Error("draft " + r.status);'):s.index("} catch (e) {")]
+    assert "draftFailNotice.get(id)?.();" in ok and "draftFailNotice.delete(id);" in ok
+    fail = s[s.index("} catch (e) {"):]
+    assert fail.index("draftFailNotice.get(id)?.();") < fail.index("draftFailNotice.set(id,")
+    assert "noticeToast(\"書きかけの返信文を保存できませんでした" in fail
+    assert "const draftFailNotice = new Map();" in page
+
+
+def test_pane_flag_ignores_clicks_right_after_archive_button_moves(page):
+    """右の「対応不要にする」を2回押したつもりで、ずれてきた「☆ フラグ」や、次に出したメールの
+    「対応不要にする」まで押さない (同じメールで「対応不要にする」が消えた・出た直後の ROW_QUIET_MS は、
+    「☆ フラグ」「対応不要にする」を押しても何もしない)."""
+    r = _block(page, "function renderPreview(d, same) {")
+    assert 'const arch = $("pv-archive"), canArchive = admin && d.status === "unhandled";' in r
+    assert "if (same && arch.hidden === canArchive) pv.actMovedAt = Date.now();" in r
+    assert r.index("pv.actMovedAt = Date.now();") < r.index("arch.hidden = !canArchive;")
+    f = _block(page, '$("pv-flag").onclick = () => {', "\n};\n")
+    assert "Date.now() - pv.actMovedAt < ROW_QUIET_MS) return;" in f
+    assert f.index("ROW_QUIET_MS") < f.index("toggleFlag(")
+    # 「未対応」だけを出しているときは、次のメールの「対応不要にする」が同じ所に出る (それも押さない)
+    a = _block(page, '$("pv-archive").onclick = () => {', "\n};\n")
+    assert "if (Date.now() - pv.actMovedAt >= ROW_QUIET_MS) archiveFromPane();" in a
+    # 右の本文の「対応不要にする」は、行の「対応不要」と同じく showRowArchived → pvMailChanged で消える
+    assert "renderPreview(pv.mail, true);" in _block(page, "function pvMailChanged(id, fields) {")
+
+
+def test_double_click_opens_reply_only_on_the_selected_row(page):
+    """行をダブルクリックで返信画面を開くのは、1回目で選んだ行だけ。ボタン・右端の「対応不要」の所と、
+    行が動いた・「対応不要」が消えた直後 (ROW_QUIET_MS) は開かない (「対応不要」を2回押したつもりで、
+    対応不要にしたメールの返信画面を開かないように)."""
+    d = _block(page, 'document.querySelector("#mail-table tbody").addEventListener("dblclick", e => {',
+               "\n});\n")
+    assert 'e.target.closest("button, td.act")' in d
+    assert "Number(tr.dataset.id) !== selectedId" in d
+    assert "Date.now() - rowsMovedAt < ROW_QUIET_MS) return;" in d
+    assert d.index("ROW_QUIET_MS") < d.index("openMail(")
+
+
+def test_keyboard_and_layout_do_nothing_on_the_login_screen(page):
+    """ログアウトした後 (ログイン画面・確認コードの画面) は、↑ ↓ などで前の人の一覧を選ばない・
+    幅を変えても受信箱を取り直さない (トークン無しで頼んで、ログイン画面に「正しくない」と出さない)."""
+    k = page[page.index('document.addEventListener("keydown", e => {\n  if ($("app").hidden || !paneOn()'):]
+    assert k.index('$("app").hidden') < k.index("moveSelection(step);")
+    lc = _block(page, "function layoutChanged() {")
+    assert 'peekOpen.size && !$("app").hidden) refreshInbox();' in lc
+
+
+def test_back_after_logout_does_not_restore_previous_users_mail(page):
+    """右に出していた・開いていたメールは、今ログインしている回に残したものだけ「戻る」で出し直す
+    (ログアウトして別の人がログインした後に「戻る」を押しても、前の人が見ていたメールを出さない)."""
+    assert 'const LOGIN_MARK_KEY = "zatsumu_mail_login_mark";' in page
+    assert "newLoginMark();" in _block(page, "function showLogin(withError) {")
+    n = _block(page, "function newLoginMark() {")
+    assert "sessionStorage.setItem(LOGIN_MARK_KEY, loginMark)" in n and "try {" in n
+    assert "history.replaceState({ ...st, sel: id, lg: loginMark }" in _block(page, "function pvRemember(id) {")
+    assert "history.replaceState({ ...cur, mail: id, lg: loginMark }" in page
+    p = _block(page, 'window.addEventListener("popstate", async e => {', "\n});\n")
+    assert "if ((st.sel || st.mail) && st.lg !== loginMark) {" in p
+    assert "const { sel: _s, mail: _m, lg: _l, ...rest } = st;" in p
+    assert p.index("st.lg !== loginMark") < p.index("renderState(st, true);")

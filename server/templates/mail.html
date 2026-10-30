@@ -837,8 +837,10 @@
   .list-count { font-size: .8rem; color: #6b7280; margin: 0 0 .4rem; }
   .list-count[hidden], #inbox:not(.pane-mode) .list-count { display: none; }
   .list-head #pane-tg { margin-bottom: .4rem; }
+  /* 右の本文の中を終わりまで進めたら、続けて画面も進める (overscroll-behavior を contain にしない)。
+     ページの一番上では右の本文の下の方が画面の外にあるので、止めると添付・下の「↩ 返信する」が見えない */
   .pv { position: sticky; top: .5rem; max-height: calc(100vh - 1rem); max-height: calc(100dvh - 1rem);
-        overflow-y: auto; overscroll-behavior: contain; background: #fff; border-radius: 8px;
+        overflow-y: auto; overscroll-behavior: auto; background: #fff; border-radius: 8px;
         box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 0 1.2rem 1rem; box-sizing: border-box;
         min-width: 0; min-height: 16rem; overflow-wrap: anywhere; }
   .pv[hidden], .pv [hidden] { display: none; }
@@ -2207,10 +2209,23 @@ document.addEventListener("click", e => {
   }
 });
 
+// ログインした回の印。履歴に残す「右に出していたメール」(sel)・「開いていたメール」(mail) に付けて、
+// 「戻る」で出し直すのは同じ回のものだけにする (ログアウトして別の人がログインした後に「戻る」を押しても、
+// 前の人が見ていたメールを出さない)。ページを読み直しても同じ回 (このタブの sessionStorage に残す)
+const LOGIN_MARK_KEY = "zatsumu_mail_login_mark";
+let loginMark = "";
+try { loginMark = sessionStorage.getItem(LOGIN_MARK_KEY) || ""; } catch {}
+function newLoginMark() {
+  loginMark = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  try { sessionStorage.setItem(LOGIN_MARK_KEY, loginMark); } catch {}
+}
+if (!loginMark) newLoginMark();
+
 function showLogin(withError) {
   stopPolling();
   $("toasts").textContent = "";   // 前の人の「元に戻す」を残さない
   clearSelection();               // 前の人が右に出していたメールも残さない
+  newLoginMark();                 // 前の人の履歴 (右に出していた・開いていたメール) も「戻る」で出さない
   $("app").hidden = true;
   $("device-verify").hidden = true;
   $("login").hidden = false;
@@ -3195,7 +3210,8 @@ function showArchivedToast(id, subject, r) {
 }
 
 // 「元に戻す」の無い知らせ (書きかけの返信文を保存できなかった など)。「閉じる」で消せる。
-// 返信画面を開いている間は隠れるので、閉じてから10秒ほどで消す。文字は textContent で入れる
+// 返信画面を開いている間は隠れるので、閉じてから10秒ほどで消す。文字は textContent で入れる。
+// 知らせを消す関数を返す (後で要らなくなったとき用)
 function noticeToast(msg) {
   const box = $("toasts");
   makeRoomForToast(box);
@@ -3212,6 +3228,7 @@ function noticeToast(msg) {
   t.append(text, ok);
   box.append(t);
   later();
+  return close;
 }
 
 // 知らせを重ねすぎない。戻し終わった知らせから消し、それでも多いときは古い2つを1つにまとめる
@@ -3656,9 +3673,13 @@ let selLastIndex = -1;      // 選んだ行が一覧の上から何番目にあ�
 // 右の本文の様子。id: 出しているメール・seq: 読み込んだ回数 (前に頼んだ答えで上書きしない)・
 // timer: ↑ ↓ で動いたときに少し待つ・loading: 読み込み中のメール・mail: 読んだ詳細・
 // sig: 出しているメールの様子 (pvSig。一覧の行と違ったら読み直す)・offList: 今の一覧に無い・
-// quietUntil: この画面で変えた (返信画面を閉じた・対応不要にした) 後しばらくは「変わりました」を出さない
+// quietUntil: この画面で変えた (返信画面を閉じた・対応不要にした) 後しばらくは「変わりました」を出さない・
+// local: 読み込んでいる間にこの画面で変えたこと ({ at: 変えた時刻, f: 変えた項目 }。★・対応不要)。
+// 変える前にサーバが答えた本文が後から届いても、変えた後の様子で出す (一覧の applyLocalFlags と同じ考え)・
+// failed: 出しているメールの読み直しに失敗した (同じ行をもう一度押すと読み直す)・
+// actMovedAt: 「対応不要にする」が消えた・出た (隣の「☆ フラグ」が横にずれた) 時刻 (renderPreview)
 const pv = { id: null, seq: 0, timer: null, loading: null, mail: null, sig: "", offList: false,
-             quietUntil: 0, noteTimer: null };
+             quietUntil: 0, noteTimer: null, local: [], failed: false, actMovedAt: 0 };
 const pvCache = new Map();  // 番号 → { data, sig } (前に読んだもの。新しく読んだ 30 通まで)
 const PV_CACHE_MAX = 30;
 const PV_WAIT_MS = 150;     // ↑ ↓ で動いてから読むまで待つ長さ (押したままでも、通り過ぎた行は読まない)
@@ -3692,11 +3713,11 @@ function applyLayout() {
   }
 }
 // 「表示」を押した・ウィンドウの幅が変わったとき。一覧だけに戻したら、右に出していた間は読まなかった
-// プルダウン (「本文 ▼」) を読み直す (受信箱を取り直す)
+// プルダウン (「本文 ▼」) を読み直す (受信箱を取り直す。ログアウトした後のログイン画面では取り直さない)
 function layoutChanged() {
   const was = document.documentElement.classList.contains("pane-on");
   applyLayout();
-  if (was && !paneOn() && viewName === "inbox" && peekOpen.size) refreshInbox();
+  if (was && !paneOn() && viewName === "inbox" && peekOpen.size && !$("app").hidden) refreshInbox();
 }
 if (PANE_MQ.addEventListener) PANE_MQ.addEventListener("change", layoutChanged);
 else PANE_MQ.addListener(layoutChanged);   // 古い Safari
@@ -3738,6 +3759,8 @@ function selectRow(id, { now = false, focus = true, announce = false } = {}) {
   if (pv.loading === id) return;             // 読んでいる途中
   if (pv.id === id) {                        // 出しているメール (読み直さない。読んでいた所を動かさない)
     if (pv.loading !== null) { pv.seq++; pv.loading = null; $("pv").classList.remove("loading"); }
+    // 読み直しに失敗していたら (「通信が戻ったら、もう一度押してください」)、もう一度押したときに読み直す
+    if (pv.failed) pv.timer = setTimeout(() => pvShow(id, { keepScroll: true }), now ? 0 : PV_WAIT_MS);
     return;
   }
   pv.timer = setTimeout(() => pvShow(id, { announce }), now ? 0 : PV_WAIT_MS);
@@ -3757,7 +3780,7 @@ function clearSelection() {
   selLastIndex = -1;
   clearTimeout(pv.timer);
   pv.seq++;
-  Object.assign(pv, { id: null, loading: null, mail: null, sig: "", offList: false });
+  Object.assign(pv, { id: null, loading: null, mail: null, sig: "", offList: false, failed: false });
   $("pv").classList.remove("loading");
   markSelected();
   pvNote("");
@@ -3779,7 +3802,9 @@ async function pvShow(id, opts = {}) {
   id = Number(id);
   clearTimeout(pv.timer);
   const seq = ++pv.seq, box = $("pv");
+  if (pv.loading !== id) pv.local = [];      // 別のメールを読み始めた (前のメールで変えたことは当てない)
   pv.loading = id;
+  const askedAt = Date.now();
   // 前に読んだものがあって、一覧の行の様子が変わっていなければ、すぐ出す (読み直している間も)
   const item = shownMails.get(id), c = pvCache.get(id);
   const cached = !!(c && item && c.sig === pvSig(item));
@@ -3794,6 +3819,9 @@ async function pvShow(id, opts = {}) {
     if (e.message === "auth") return;        // ログインし直す画面に切り替わった
     err = "load";
   }
+  // 頼んだ後に、この画面で★を付け外しした・対応不要にした (行はもう変わっている) ときは、それを当てる
+  // (サーバが変える前に答えていても、右の本文だけ「未対応」「☆」に戻さない)
+  if (d && pv.loading === id) for (const x of pv.local) if (x.at >= askedAt) Object.assign(d, x.f);
   if (d) pvCacheSet(id, d);
   if (seq !== pv.seq) return;                // 待っている間に、別のメールを読み始めた
   pv.loading = null;
@@ -3807,7 +3835,9 @@ async function pvShow(id, opts = {}) {
     ? "このメールは見つかりませんでした（保存日数を過ぎて消えた可能性があります）"
     : "読み込めませんでした（通信が戻ったら、もう一度押してください）";
   // 出しているメールの読み直しに失敗したときは、前に読んだものを出したままにする
+  // (同じ行をもう一度押すと読み直す。selectRow)
   if (pv.id === id && err !== "gone") {
+    pv.failed = true;
     if (!opts.quiet) pvErr(text);
     return;
   }
@@ -3831,13 +3861,17 @@ function pvShown(id, d, opts = {}) {
   pv.id = id;
   pv.mail = d;
   pv.sig = pvSig(d);   // 1通の詳細にも一覧と同じ項目がある (一覧の行と比べて、変わったら読み直す)
+  pv.failed = false;
   if (!same) { pv.offList = false; pvNote(""); }
   markOpened(id);
   pvRemember(id);
   renderPreview(d, same);
   if (!opts.keepScroll) $("pv").scrollTop = 0;
+  // 自分で変えたとき (返信画面を閉じた・対応不要にした後しばらくと、このメールの返信画面を開いている間。
+  // 返信画面で送った・確認をお願いしたときは、閉じる前に受信箱を取り直す) は、「ほかの人が」と知らせない
   const why = PV_CHANGED[d.status];
-  if (opts.auto && before && before !== d.status && why && Date.now() > pv.quietUntil) pvNote(why, 6000);
+  const mine = Date.now() <= pv.quietUntil || (modal.id === id && !$("mail-modal").hidden);
+  if (opts.auto && before && before !== d.status && why && !mine) pvNote(why, 6000);
   if (opts.announce) $("pv-live").textContent = `${snip(d.subject, 40) || "件名なし"}を表示しました`;
 }
 // 右に出しているメールを履歴に残す (取引先の画面などから「戻る」で戻ったときに、また右に出す)
@@ -3845,7 +3879,7 @@ function pvRemember(id) {
   if (viewName !== "inbox") return;
   try {
     const st = history.state || { v: "inbox" };
-    if (st.sel !== id) history.replaceState({ ...st, sel: id }, "", location.href);
+    if (st.sel !== id || st.lg !== loginMark) history.replaceState({ ...st, sel: id, lg: loginMark }, "", location.href);
   } catch {}   // 短い間に何度も書き換えると止めるブラウザがある (Safari)
 }
 // 右の本文の上の知らせ (今の一覧に無い・ほかの人が返信した など)。ms があれば、その後に消す
@@ -3878,10 +3912,12 @@ function pvAfterRender() {
 }
 
 // 一覧の行・返信画面で★を付け外しした・対応不要にしたときに、右の本文 (と前に読んだもの) もそろえる。
-// 読み直さない (一覧の行の様子も同じに変わっているので、次の取り直しでも読み直さない)
+// 読み直さない (一覧の行の様子も同じに変わっているので、次の取り直しでも読み直さない)。
+// 読み込んでいる途中なら、届いた答えにも当てる (pvShow。変える前の答えで、右の本文を元に戻さない)
 function pvMailChanged(id, fields) {
   const c = pvCache.get(id);
   if (c) { Object.assign(c.data, fields); c.sig = pvSig(c.data); }
+  if (pv.loading === id) pv.local.push({ at: Date.now(), f: { ...fields } });
   if (pv.id !== id || !pv.mail) return;
   Object.assign(pv.mail, fields);
   pv.sig = pvSig(pv.mail);
@@ -3977,8 +4013,14 @@ function renderPreview(d, same) {
   const others = Number(d.thread_count) || 0;
   $("pv-thr").hidden = !others;
   $("pv-thr-text").textContent = `この相手から、ほかにもメールが ${others}通届いています`;
-  $("pv-archive").hidden = !(admin && d.status === "unhandled");
-  $("pv-archive").disabled = archivingIds.has(id);
+  // 同じメールで「対応不要にする」が消えた・出たときは、隣の「☆ フラグ」が横にずれ、「未対応」だけを
+  // 出しているときは次のメールの「対応不要にする」が同じ所に出るので、少しの間は「☆ フラグ」も
+  // 「対応不要にする」も押しても何もしない (「対応不要にする」を2回押したつもりで、ずれてきた ☆ や
+  // 次のメールまで押さないように)
+  const arch = $("pv-archive"), canArchive = admin && d.status === "unhandled";
+  if (same && arch.hidden === canArchive) pv.actMovedAt = Date.now();
+  arch.hidden = !canArchive;
+  arch.disabled = archivingIds.has(id);
 }
 // 右の本文の「☆ フラグ」と、件名の下の印 (重要度・種類・状態・担当・★)。★を付け外ししたときは、ここだけ描き直す
 function renderPvFlag(d) {
@@ -4035,7 +4077,10 @@ $("pv-atts").onclick = async e => {
 
 // 「↩ 返信する」(上と下): 返信画面を右の本文の上に重ねて開く (閉じると右の本文を読み直す)
 $("pv-reply").onclick = $("pv-reply2").onclick = () => { if (pv.id) openMail(pv.id).catch(() => {}); };
-$("pv-flag").onclick = () => { if (pv.id && pv.mail) toggleFlag(pv.id, !pv.mail.flagged); };
+$("pv-flag").onclick = () => {
+  if (!pv.id || !pv.mail || Date.now() - pv.actMovedAt < ROW_QUIET_MS) return;   // ずれてきた直後 (renderPreview)
+  toggleFlag(pv.id, !pv.mail.flagged);
+};
 // 「やり取りを見る」: 返信画面を開いて、「この相手とのやり取り」を開く
 $("pv-thr-open").onclick = async () => {
   const id = pv.id;
@@ -4050,7 +4095,9 @@ $("pv-client-link").onclick = e => {
   const key = $("pv-client-link").dataset.key;
   if (key) navTo({ v: "client", key });   // 「戻る」で戻ると、このメールをまた右に出す
 };
-$("pv-archive").onclick = () => archiveFromPane();
+$("pv-archive").onclick = () => {
+  if (Date.now() - pv.actMovedAt >= ROW_QUIET_MS) archiveFromPane();   // 消えた・出た直後は何もしない
+};
 
 // 右の本文の「対応不要にする」(管理者・未対応のメールだけ。サーバも確かめる)。行の「対応不要」と同じく、
 // 行は一覧に残して灰色の「✓ 対応不要」にし、画面の下に「元に戻す」を出す。「状態」で「未対応」を
@@ -4092,9 +4139,10 @@ async function archiveFromPane() {
 // キーボード (右に本文を出しているときだけ): ↓ ↑ (j k) で前後のメール、Enter で返信画面、Esc で選ぶのを
 // やめる。文字を打つ所 (検索欄・選択欄など)・日本語の変換中・Ctrl などを押しているとき・返信画面などを
 // 開いているときは使わない。キーボードの位置が一覧か右の本文にあるとき (どこも押していないときも) だけ。
-// 右の本文の中では ↑ ↓ は本文を上下に動かす (j k で前後のメール)
+// 右の本文の中では ↑ ↓ は本文を上下に動かす (j k で前後のメール)。ログイン画面・確認コードの画面では
+// 使わない (ログアウトした後も、前の人の一覧は隠れて残っている)
 document.addEventListener("keydown", e => {
-  if (!paneOn() || anyModalOpen() || e.isComposing || e.keyCode === 229 ||
+  if ($("app").hidden || !paneOn() || anyModalOpen() || e.isComposing || e.keyCode === 229 ||
       e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.defaultPrevented) return;
   const t = e.target instanceof Element ? e.target : document.body;
   if (t.isContentEditable || t.closest("input, textarea, select")) return;
@@ -4114,11 +4162,14 @@ document.addEventListener("keydown", e => {
     clearSelection();
   }
 });
-// 右に本文を出しているときは、行をダブルクリックしても返信画面を開く
+// 右に本文を出しているときは、行をダブルクリックしても返信画面を開く (1回目で選んだ行だけ)。
+// ボタン・右端の「対応不要」の所と、行が動いた・ボタンが消えた直後 (ROW_QUIET_MS。行を押しても
+// 何もしない間) は開かない (「対応不要」を2回押したつもりで、そのメールの返信画面を開かないように)
 document.querySelector("#mail-table tbody").addEventListener("dblclick", e => {
   const tr = e.target.closest(".mail-row");
-  if (!tr || !paneOn() || e.target.closest("button")) return;
-  openMail(Number(tr.dataset.id)).catch(() => {});
+  if (!tr || !paneOn() || e.target.closest("button, td.act")) return;
+  if (Number(tr.dataset.id) !== selectedId || Date.now() - rowsMovedAt < ROW_QUIET_MS) return;
+  openMail(selectedId).catch(() => {});
 });
 applyLayout();
 
@@ -4954,8 +5005,11 @@ const rcptKey = () => $("m-cc").value + "\n" + $("m-bcc").value;
 // 編集途中の下書きを保存する (閉じるとき・やり取りの別のメールを開くとき・タブを隠したとき。
 // 送信済みは保存しない)。CC・BCC を変えていたら一緒に残す (開き直したときに、外した人を
 // 「全員に返信」で入れ直さない)。opts.keepalive: ページを閉じても送り終えるようにする
-// (送れる大きさに上限があるので、長い文はふつうに送る)。保存できなかったときは画面の下に知らせる
-// (ほかの人が先に確認をお願いした・通信が切れた など。黙って書きかけを失わないように)
+// (送れる大きさに上限 (64KB) があるので、長い文はふつうに送る。日本語は1文字3バイトなので、文字数でなく
+// バイト数で比べる)。保存できなかったときは画面の下に知らせる (ほかの人が先に確認をお願いした・通信が
+// 切れた など。黙って書きかけを失わないように)。後で同じメールを保存できたら、その知らせは消す
+// (保存できているのに「できませんでした」と残さない)
+const draftFailNotice = new Map();   // 保存できなかったメールの番号 → 知らせを消す関数
 async function saveDraft(opts = {}) {
   const draft = $("m-draft").value, rcpt = rcptKey();
   const rcptChanged = rcpt !== modal.savedRcpt;
@@ -4963,17 +5017,22 @@ async function saveDraft(opts = {}) {
     const body = { draft_reply: draft, seen_request: seenRequest() };
     if (rcptChanged) Object.assign(body, { draft_cc: $("m-cc").value, draft_bcc: $("m-bcc").value });
     const json = JSON.stringify(body), opened = modal;   // 待っている間に閉じても、閉じたメールの印に残す
+    const id = modal.id, bytes = new TextEncoder().encode(json).length;
     try {
-      const r = await api(`/api/mail/${modal.id}`, {
+      const r = await api(`/api/mail/${id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: json, keepalive: !!opts.keepalive && json.length < 60000,
+        body: json, keepalive: !!opts.keepalive && bytes < 60000,
       });
       if (!r.ok) throw new Error("draft " + r.status);
       opened.savedDraft = draft;
       opened.savedRcpt = rcpt;
+      draftFailNotice.get(id)?.();
+      draftFailNotice.delete(id);
     } catch (e) {
       if (e.message !== "auth") {
-        noticeToast("書きかけの返信文を保存できませんでした（そのメールを開き直して確かめてください）");
+        draftFailNotice.get(id)?.();   // 同じメールの知らせは1つだけ出す
+        draftFailNotice.set(id,
+          noticeToast("書きかけの返信文を保存できませんでした（そのメールを開き直して確かめてください）"));
       }
     }
   }
@@ -7287,7 +7346,7 @@ $("m-client-link").onclick = async e => {
   await closeModal();
   // 戻ったときに、このメールを開き直せるように残しておく
   const cur = history.state || { v: viewName, n: 0 };
-  history.replaceState({ ...cur, mail: id }, "", location.href);
+  history.replaceState({ ...cur, mail: id, lg: loginMark }, "", location.href);
   navTo({ v: "client", key });
 };
 
@@ -7534,7 +7593,7 @@ $("m-reply-via-link").onclick = async e => {
    履歴の1つ1つ: { v: "inbox" | "sent" | "sentmail" | "clients" | "client" | "settings",
    key (取引先の番号・送信箱の1通の番号),
    q (探す言葉), mail (開いていたメールの番号), sel (受信箱の右に出していたメールの番号),
-   scroll (見ていた位置), n (この画面までの数) } */
+   lg (mail・sel を残したログインの回。loginMark), scroll (見ていた位置), n (この画面までの数) } */
 function stateFromHash() {
   const h = location.hash;
   if (h === "#clients") return { v: "clients" };
@@ -7595,9 +7654,17 @@ async function renderState(st, restore) {
 }
 window.addEventListener("popstate", async e => {
   if ($("app").hidden) return;
+  let st = e.state || stateFromHash();
+  // 右に出していた・開いていたメールは、今ログインしている回に残したものだけ出し直す (loginMark)。
+  // 前にログインしていた人のものは出さず、履歴からも消す
+  if ((st.sel || st.mail) && st.lg !== loginMark) {
+    const { sel: _s, mail: _m, lg: _l, ...rest } = st;
+    st = rest;
+    try { history.replaceState(st, "", location.href); } catch {}
+  }
   // 返信画面を開いていたら閉じる (書きかけの返信文は保存する)
   if (!$("mail-modal").hidden) await closeModal({ keepHistory: true });
-  renderState(e.state || stateFromHash(), true);
+  renderState(st, true);
 });
 
 /* ---------- 使い方 (説明の長い文)。最初は閉じておき、開いたかはこのブラウザに覚えておく ---------- */
